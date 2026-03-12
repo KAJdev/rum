@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod auth;
 mod config;
 mod markdown;
 mod persistence;
@@ -20,6 +21,8 @@ enum SlashCommand {
     Model(Option<String>),
     Thinking(Option<String>),
     New,
+    Login,
+    Logout,
     Help,
     Quit,
 }
@@ -38,6 +41,8 @@ fn parse_slash_command(text: &str) -> Option<SlashCommand> {
         "/model" => Some(SlashCommand::Model(arg)),
         "/thinking" => Some(SlashCommand::Thinking(arg)),
         "/new" => Some(SlashCommand::New),
+        "/login" => Some(SlashCommand::Login),
+        "/logout" => Some(SlashCommand::Logout),
         "/help" => Some(SlashCommand::Help),
         "/quit" => Some(SlashCommand::Quit),
         _ => None,
@@ -74,6 +79,15 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // handle login/logout before clap so they don't interfere with
+    // the trailing positional message arg
+    let raw: Vec<String> = std::env::args().collect();
+    match raw.get(1).map(|s| s.as_str()) {
+        Some("login") => return run_login_command().await,
+        Some("logout") => return run_logout_command(),
+        _ => {}
+    }
+
     let cli = Cli::parse();
 
     let cwd = match cli.dir {
@@ -82,6 +96,10 @@ async fn main() -> Result<()> {
     };
 
     let mut cfg = config::load_config(&cwd)?;
+
+    // refresh an expired oauth token before starting so the first request
+    // doesn't fail with an auth error
+    maybe_refresh_token().await;
 
     // rum settings (model, thinking, diffs_expanded) persist the user's
     // last interactive choice across sessions. cli flags override them.
@@ -199,6 +217,11 @@ async fn run_tui_mode(
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let (control_tx, control_rx) = mpsc::unbounded_channel::<agent::ControlMessage>();
+    // one-shot results from async login attempts
+    let (login_tx, mut login_rx) = mpsc::unbounded_channel::<Result<(), String>>();
+
+    // holds the pkce verifier while waiting for the user to paste the auth code
+    let mut login_pending: Option<String> = None;
 
     let agent_cwd = cwd.clone();
     let agent_cancel = cancel.clone();
@@ -239,6 +262,14 @@ async fn run_tui_mode(
             }
         }
 
+        // drain completed login attempts
+        while let Ok(result) = login_rx.try_recv() {
+            match result {
+                Ok(()) => app.push_system_message("logged in to anthropic".to_string()),
+                Err(e) => app.push_system_message(format!("login failed: {e}")),
+            }
+        }
+
         // send queued follow-up messages when the current turn finishes
         if !app.is_running && app.has_queued_messages() {
             cancel.reset();
@@ -250,8 +281,11 @@ async fn run_tui_mode(
             if let Event::Key(key) = event::read()? {
                 match tui::handle_key_event(key, &mut app) {
                     tui::InputAction::Submit(msg) => {
-                        if let Some(cmd) = parse_slash_command(&msg) {
-                            handle_slash_command(cmd, &mut app, &control_tx);
+                        if let Some(verifier) = login_pending.take() {
+                            // the user pasted the auth code from the browser
+                            handle_login_code(&msg, verifier, &mut app, login_tx.clone());
+                        } else if let Some(cmd) = parse_slash_command(&msg) {
+                            handle_slash_command(cmd, &mut app, &control_tx, &mut login_pending);
                             if !app.should_quit {
                                 // persist any settings that may have changed
                                 let _ = persistence::save_settings(&persistence::RumSettings {
@@ -308,6 +342,7 @@ fn handle_slash_command(
     cmd: SlashCommand,
     app: &mut tui::App,
     control_tx: &mpsc::UnboundedSender<agent::ControlMessage>,
+    login_pending: &mut Option<String>,
 ) {
     match cmd {
         SlashCommand::Model(pattern) => {
@@ -321,6 +356,22 @@ fn handle_slash_command(
             let _ = control_tx.send(agent::ControlMessage::ClearHistory);
             app.push_system_message("conversation cleared".to_string());
         }
+        SlashCommand::Login => {
+            let (url, verifier) = auth::build_auth_url();
+            auth::open_browser(&url);
+            *login_pending = Some(verifier);
+            app.push_system_message(format!(
+                "opening browser for anthropic login...\n\nif the browser didn't open, visit:\n{url}\n\nthen paste the redirect URL (or code#state) here and press enter"
+            ));
+        }
+        SlashCommand::Logout => {
+            match auth::delete_auth() {
+                Ok(()) => app.push_system_message(
+                    "logged out. set ANTHROPIC_API_KEY or run /login to authenticate.".to_string(),
+                ),
+                Err(e) => app.push_system_message(format!("logout failed: {e}")),
+            }
+        }
         SlashCommand::Help => {
             let help = "\
 available commands:\n\
@@ -328,6 +379,8 @@ available commands:\n\
   /model [name]       switch model (opus, sonnet, haiku, opus-4.5, ...)\n\
   /thinking [level]   set thinking level (off, minimal, low, medium, high, xhigh)\n\
   /new                start a new conversation\n\
+  /login              log in with anthropic oauth\n\
+  /logout             log out\n\
   /help               show this help\n\
   /quit               quit rum";
             app.push_system_message(help.to_string());
@@ -410,6 +463,76 @@ fn handle_thinking_command(
             }
         }
     }
+}
+
+// called in the tui loop after the user pastes the auth code
+fn handle_login_code(
+    input: &str,
+    verifier: String,
+    app: &mut tui::App,
+    login_tx: mpsc::UnboundedSender<Result<(), String>>,
+) {
+    match auth::parse_auth_response(input) {
+        Some((code, state)) => {
+            app.push_system_message("authenticating...".to_string());
+            tokio::spawn(async move {
+                let result = auth::exchange_code(&code, &state, &verifier)
+                    .await
+                    .and_then(|creds| auth::save_auth(&creds))
+                    .map_err(|e| e.to_string());
+                let _ = login_tx.send(result);
+            });
+        }
+        None => {
+            app.push_system_message(
+                "could not parse auth code. expected CODE#STATE or the full redirect URL. try /login again".to_string(),
+            );
+        }
+    }
+}
+
+// refreshes the stored oauth token if it is expired
+async fn maybe_refresh_token() {
+    let Some(creds) = auth::load_auth() else { return };
+    if !auth::is_expired(&creds) {
+        return;
+    }
+    if let Ok(new_creds) = auth::refresh(&creds.refresh).await {
+        let _ = auth::save_auth(&new_creds);
+    }
+}
+
+// standalone `rum login` command
+async fn run_login_command() -> Result<()> {
+    let (url, verifier) = auth::build_auth_url();
+
+    println!("opening browser for anthropic login...");
+    auth::open_browser(&url);
+    println!("\nif the browser didn't open, visit:\n{url}\n");
+    println!("after authenticating, paste the redirect URL (or code#state) and press enter:");
+
+    let mut input = String::new();
+    tokio::io::AsyncBufReadExt::read_line(
+        &mut tokio::io::BufReader::new(tokio::io::stdin()),
+        &mut input,
+    )
+    .await?;
+
+    let (code, state) = auth::parse_auth_response(input.trim())
+        .ok_or_else(|| anyhow::anyhow!("could not parse auth response. expected CODE#STATE or the full redirect URL"))?;
+
+    println!("exchanging code for token...");
+    let creds = auth::exchange_code(&code, &state, &verifier).await?;
+    auth::save_auth(&creds)?;
+    println!("logged in successfully");
+    Ok(())
+}
+
+// standalone `rum logout` command
+fn run_logout_command() -> Result<()> {
+    auth::delete_auth()?;
+    println!("logged out");
+    Ok(())
 }
 
 async fn agent_loop(

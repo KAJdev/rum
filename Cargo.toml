@@ -17,6 +17,9 @@ pkg-fmt = "zip"
 
 [dependencies]
 anyhow = "1"
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 dirs = "6"

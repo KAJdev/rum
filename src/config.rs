@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -154,6 +154,32 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
     None
 }
 
+// checks rum's own auth.json first, then pi's auth.json as a fallback
+fn load_auth_entry(provider: &str) -> Option<AuthEntry> {
+    // rum-native oauth (stored by /login)
+    if let Some(creds) = crate::auth::load_auth() {
+        return Some(AuthEntry::OAuth {
+            access: creds.access,
+            refresh: creds.refresh,
+            expires: creds.expires,
+            extra: serde_json::Value::Null,
+        });
+    }
+
+    // pi auth.json fallback for existing users
+    let pi_auth_path = pi_agent_dir().join("auth.json");
+    if pi_auth_path.exists() {
+        let content = std::fs::read_to_string(&pi_auth_path).ok()?;
+        let map: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&content).ok()?;
+        return map
+            .get(provider)
+            .and_then(|v| serde_json::from_value::<AuthEntry>(v.clone()).ok());
+    }
+
+    None
+}
+
 pub fn load_config(cwd: &Path) -> Result<Config> {
     let agent_dir = pi_agent_dir();
     let global_settings: PiSettings =
@@ -177,20 +203,9 @@ pub fn load_config(cwd: &Path) -> Result<Config> {
         .or(global_settings.default_thinking_level)
         .unwrap_or_else(|| "off".to_string());
 
-    // load auth from pi's auth.json
-    let auth_path = agent_dir.join("auth.json");
-    let auth_entry = if auth_path.exists() {
-        let content = std::fs::read_to_string(&auth_path)
-            .context("failed to read auth.json")?;
-        let auth_map: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(&content).context("failed to parse auth.json")?;
-
-        auth_map
-            .get(&provider)
-            .and_then(|v| serde_json::from_value::<AuthEntry>(v.clone()).ok())
-    } else {
-        None
-    };
+    // load auth: rum's own auth.json takes priority, pi's is the fallback
+    // for users who authenticated through pi before rum had its own login
+    let auth_entry = load_auth_entry(&provider);
 
     let api_key = resolve_api_key(&provider);
 

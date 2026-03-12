@@ -46,6 +46,8 @@ const SLASH_COMMANDS: &[SlashDef] = &[
     SlashDef { name: "/model", args: "[name]", description: "Switch model" },
     SlashDef { name: "/thinking", args: "[level]", description: "Set thinking level" },
     SlashDef { name: "/new", args: "", description: "Start new conversation" },
+    SlashDef { name: "/login", args: "", description: "Log in with Anthropic OAuth" },
+    SlashDef { name: "/logout", args: "", description: "Log out" },
     SlashDef { name: "/help", args: "", description: "Show available commands" },
     SlashDef { name: "/quit", args: "", description: "Quit" },
 ];
@@ -909,13 +911,20 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let w = area.width as usize;
 
+    let thinking_suffix = if app.thinking_level != "off" {
+        format!(" ({})", app.thinking_level)
+    } else {
+        String::new()
+    };
+
     let mut spans = vec![
         Span::styled("rum", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {}  ", app.cwd), Style::default().fg(FG)),
         Span::styled(&app.model_name, Style::default().fg(MUTED)),
+        Span::styled(thinking_suffix.clone(), Style::default().fg(MUTED)),
     ];
 
-    let left_len = 4 + app.cwd.len() + 4 + app.model_name.len();
+    let left_len = 4 + app.cwd.len() + 4 + app.model_name.len() + thinking_suffix.len();
 
     // build right-side metrics
     let rate = app.avg_rate();
