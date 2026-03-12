@@ -152,6 +152,7 @@ jobs:
           cd homebrew-rum
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/KAJdev/homebrew-rum.git"
           git add Formula/rum.rb
           git diff --cached --quiet || {
             git commit -m "rum ${VERSION}"
