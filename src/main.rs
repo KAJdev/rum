@@ -174,6 +174,7 @@ async fn run_tui_mode(
     }
 
     loop {
+        app.tick_rate();
         terminal.draw(&app)?;
 
         loop {
