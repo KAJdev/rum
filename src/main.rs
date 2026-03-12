@@ -286,7 +286,7 @@ fn handle_slash_command(
             let help = "\
 available commands:\n\
 \n\
-  /model [name]       switch model (opus, sonnet, sonnet-4.5, haiku, ...)\n\
+  /model [name]       switch model (opus, sonnet, haiku, opus-4.5, ...)\n\
   /thinking [level]   set thinking level (off, minimal, low, medium, high, xhigh)\n\
   /new                start a new conversation\n\
   /help               show this help\n\
@@ -317,7 +317,7 @@ fn handle_model_command(
                 ));
             }
             lines.push_str("\n\nusage: /model <name>");
-            lines.push_str("\naliases: opus, sonnet, sonnet-4.5, haiku");
+            lines.push_str("\naliases: opus, sonnet, haiku, opus-4.5, sonnet-4.5, ...");
             app.push_system_message(lines);
         }
         Some(pat) => {

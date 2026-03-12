@@ -50,6 +50,8 @@ pub enum AgentEvent {
         input_tokens: u32,
         output_tokens: u32,
     },
+    // status messages (retries, etc.) rendered distinctly from model output
+    Status(String),
     TurnComplete,
     Error(String),
 }
@@ -316,8 +318,8 @@ impl Agent {
                     let msg = stream_errors.first()
                         .map(|e| e.chars().take(80).collect::<String>())
                         .unwrap_or_else(|| "no response".to_string());
-                    let _ = event_tx.send(AgentEvent::Thinking(
-                        format!("retrying in {}s ({}/3): {}\n", delay, retries, msg),
+                    let _ = event_tx.send(AgentEvent::Status(
+                        format!("retrying in {delay}s ({retries}/3): {msg}"),
                     ));
                     tokio::time::sleep(Duration::from_secs(delay)).await;
                     continue;
@@ -424,7 +426,9 @@ fn is_retryable_error(e: &str) -> bool {
 }
 
 fn is_adaptive_model(model: &str) -> bool {
-    model.contains("opus-4-6") || model.contains("opus-4.6")
+    model.contains("opus-4-5") || model.contains("opus-4-6")
+        || model.contains("sonnet-4-5") || model.contains("sonnet-4-6")
+        || model.contains("haiku-4-5")
 }
 
 async fn stream_request(

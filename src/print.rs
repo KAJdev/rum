@@ -492,6 +492,9 @@ impl PrintMode {
                 }
                 return true;
             }
+            AgentEvent::Status(msg) => {
+                eprintln!("{DIM}{msg}{RESET}");
+            }
             AgentEvent::Error(e) => {
                 self.error_count += 1;
                 if self.in_thinking {

@@ -170,7 +170,7 @@ pub fn load_config(cwd: &Path) -> Result<Config> {
     let model = project_settings
         .default_model
         .or(global_settings.default_model)
-        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+        .unwrap_or_else(|| "claude-sonnet-4-0".to_string());
 
     let thinking_level = project_settings
         .default_thinking_level
@@ -224,32 +224,60 @@ pub struct ModelDef {
 
 pub const ANTHROPIC_MODELS: &[ModelDef] = &[
     ModelDef {
-        id: "claude-opus-4-6-20250514",
+        id: "claude-opus-4-6",
         name: "Opus 4.6",
+        context_window: 200_000,
+        input_price: 5.0,
+        output_price: 25.0,
+    },
+    ModelDef {
+        id: "claude-opus-4-5",
+        name: "Opus 4.5",
+        context_window: 200_000,
+        input_price: 5.0,
+        output_price: 25.0,
+    },
+    ModelDef {
+        id: "claude-opus-4-1",
+        name: "Opus 4.1",
         context_window: 200_000,
         input_price: 15.0,
         output_price: 75.0,
     },
     ModelDef {
-        id: "claude-sonnet-4-20250514",
-        name: "Sonnet 4",
+        id: "claude-opus-4-0",
+        name: "Opus 4",
+        context_window: 200_000,
+        input_price: 15.0,
+        output_price: 75.0,
+    },
+    ModelDef {
+        id: "claude-sonnet-4-6",
+        name: "Sonnet 4.6",
         context_window: 200_000,
         input_price: 3.0,
         output_price: 15.0,
     },
     ModelDef {
-        id: "claude-sonnet-4-5-20250514",
+        id: "claude-sonnet-4-5",
         name: "Sonnet 4.5",
         context_window: 200_000,
         input_price: 3.0,
         output_price: 15.0,
     },
     ModelDef {
-        id: "claude-haiku-3-5-20241022",
-        name: "Haiku 3.5",
+        id: "claude-sonnet-4-0",
+        name: "Sonnet 4",
         context_window: 200_000,
-        input_price: 0.80,
-        output_price: 4.0,
+        input_price: 3.0,
+        output_price: 15.0,
+    },
+    ModelDef {
+        id: "claude-haiku-4-5",
+        name: "Haiku 4.5",
+        context_window: 200_000,
+        input_price: 1.0,
+        output_price: 5.0,
     },
 ];
 
@@ -265,18 +293,14 @@ pub fn match_model(pattern: &str) -> Option<&'static ModelDef> {
 
     // common aliases
     let resolved = match p.as_str() {
-        "opus" | "opus-4-6" | "opus-4.6" | "claude-opus-4-6" => {
-            Some("claude-opus-4-6-20250514")
-        }
-        "sonnet" | "sonnet-4" | "sonnet4" | "claude-sonnet-4" => {
-            Some("claude-sonnet-4-20250514")
-        }
-        "sonnet-4-5" | "sonnet-4.5" | "sonnet45" | "claude-sonnet-4-5" => {
-            Some("claude-sonnet-4-5-20250514")
-        }
-        "haiku" | "haiku-3-5" | "haiku-3.5" | "haiku35" | "claude-haiku-3-5" => {
-            Some("claude-haiku-3-5-20241022")
-        }
+        "opus" | "opus-4-6" | "opus-4.6" | "opus46" => Some("claude-opus-4-6"),
+        "opus-4-5" | "opus-4.5" | "opus45" => Some("claude-opus-4-5"),
+        "opus-4-1" | "opus-4.1" | "opus41" => Some("claude-opus-4-1"),
+        "opus-4" | "opus-4-0" | "opus-4.0" | "opus4" => Some("claude-opus-4-0"),
+        "sonnet" | "sonnet-4-6" | "sonnet-4.6" | "sonnet46" => Some("claude-sonnet-4-6"),
+        "sonnet-4-5" | "sonnet-4.5" | "sonnet45" => Some("claude-sonnet-4-5"),
+        "sonnet-4" | "sonnet-4-0" | "sonnet-4.0" | "sonnet4" => Some("claude-sonnet-4-0"),
+        "haiku" | "haiku-4-5" | "haiku-4.5" | "haiku45" => Some("claude-haiku-4-5"),
         _ => None,
     };
 
@@ -300,9 +324,9 @@ pub fn model_pricing(model: &str) -> ModelPricing {
     // fallback heuristic for unknown model ids
     let m = model.to_lowercase();
     if m.contains("opus") {
-        ModelPricing { input: 15.0, output: 75.0 }
+        ModelPricing { input: 5.0, output: 25.0 }
     } else if m.contains("haiku") {
-        ModelPricing { input: 0.80, output: 4.0 }
+        ModelPricing { input: 1.0, output: 5.0 }
     } else {
         ModelPricing { input: 3.0, output: 15.0 }
     }

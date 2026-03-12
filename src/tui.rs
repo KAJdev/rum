@@ -307,9 +307,12 @@ impl App {
             AgentEvent::TurnComplete => {
                 self.is_running = false;
             }
+            AgentEvent::Status(msg) => {
+                self.activity.push(ActivityItem::System(msg));
+            }
             AgentEvent::Error(e) => {
                 self.is_running = false;
-                self.activity.push(ActivityItem::Text(format!("[error] {}", e)));
+                self.activity.push(ActivityItem::Text(format!("[error] {e}")));
             }
         }
     }
