@@ -977,7 +977,7 @@ impl TuiMarkdownRenderer {
         }
     }
 
-    pub fn render_lines<'a>(&mut self, text: &'a str) -> Vec<RLine<'a>> {
+    pub fn render_lines(&mut self, text: &str) -> Vec<RLine<'static>> {
         let mut output = Vec::new();
 
         for line in text.lines() {

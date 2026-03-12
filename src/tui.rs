@@ -8,11 +8,12 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Gauge, Paragraph, Sparkline, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::io::{self, Stdout};
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 use crate::agent::AgentEvent;
 use crate::tools::{DiffInfo, DiffLineTag, ToolResult};
 
@@ -26,13 +27,19 @@ const YELLOW: Color = Color::Rgb(255, 180, 84);
 const DIM: Color = Color::Rgb(86, 91, 102);
 const BAR_COLOR: Color = Color::Rgb(60, 65, 75);
 
-// context window sizes for common models (tokens)
 const DEFAULT_CONTEXT: u32 = 200_000;
 
-// activity feed items: text blocks and tool calls interleaved
+// the bar prefix string and its display width
+const BAR_STR: &str = "\u{2502} ";
+const BAR_WIDTH: u16 = 2;
+
 #[derive(Debug, Clone)]
 enum ActivityItem {
+    // thinking text from the model, shown dim/italic
+    Thinking(String),
+    // text output from the model, rendered as markdown with bar prefix
     Text(String),
+    // tool call entry
     Tool(ToolEntry),
 }
 
@@ -42,13 +49,16 @@ struct ToolEntry {
     display: String,
     status: ToolStatus,
     diff: Option<DiffInfo>,
+    // captured output (bash stdout/stderr, truncated)
+    output: Option<String>,
     expanded: bool,
 }
 
 #[derive(Debug, Clone)]
 enum ToolStatus {
     Running,
-    Complete,
+    // exit_code is Some for bash commands
+    Complete { exit_code: Option<i32> },
     Error(String),
 }
 
@@ -57,18 +67,12 @@ pub struct App {
     cursor_pos: usize,
     activity: Vec<ActivityItem>,
     current_message: Option<String>,
-    // token accounting
     total_input: u32,
     total_output: u32,
     context_limit: u32,
-    // output rate tracking for sparkline
     rate_samples: Vec<u64>,
     rate_bucket_tokens: u32,
     last_sample: Instant,
-    // thinking state (separate from activity feed)
-    thinking_text: String,
-    is_thinking: bool,
-    // general state
     pub is_running: bool,
     pub should_quit: bool,
     pub scroll_offset: u16,
@@ -76,11 +80,14 @@ pub struct App {
     cwd: String,
     current_tool_input: String,
     start_time: Option<Instant>,
+    // cached terminal width for manual line wrapping
+    term_width: u16,
 }
 
 impl App {
     pub fn new(model_name: &str, cwd: &str) -> Self {
         let context_limit = guess_context_limit(model_name);
+        let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
         Self {
             input: String::new(),
             cursor_pos: 0,
@@ -92,8 +99,6 @@ impl App {
             rate_samples: Vec::new(),
             rate_bucket_tokens: 0,
             last_sample: Instant::now(),
-            thinking_text: String::new(),
-            is_thinking: false,
             is_running: false,
             should_quit: false,
             scroll_offset: 0,
@@ -101,35 +106,36 @@ impl App {
             cwd: cwd.to_string(),
             current_tool_input: String::new(),
             start_time: None,
+            term_width,
         }
     }
 
-    // sample the output rate into the sparkline buffer.
-    // called every frame (~16ms), collapses into 500ms buckets.
     pub fn tick_rate(&mut self) {
         let now = Instant::now();
         if now.duration_since(self.last_sample).as_millis() >= 500 {
             self.rate_samples.push(self.rate_bucket_tokens as u64);
             self.rate_bucket_tokens = 0;
             self.last_sample = now;
-            // keep the last 120 samples (60s at 500ms intervals)
             if self.rate_samples.len() > 120 {
                 self.rate_samples.remove(0);
             }
+        }
+        // refresh terminal width periodically
+        if let Ok((w, _)) = crossterm::terminal::size() {
+            self.term_width = w;
         }
     }
 
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Thinking(t) => {
-                self.is_thinking = true;
-                self.thinking_text.push_str(&t);
+                if let Some(ActivityItem::Thinking(ref mut s)) = self.activity.last_mut() {
+                    s.push_str(&t);
+                } else {
+                    self.activity.push(ActivityItem::Thinking(t));
+                }
             }
             AgentEvent::Text(t) => {
-                if self.is_thinking {
-                    self.is_thinking = false;
-                    self.thinking_text.clear();
-                }
                 let approx = (t.len() as u32 / 4).max(1);
                 self.rate_bucket_tokens += approx;
                 if let Some(ActivityItem::Text(ref mut s)) = self.activity.last_mut() {
@@ -139,16 +145,13 @@ impl App {
                 }
             }
             AgentEvent::ToolStart { id: _, name } => {
-                if self.is_thinking {
-                    self.is_thinking = false;
-                    self.thinking_text.clear();
-                }
                 self.current_tool_input.clear();
                 self.activity.push(ActivityItem::Tool(ToolEntry {
                     name: name.clone(),
                     display: format!("{}...", name),
                     status: ToolStatus::Running,
                     diff: None,
+                    output: None,
                     expanded: false,
                 }));
             }
@@ -167,7 +170,14 @@ impl App {
                     .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
                 {
                     match &result {
-                        ToolResult::Success { output: _, diff } => {
+                        ToolResult::Success { output, diff } => {
+                            // extract exit code from bash output
+                            let exit_code = if name == "bash" {
+                                parse_exit_code(output)
+                            } else {
+                                None
+                            };
+
                             if let Some(d) = diff {
                                 entry.display = format!(
                                     "{} {}",
@@ -176,7 +186,19 @@ impl App {
                                 );
                                 entry.diff = Some(d.clone());
                             }
-                            entry.status = ToolStatus::Complete;
+
+                            // store output for display (bash output, truncated)
+                            let trimmed = output.trim();
+                            if !trimmed.is_empty() && trimmed != "(no output)" {
+                                let display_output = if trimmed.len() > 2000 {
+                                    format!("{}...", &trimmed[..2000])
+                                } else {
+                                    trimmed.to_string()
+                                };
+                                entry.output = Some(display_output);
+                            }
+
+                            entry.status = ToolStatus::Complete { exit_code };
                         }
                         ToolResult::Error(e) => {
                             entry.status = ToolStatus::Error(e.clone());
@@ -193,11 +215,9 @@ impl App {
             }
             AgentEvent::TurnComplete => {
                 self.is_running = false;
-                self.is_thinking = false;
             }
             AgentEvent::Error(e) => {
                 self.is_running = false;
-                self.is_thinking = false;
                 self.activity.push(ActivityItem::Text(format!("[error] {}", e)));
             }
         }
@@ -206,8 +226,6 @@ impl App {
     pub fn start_new_message(&mut self, message: &str) {
         self.current_message = Some(message.to_string());
         self.activity.clear();
-        self.thinking_text.clear();
-        self.is_thinking = false;
         self.is_running = true;
         self.scroll_offset = 0;
         self.current_tool_input.clear();
@@ -245,17 +263,12 @@ impl App {
     }
 
     fn cost_usd(&self) -> f64 {
-        let input_cost = self.total_input as f64 * 3.0 / 1_000_000.0;
-        let output_cost = self.total_output as f64 * 15.0 / 1_000_000.0;
-        input_cost + output_cost
-    }
-
-    fn elapsed_secs(&self) -> f64 {
-        self.start_time.map_or(0.0, |t| t.elapsed().as_secs_f64())
+        self.total_input as f64 * 3.0 / 1_000_000.0
+            + self.total_output as f64 * 15.0 / 1_000_000.0
     }
 
     fn avg_rate(&self) -> f64 {
-        let elapsed = self.elapsed_secs();
+        let elapsed = self.start_time.map_or(0.0, |t| t.elapsed().as_secs_f64());
         if elapsed > 0.0 {
             self.total_output as f64 / elapsed
         } else {
@@ -286,31 +299,19 @@ fn capitalize_tool(name: &str) -> &str {
 fn format_tool_display(name: &str, input: &serde_json::Value) -> String {
     match name {
         "read" => {
-            let path = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("...");
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("...");
             format!("Read {}", path)
         }
         "edit" => {
-            let path = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("...");
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("...");
             format!("Edit {}", path)
         }
         "write" => {
-            let path = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("...");
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("...");
             format!("Write {}", path)
         }
         "bash" => {
-            let cmd = input
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("...");
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("...");
             let short = if cmd.len() > 80 {
                 format!("{}...", &cmd[..77])
             } else {
@@ -322,24 +323,157 @@ fn format_tool_display(name: &str, input: &serde_json::Value) -> String {
     }
 }
 
-// plain line with indent (no bar) for tool entries
+// extract exit code from bash output text.
+// tools.rs prefixes non-zero exits with "[exit code: N]\n"
+fn parse_exit_code(output: &str) -> Option<i32> {
+    if output.starts_with("[exit code: ") {
+        output[12..].split(']').next()
+            .and_then(|s| s.parse::<i32>().ok())
+    } else {
+        Some(0)
+    }
+}
+
+// strip the "[exit code: N]\n" prefix from bash output for display
+fn strip_exit_prefix(s: &str) -> &str {
+    if s.starts_with("[exit code: ") {
+        if let Some(idx) = s.find("]\n") {
+            return &s[idx + 2..];
+        }
+    }
+    s
+}
+
+// indent for tool lines (no bar)
 fn tool_line(spans: Vec<Span<'static>>) -> Line<'static> {
     let mut all = vec![Span::styled("  ", Style::default())];
     all.extend(spans);
     Line::from(all)
 }
 
+// wrap a plain text string to fit within `max_width` characters,
+// returning one Line per visual row. each line gets the bar prefix.
+fn wrap_text_with_bar(text: &str, max_width: u16, style: Style) -> Vec<Line<'static>> {
+    let content_width = (max_width as usize).saturating_sub(BAR_WIDTH as usize);
+    if content_width == 0 {
+        return vec![];
+    }
+
+    let bar = Span::styled(BAR_STR, Style::default().fg(BAR_COLOR));
+
+    let mut lines = Vec::new();
+    for raw_line in text.split('\n') {
+        if raw_line.is_empty() {
+            lines.push(Line::from(vec![bar.clone()]));
+            continue;
+        }
+        let mut remaining = raw_line;
+        while !remaining.is_empty() {
+            let w = UnicodeWidthStr::width(remaining);
+            if w <= content_width {
+                lines.push(Line::from(vec![bar.clone(), Span::styled(remaining.to_string(), style)]));
+                break;
+            }
+            // find a break point near content_width
+            let mut split = 0;
+            let mut cur_w = 0;
+            for (i, ch) in remaining.char_indices() {
+                let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if cur_w + cw > content_width {
+                    break;
+                }
+                cur_w += cw;
+                split = i + ch.len_utf8();
+            }
+            if split == 0 { split = remaining.len(); }
+            lines.push(Line::from(vec![bar.clone(), Span::styled(remaining[..split].to_string(), style)]));
+            remaining = &remaining[split..];
+        }
+    }
+    lines
+}
+
+// wrap markdown-rendered lines so every visual row has the bar prefix.
+// the TuiMarkdownRenderer produces Lines, but long ones get wrapped by
+// ratatui without the bar. we do manual wrapping here instead.
+fn wrap_md_lines_with_bar(md_lines: Vec<Line<'static>>, max_width: u16) -> Vec<Line<'static>> {
+    let content_width = (max_width as usize).saturating_sub(BAR_WIDTH as usize);
+    let bar = Span::styled(BAR_STR, Style::default().fg(BAR_COLOR));
+
+    let mut out = Vec::new();
+    for ml in md_lines {
+        // estimate the display width of the line
+        let line_width: usize = ml.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+        if line_width <= content_width {
+            let mut spans = vec![bar.clone()];
+            spans.extend(ml.spans);
+            out.push(Line::from(spans));
+        } else {
+            // for long lines, flatten to styled chunks and re-wrap
+            let mut cur_spans: Vec<Span<'static>> = vec![bar.clone()];
+            let mut cur_width: usize = 0;
+
+            for span in ml.spans {
+                let span_text: &str = span.content.as_ref();
+                let span_style = span.style;
+                let mut remaining = span_text;
+
+                while !remaining.is_empty() {
+                    let avail = content_width.saturating_sub(cur_width);
+                    if avail == 0 {
+                        out.push(Line::from(std::mem::take(&mut cur_spans)));
+                        cur_spans = vec![bar.clone()];
+                        cur_width = 0;
+                        continue;
+                    }
+
+                    let rw = UnicodeWidthStr::width(remaining);
+                    if rw <= avail {
+                        cur_spans.push(Span::styled(remaining.to_string(), span_style));
+                        cur_width += rw;
+                        break;
+                    }
+
+                    // split at avail
+                    let mut split = 0;
+                    let mut w = 0;
+                    for (i, ch) in remaining.char_indices() {
+                        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                        if w + cw > avail { break; }
+                        w += cw;
+                        split = i + ch.len_utf8();
+                    }
+                    if split == 0 && cur_width == 0 {
+                        // single char wider than avail (shouldn't happen), force it
+                        split = remaining.chars().next().map_or(0, |c| c.len_utf8());
+                    }
+                    if split > 0 {
+                        cur_spans.push(Span::styled(remaining[..split].to_string(), span_style));
+                    }
+                    out.push(Line::from(std::mem::take(&mut cur_spans)));
+                    cur_spans = vec![bar.clone()];
+                    cur_width = 0;
+                    remaining = &remaining[split..];
+                }
+            }
+            if cur_spans.len() > 1 {
+                out.push(Line::from(cur_spans));
+            }
+        }
+    }
+    out
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     let size = frame.area();
 
-    // bottom panel: 3 lines for metrics (sparkline + context + stats)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // header
             Constraint::Length(2), // user message / input
-            Constraint::Min(6),   // activity feed
-            Constraint::Length(3), // metrics panel
+            Constraint::Min(4),   // activity feed
+            Constraint::Length(1), // metrics bar
         ])
         .split(size);
 
@@ -358,17 +492,10 @@ pub fn render(frame: &mut Frame, app: &App) {
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![
         Span::styled("rum", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("  {}  ", app.cwd),
-            Style::default().fg(FG),
-        ),
-        Span::styled(
-            &app.model_name,
-            Style::default().fg(MUTED),
-        ),
+        Span::styled(format!("  {}  ", app.cwd), Style::default().fg(FG)),
+        Span::styled(&app.model_name, Style::default().fg(MUTED)),
     ];
 
-    // right-align cost
     let cost = app.cost_usd();
     let total = app.context_used();
     if total > 0 {
@@ -379,242 +506,269 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(stats_str, Style::default().fg(MUTED)));
     }
 
-    let header = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(BG));
-    frame.render_widget(header, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
+        area,
+    );
 }
 
 fn render_user_message(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(ref msg) = app.current_message {
-        let lines = vec![Line::from(vec![
+        let widget = Paragraph::new(Line::from(vec![
             Span::styled("\u{203a} ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(msg.as_str(), Style::default().fg(FG)),
-        ])];
-
-        let widget = Paragraph::new(lines)
-            .style(Style::default().bg(BG))
-            .wrap(Wrap { trim: false });
+        ]))
+        .style(Style::default().bg(BG))
+        .wrap(Wrap { trim: false });
         frame.render_widget(widget, area);
     }
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    let input_lines = vec![Line::from(vec![
+    let widget = Paragraph::new(Line::from(vec![
         Span::styled("\u{203a} ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(&app.input, Style::default().fg(FG)),
         Span::styled("\u{2588}", Style::default().fg(ACCENT)),
-    ])];
-
-    let widget = Paragraph::new(input_lines)
-        .style(Style::default().bg(BG))
-        .wrap(Wrap { trim: false });
+    ]))
+    .style(Style::default().bg(BG))
+    .wrap(Wrap { trim: false });
     frame.render_widget(widget, area);
 }
 
 fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
+    let w = area.width;
 
-    for item in &app.activity {
+    let n = app.activity.len();
+    for (idx, item) in app.activity.iter().enumerate() {
         match item {
+            ActivityItem::Thinking(text) => {
+                let text = text.clone();
+                let style = Style::default().fg(DIM).add_modifier(Modifier::ITALIC);
+                let wrapped = wrap_text_with_bar(&text, w, style);
+                lines.extend(wrapped);
+            }
             ActivityItem::Text(text) => {
+                let text = text.clone();
+
+                // blank line above text if previous item was a tool
+                if idx > 0 && matches!(&app.activity[idx - 1], ActivityItem::Tool(_)) {
+                    lines.push(Line::from(Span::styled(BAR_STR, Style::default().fg(BAR_COLOR))));
+                }
+
                 let mut md = crate::markdown::TuiMarkdownRenderer::new();
-                let md_lines = md.render_lines(text);
-                for ml in md_lines {
-                    let mut all_spans = vec![
-                        Span::styled("\u{2502} ", Style::default().fg(BAR_COLOR)),
-                    ];
-                    all_spans.extend(ml.spans);
-                    lines.push(Line::from(all_spans));
+                let md_lines = md.render_lines(&text);
+                let wrapped = wrap_md_lines_with_bar(md_lines, w);
+                lines.extend(wrapped);
+
+                // blank line below text if next item is a tool
+                if idx + 1 < n && matches!(&app.activity[idx + 1], ActivityItem::Tool(_)) {
+                    lines.push(Line::from(Span::styled(BAR_STR, Style::default().fg(BAR_COLOR))));
                 }
             }
             ActivityItem::Tool(entry) => {
-                match &entry.status {
-                    ToolStatus::Running => {
-                        lines.push(tool_line(vec![
-                            Span::styled("\u{25cc} ", Style::default().fg(YELLOW)),
-                            Span::styled(
-                                entry.display.clone(),
-                                Style::default().fg(YELLOW),
-                            ),
-                        ]));
-                    }
-                    ToolStatus::Complete => {
-                        let mut spans = vec![
-                            Span::styled(
-                                entry.display.clone(),
-                                Style::default().fg(MUTED),
-                            ),
-                        ];
-
-                        if let Some(ref diff) = entry.diff {
-                            if diff.stat.additions > 0 {
-                                spans.push(Span::styled(
-                                    format!(" +{}", diff.stat.additions),
-                                    Style::default().fg(GREEN),
-                                ));
-                            }
-                            if diff.stat.deletions > 0 {
-                                spans.push(Span::styled(
-                                    format!(" -{}", diff.stat.deletions),
-                                    Style::default().fg(RED),
-                                ));
-                            }
-                        }
-
-                        lines.push(tool_line(spans));
-
-                        if entry.expanded {
-                            if let Some(ref diff) = entry.diff {
-                                lines.extend(build_diff_lines(diff));
-                            }
-                        }
-                    }
-                    ToolStatus::Error(e) => {
-                        let short = if e.len() > 80 {
-                            format!("{}...", &e[..77])
-                        } else {
-                            e.clone()
-                        };
-                        lines.push(tool_line(vec![
-                            Span::styled("\u{2717} ", Style::default().fg(RED)),
-                            Span::styled(
-                                format!("{} - {}", entry.display, short),
-                                Style::default().fg(RED),
-                            ),
-                        ]));
-                    }
-                }
+                render_tool_entry(&mut lines, entry, w);
             }
         }
     }
 
-    // thinking indicator when the model is actively thinking
-    if app.is_thinking {
-        let dots = match (app.elapsed_secs() * 2.0) as u32 % 4 {
-            0 => ".",
-            1 => "..",
-            2 => "...",
-            _ => "",
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  thinking{}", dots),
-                Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    }
-
-    // waiting indicator when running but nothing yet
-    if app.is_running && !app.is_thinking && lines.is_empty() {
+    // thinking / waiting indicators at the tail
+    if app.is_running && lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "  waiting...",
             Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
         )));
     }
 
+    // don't use Wrap here since we do manual wrapping above
     let activity = Paragraph::new(lines)
         .style(Style::default().bg(BG))
-        .wrap(Wrap { trim: false })
         .scroll((app.scroll_offset, 0));
 
     frame.render_widget(activity, area);
 }
 
+fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16) {
+    match &entry.status {
+        ToolStatus::Running => {
+            lines.push(tool_line(vec![
+                Span::styled("\u{25cc} ", Style::default().fg(YELLOW)),
+                Span::styled(entry.display.clone(), Style::default().fg(YELLOW)),
+            ]));
+        }
+        ToolStatus::Complete { exit_code } => {
+            let mut spans = vec![];
+
+            // show exit status for bash commands
+            if entry.name == "bash" {
+                match exit_code {
+                    Some(0) | None => {
+                        spans.push(Span::styled("\u{2713} ", Style::default().fg(GREEN)));
+                    }
+                    Some(code) => {
+                        spans.push(Span::styled(
+                            format!("\u{2717}({}) ", code),
+                            Style::default().fg(RED),
+                        ));
+                    }
+                }
+            }
+
+            spans.push(Span::styled(entry.display.clone(), Style::default().fg(MUTED)));
+
+            if let Some(ref diff) = entry.diff {
+                if diff.stat.additions > 0 {
+                    spans.push(Span::styled(
+                        format!(" +{}", diff.stat.additions),
+                        Style::default().fg(GREEN),
+                    ));
+                }
+                if diff.stat.deletions > 0 {
+                    spans.push(Span::styled(
+                        format!(" -{}", diff.stat.deletions),
+                        Style::default().fg(RED),
+                    ));
+                }
+            }
+
+            lines.push(tool_line(spans));
+
+            // show bash output (first few lines)
+            if let Some(ref output) = entry.output {
+                let display = strip_exit_prefix(output);
+                let out_lines: Vec<&str> = display.lines().take(8).collect();
+                for ol in &out_lines {
+                    lines.push(tool_line(vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled((*ol).to_string(), Style::default().fg(DIM)),
+                    ]));
+                }
+                let total_lines = display.lines().count();
+                if total_lines > 8 {
+                    lines.push(tool_line(vec![
+                        Span::styled(
+                            format!("  ...{} more lines", total_lines - 8),
+                            Style::default().fg(DIM),
+                        ),
+                    ]));
+                }
+            }
+
+            // show expanded diff
+            if entry.expanded {
+                if let Some(ref diff) = entry.diff {
+                    lines.extend(build_diff_lines(diff));
+                }
+            }
+        }
+        ToolStatus::Error(e) => {
+            let short = if e.len() > 80 { format!("{}...", &e[..77]) } else { e.clone() };
+            lines.push(tool_line(vec![
+                Span::styled("\u{2717} ", Style::default().fg(RED)),
+                Span::styled(
+                    format!("{} - {}", entry.display, short),
+                    Style::default().fg(RED),
+                ),
+            ]));
+        }
+    }
+}
+
 fn render_metrics(frame: &mut Frame, app: &App, area: Rect) {
-    // split: left side for sparkline, right side for context gauge
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(60),
-            Constraint::Percentage(40),
-        ])
-        .split(area);
+    // single-line metrics: sparkline | stats | context bar
+    //
+    // layout: [sparkline 12 chars] [stats] [padding] [context]
+    let w = area.width as usize;
 
-    // left: sparkline + stats label
-    let left_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // stats line
-            Constraint::Min(1),   // sparkline
-        ])
-        .split(cols[0]);
-
-    let elapsed = app.elapsed_secs();
     let rate = app.avg_rate();
-    let stats_line = Line::from(vec![
-        Span::styled("out ", Style::default().fg(DIM)),
-        Span::styled(
-            format!("{}", app.total_output),
-            Style::default().fg(MUTED),
-        ),
-        Span::styled("  in ", Style::default().fg(DIM)),
-        Span::styled(
-            format!("{}", app.total_input),
-            Style::default().fg(MUTED),
-        ),
-        Span::styled("  ", Style::default()),
-        Span::styled(
-            format!("{:.0} tok/s", rate),
-            Style::default().fg(ACCENT),
-        ),
-        Span::styled("  ", Style::default()),
-        Span::styled(
-            format!("{:.1}s", elapsed),
-            Style::default().fg(DIM),
-        ),
-    ]);
-
-    let stats_widget = Paragraph::new(stats_line)
-        .style(Style::default().bg(BG));
-    frame.render_widget(stats_widget, left_rows[0]);
-
-    let spark_data: Vec<u64> = if app.rate_samples.is_empty() {
-        vec![0]
-    } else {
-        app.rate_samples.clone()
-    };
-
-    let sparkline = Sparkline::default()
-        .data(&spark_data)
-        .style(Style::default().fg(ACCENT).bg(BG));
-    frame.render_widget(sparkline, left_rows[1]);
-
-    // right: context gauge
-    let right_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // label
-            Constraint::Min(1),   // gauge
-        ])
-        .split(cols[1]);
-
     let pct = app.context_pct();
-    let used = app.context_used();
-    let limit = app.context_limit;
-    let context_label = Line::from(vec![
-        Span::styled("context ", Style::default().fg(DIM)),
-        Span::styled(
-            format!("{}k / {}k", used / 1000, limit / 1000),
-            Style::default().fg(MUTED),
-        ),
-        Span::styled(
-            format!("  {:.0}%", pct * 100.0),
-            Style::default().fg(if pct > 0.8 { RED } else if pct > 0.6 { YELLOW } else { MUTED }),
-        ),
-    ]);
+    let used_k = app.context_used() / 1000;
+    let limit_k = app.context_limit / 1000;
 
-    let label_widget = Paragraph::new(context_label)
-        .style(Style::default().bg(BG));
-    frame.render_widget(label_widget, right_rows[0]);
+    // context bar: 8 chars wide
+    let ctx_bar_width: usize = 8;
+    let filled = ((pct * ctx_bar_width as f64).round() as usize).min(ctx_bar_width);
+    let empty = ctx_bar_width - filled;
+    let ctx_color = if pct > 0.8 { RED } else if pct > 0.6 { YELLOW } else { ACCENT };
 
-    let gauge_color = if pct > 0.8 { RED } else if pct > 0.6 { YELLOW } else { ACCENT };
+    // build the right side: "  123k/200k [========] 62%"
+    let ctx_label = format!("{}k/{}k", used_k, limit_k);
+    let ctx_pct = format!("{:.0}%", pct * 100.0);
 
-    let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(gauge_color).bg(Color::Rgb(30, 33, 40)))
-        .ratio(pct)
-        .label("")
-        .style(Style::default().bg(BG));
-    frame.render_widget(gauge, right_rows[1]);
+    // build spans from left to right
+    let mut spans: Vec<Span> = Vec::new();
+
+    // sparkline as braille-style bar using block chars
+    let spark_width: usize = 16;
+    let spark_str = render_inline_sparkline(&app.rate_samples, spark_width);
+    spans.push(Span::styled(spark_str, Style::default().fg(ACCENT)));
+    spans.push(Span::styled(" ", Style::default()));
+
+    // stats
+    spans.push(Span::styled(
+        format!("{:.0} tok/s", rate),
+        Style::default().fg(MUTED),
+    ));
+    spans.push(Span::styled("  ", Style::default()));
+    spans.push(Span::styled(
+        format!("${:.3}", app.cost_usd()),
+        Style::default().fg(DIM),
+    ));
+
+    // compute padding between stats and context
+    let left_used: usize = spark_width + 1
+        + format!("{:.0} tok/s", rate).len() + 2
+        + format!("${:.3}", app.cost_usd()).len();
+    let right_len = 2 + ctx_label.len() + 1 + 1 + ctx_bar_width + 1 + 1 + ctx_pct.len();
+    let pad = w.saturating_sub(left_used + right_len);
+    spans.push(Span::styled(" ".repeat(pad), Style::default()));
+
+    // context
+    spans.push(Span::styled(format!("  {}", ctx_label), Style::default().fg(DIM)));
+    spans.push(Span::styled(" [", Style::default().fg(DIM)));
+    spans.push(Span::styled(
+        "\u{2588}".repeat(filled),
+        Style::default().fg(ctx_color),
+    ));
+    spans.push(Span::styled(
+        "\u{2591}".repeat(empty),
+        Style::default().fg(Color::Rgb(30, 33, 40)),
+    ));
+    spans.push(Span::styled("] ", Style::default().fg(DIM)));
+    spans.push(Span::styled(
+        ctx_pct,
+        Style::default().fg(ctx_color),
+    ));
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
+        area,
+    );
+}
+
+// render a tiny inline sparkline using block characters
+fn render_inline_sparkline(samples: &[u64], width: usize) -> String {
+    let blocks = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+
+    if samples.is_empty() {
+        return " ".repeat(width);
+    }
+
+    // take the last `width` samples
+    let start = samples.len().saturating_sub(width);
+    let window = &samples[start..];
+    let max = window.iter().copied().max().unwrap_or(1).max(1);
+
+    let mut out = String::with_capacity(width);
+    // pad if fewer samples than width
+    for _ in 0..(width.saturating_sub(window.len())) {
+        out.push(' ');
+    }
+    for &v in window {
+        let idx = ((v as f64 / max as f64) * 8.0).round() as usize;
+        out.push(blocks[idx.min(8)]);
+    }
+    out
 }
 
 fn build_diff_lines(diff: &DiffInfo) -> Vec<Line<'static>> {
@@ -626,17 +780,10 @@ fn build_diff_lines(diff: &DiffInfo) -> Vec<Line<'static>> {
                 DiffLineTag::Insert => ("+", GREEN),
                 DiffLineTag::Delete => ("-", RED),
             };
-
             let content = dl.content.trim_end_matches('\n').to_string();
             out.push(tool_line(vec![
-                Span::styled(
-                    format!("  {}", prefix),
-                    Style::default().fg(color),
-                ),
-                Span::styled(
-                    content,
-                    Style::default().fg(color),
-                ),
+                Span::styled(format!("  {}", prefix), Style::default().fg(color)),
+                Span::styled(content, Style::default().fg(color)),
             ]));
         }
     }
@@ -742,19 +889,10 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         }
         KeyCode::Up => return InputAction::ScrollUp,
         KeyCode::Down => return InputAction::ScrollDown,
-        KeyCode::PageUp => {
-            app.scroll_offset = app.scroll_offset.saturating_sub(10);
-            return InputAction::None;
-        }
-        KeyCode::PageDown => {
-            app.scroll_offset = app.scroll_offset.saturating_add(10);
-            return InputAction::None;
-        }
         KeyCode::Char(c) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'o' {
                 return InputAction::ToggleDiff;
             }
-
             app.input.insert(app.cursor_pos, c);
             app.cursor_pos += 1;
         }
