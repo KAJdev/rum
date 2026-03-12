@@ -979,8 +979,12 @@ impl TuiMarkdownRenderer {
 
     pub fn render_lines(&mut self, text: &str) -> Vec<RLine<'static>> {
         let mut output = Vec::new();
+        let all_lines: Vec<&str> = text.lines().collect();
+        let mut idx = 0;
 
-        for line in text.lines() {
+        while idx < all_lines.len() {
+            let line = all_lines[idx];
+
             // code fence
             if line.starts_with("```") {
                 if self.in_code_block {
@@ -1003,6 +1007,7 @@ impl TuiMarkdownRenderer {
                     )));
                     self.in_code_block = true;
                 }
+                idx += 1;
                 continue;
             }
 
@@ -1014,6 +1019,17 @@ impl TuiMarkdownRenderer {
                         RStyle::default().fg(TUI_FG).bg(TUI_CODE_BG),
                     ),
                 ]));
+                idx += 1;
+                continue;
+            }
+
+            // table block: collect consecutive table rows and render together
+            if is_table_row(line) {
+                let start = idx;
+                while idx < all_lines.len() && is_table_row(all_lines[idx]) {
+                    idx += 1;
+                }
+                output.extend(render_tui_table(&all_lines[start..idx]));
                 continue;
             }
 
@@ -1026,6 +1042,7 @@ impl TuiMarkdownRenderer {
                     "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
                     RStyle::default().fg(TUI_DIM),
                 )));
+                idx += 1;
                 continue;
             }
 
@@ -1035,6 +1052,7 @@ impl TuiMarkdownRenderer {
                     line[2..].to_string(),
                     RStyle::default().fg(TUI_YELLOW).add_modifier(RModifier::BOLD),
                 )));
+                idx += 1;
                 continue;
             }
             if line.starts_with("## ") {
@@ -1042,6 +1060,7 @@ impl TuiMarkdownRenderer {
                     line[3..].to_string(),
                     RStyle::default().fg(TUI_CYAN).add_modifier(RModifier::BOLD),
                 )));
+                idx += 1;
                 continue;
             }
             if line.starts_with("### ") || line.starts_with("#### ") {
@@ -1050,6 +1069,7 @@ impl TuiMarkdownRenderer {
                     line[text_start..].to_string(),
                     RStyle::default().fg(TUI_PURPLE).add_modifier(RModifier::BOLD),
                 )));
+                idx += 1;
                 continue;
             }
 
@@ -1062,6 +1082,7 @@ impl TuiMarkdownRenderer {
                         RStyle::default().fg(TUI_MUTED).add_modifier(RModifier::ITALIC),
                     ),
                 ]));
+                idx += 1;
                 continue;
             }
 
@@ -1072,6 +1093,7 @@ impl TuiMarkdownRenderer {
                 ];
                 spans.extend(tui_inline_spans(&line[2..]));
                 output.push(RLine::from(spans));
+                idx += 1;
                 continue;
             }
 
@@ -1079,27 +1101,135 @@ impl TuiMarkdownRenderer {
             if let Some((num, rest)) = parse_ordered_list(line) {
                 let mut spans = vec![
                     RSpan::styled(
-                        format!("  {}. ", num),
+                        format!("  {num}. "),
                         RStyle::default().fg(TUI_ACCENT),
                     ),
                 ];
                 spans.extend(tui_inline_spans(rest));
                 output.push(RLine::from(spans));
+                idx += 1;
                 continue;
             }
 
             // empty line
             if line.is_empty() {
                 output.push(RLine::from(""));
+                idx += 1;
                 continue;
             }
 
             // regular text with inline formatting
             output.push(RLine::from(tui_inline_spans(line)));
+            idx += 1;
         }
 
         output
     }
+}
+
+fn is_table_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !is_table_row(trimmed) {
+        return false;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    inner
+        .split('|')
+        .all(|cell| cell.trim().chars().all(|c| c == '-' || c == ':'))
+}
+
+fn parse_table_cells(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    let inner = if trimmed.starts_with('|') && trimmed.ends_with('|') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    inner.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+fn render_tui_table(rows: &[&str]) -> Vec<RLine<'static>> {
+    let mut output = Vec::new();
+
+    let parsed: Vec<Vec<String>> = rows.iter().map(|r| parse_table_cells(r)).collect();
+    let num_cols = parsed.iter().map(|r| r.len()).max().unwrap_or(0);
+    if num_cols == 0 {
+        return output;
+    }
+
+    let sep_idx = rows
+        .iter()
+        .position(|r| is_table_separator(r));
+
+    // column widths based on content (excluding separator row)
+    let mut col_widths = vec![0usize; num_cols];
+    for (row_idx, cells) in parsed.iter().enumerate() {
+        if Some(row_idx) == sep_idx {
+            continue;
+        }
+        for (col_idx, cell) in cells.iter().enumerate() {
+            if col_idx < num_cols {
+                col_widths[col_idx] = col_widths[col_idx].max(cell.len());
+            }
+        }
+    }
+
+    let pipe_style = RStyle::default().fg(TUI_DIM);
+    let sep_style = RStyle::default().fg(TUI_DIM);
+
+    for (row_idx, cells) in parsed.iter().enumerate() {
+        if Some(row_idx) == sep_idx {
+            // horizontal separator: ─┼─ between columns
+            let mut spans: Vec<RSpan<'static>> = Vec::new();
+            for (col_idx, width) in col_widths.iter().enumerate() {
+                if col_idx > 0 {
+                    spans.push(RSpan::styled("\u{2500}\u{253c}\u{2500}", sep_style));
+                }
+                spans.push(RSpan::styled(
+                    "\u{2500}".repeat(*width),
+                    sep_style,
+                ));
+            }
+            output.push(RLine::from(spans));
+            continue;
+        }
+
+        let is_header = sep_idx == Some(row_idx + 1);
+
+        let mut spans: Vec<RSpan<'static>> = Vec::new();
+        for (col_idx, width) in col_widths.iter().enumerate() {
+            if col_idx > 0 {
+                spans.push(RSpan::styled(" \u{2502} ", pipe_style));
+            }
+            let cell = cells.get(col_idx).map(|s| s.as_str()).unwrap_or("");
+            let padding = width.saturating_sub(cell.len());
+
+            if is_header {
+                spans.push(RSpan::styled(
+                    cell.to_string(),
+                    RStyle::default()
+                        .fg(TUI_FG)
+                        .add_modifier(RModifier::BOLD),
+                ));
+            } else {
+                spans.extend(tui_inline_spans(cell));
+            }
+            if padding > 0 {
+                spans.push(RSpan::styled(
+                    " ".repeat(padding),
+                    RStyle::default(),
+                ));
+            }
+        }
+        output.push(RLine::from(spans));
+    }
+
+    output
 }
 
 // parse inline markdown into ratatui spans
