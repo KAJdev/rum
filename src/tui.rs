@@ -742,6 +742,14 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         }
         KeyCode::Up => return InputAction::ScrollUp,
         KeyCode::Down => return InputAction::ScrollDown,
+        KeyCode::PageUp => {
+            app.scroll_offset = app.scroll_offset.saturating_sub(10);
+            return InputAction::None;
+        }
+        KeyCode::PageDown => {
+            app.scroll_offset = app.scroll_offset.saturating_add(10);
+            return InputAction::None;
+        }
         KeyCode::Char(c) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'o' {
                 return InputAction::ToggleDiff;
