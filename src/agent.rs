@@ -121,9 +121,10 @@ impl Agent {
 
         let result = self.run_turn(event_tx).await;
 
-        // on cancel, restore messages to pre-turn state
-        // to maintain valid user/assistant alternation for the next turn
-        if self.cancel.is_cancelled() {
+        // if cancelled before any response was produced, remove the
+        // dangling user message to maintain valid alternation.
+        // completed work from partial turns is preserved by run_turn.
+        if self.cancel.is_cancelled() && self.messages.len() == pre_len + 1 {
             self.messages.truncate(pre_len);
         }
 
@@ -300,8 +301,70 @@ impl Agent {
                 output_tokens,
             });
 
-            // bail out if cancelled
+            // bail out if cancelled, preserving any completed work
             if self.cancel.is_cancelled() {
+                // finalize any in-progress content blocks from the stream
+                if in_thinking && !current_thinking.is_empty() {
+                    let sig = if current_thinking_signature.is_empty() {
+                        None
+                    } else {
+                        Some(current_thinking_signature.clone())
+                    };
+                    response_blocks.push(ContentBlock::Thinking {
+                        thinking: current_thinking.clone(),
+                        signature: sig,
+                    });
+                }
+                if in_text && !current_text.is_empty() {
+                    response_blocks.push(ContentBlock::Text {
+                        text: current_text.clone(),
+                    });
+                }
+
+                // save the partial assistant response and provide cancel
+                // results for any tool_use blocks missing results
+                if !response_blocks.is_empty() {
+                    let tool_use_ids: Vec<String> = response_blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                            _ => None,
+                        })
+                        .collect();
+
+                    self.messages.push(Message {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Blocks(response_blocks),
+                    });
+
+                    if !tool_use_ids.is_empty() {
+                        let mut result_blocks = Vec::new();
+                        for id in &tool_use_ids {
+                            if let Some(result) = tool_results.remove(id.as_str()) {
+                                let (content, is_error) = match result {
+                                    ToolResult::Success { output, .. } => (output, None),
+                                    ToolResult::Error(e) => (e, Some(true)),
+                                };
+                                result_blocks.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content,
+                                    is_error,
+                                });
+                            } else {
+                                result_blocks.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: "cancelled by user".to_string(),
+                                    is_error: Some(true),
+                                });
+                            }
+                        }
+                        self.messages.push(Message {
+                            role: "user".to_string(),
+                            content: MessageContent::Blocks(result_blocks),
+                        });
+                    }
+                }
+
                 let _ = event_tx.send(AgentEvent::TurnComplete);
                 break;
             }
