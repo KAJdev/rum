@@ -83,7 +83,7 @@ pub struct App {
     pub should_quit: bool,
     pub scroll_offset: u16,
     // when true, viewport follows new content to the bottom
-    auto_scroll: bool,
+    pub auto_scroll: bool,
     model_name: String,
     cwd: String,
     current_tool_input: String,
@@ -901,6 +901,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
             KeyCode::Up => return InputAction::ScrollUp,
             KeyCode::Down => return InputAction::ScrollDown,
             KeyCode::PageUp => {
+                app.auto_scroll = false;
                 app.scroll_offset = app.scroll_offset.saturating_sub(10);
                 return InputAction::None;
             }

@@ -117,7 +117,7 @@ impl Agent {
 
             let stream_handle = tokio::spawn(async move {
                 let client = reqwest::Client::new();
-                let _ = stream_request(
+                if let Err(e) = stream_request(
                     &client,
                     &client_api_key,
                     &client_base_url,
@@ -126,9 +126,14 @@ impl Agent {
                     &system,
                     &thinking,
                     &tools_json,
-                    stream_tx,
+                    stream_tx.clone(),
                 )
-                .await;
+                .await
+                {
+                    let _ = stream_tx.send(StreamEvent::Error(
+                        format!("stream error: {}", e),
+                    ));
+                }
             });
 
             let mut response_blocks: Vec<ContentBlock> = Vec::new();
@@ -265,6 +270,16 @@ impl Agent {
                 break;
             }
 
+            // if we got no response blocks at all, something went wrong
+            // (stream died, network error, etc.)
+            if response_blocks.is_empty() && stop_reason.is_none() {
+                let _ = event_tx.send(AgentEvent::Error(
+                    "stream ended without a response".to_string(),
+                ));
+                let _ = event_tx.send(AgentEvent::TurnComplete);
+                break;
+            }
+
             // add assistant message
             self.messages.push(Message {
                 role: "assistant".to_string(),
@@ -387,7 +402,15 @@ async fn stream_request(
     let mut buffer = String::new();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(StreamEvent::Error(
+                    format!("stream read error: {}", e),
+                ));
+                return Ok(());
+            }
+        };
         buffer.push_str(&String::from_utf8_lossy(&chunk));
 
         while let Some(pos) = buffer.find("\n\n") {

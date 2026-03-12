@@ -208,6 +208,7 @@ async fn run_tui_mode(
                     }
                     tui::InputAction::Quit => break,
                     tui::InputAction::ScrollUp => {
+                        app.auto_scroll = false;
                         app.scroll_offset = app.scroll_offset.saturating_sub(1);
                     }
                     tui::InputAction::ScrollDown => {
