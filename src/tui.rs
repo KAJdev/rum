@@ -321,6 +321,17 @@ impl App {
         self.queued_messages.clear();
     }
 
+    // pop the last queued message back into the input for editing
+    pub fn pop_queued_message(&mut self) -> bool {
+        if let Some(msg) = self.queued_messages.pop() {
+            self.input = msg;
+            self.cursor_pos = self.char_count();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn toggle_diff(&mut self) {
         self.diffs_expanded = !self.diffs_expanded;
         for item in &mut self.activity {
@@ -1560,6 +1571,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         KeyCode::Up => {
             if app.input_line_count() > 1 && app.move_cursor_up() {
                 // moved within multi-line input
+            } else if app.input.is_empty() && app.pop_queued_message() {
+                // popped last queued message into input
             } else {
                 return InputAction::ScrollUp;
             }

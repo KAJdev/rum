@@ -110,18 +110,20 @@ you can type and submit messages while the agent is running. queued messages are
 | Ctrl+U | delete to line start |
 | Ctrl+K | delete to line end |
 | Ctrl+W / Alt+Backspace | delete word backward |
+| Alt+D | delete word forward |
 | Cmd+Backspace | delete to line start |
 
 scrolling up disables auto-scroll. scrolling back to the bottom re-engages it.
 
 ## tools
 
-rum provides four tools to the model:
+rum provides five tools to the model:
 
 - **read**: read file contents with optional line offset/limit (defaults to 2000 lines, truncates at ~50KB)
 - **bash**: execute shell commands with configurable timeout (default 120s)
 - **edit**: surgical find-and-replace edits (requires a unique exact match of `oldText`)
 - **write**: create or overwrite files, creating parent directories as needed
+- **web_search**: search the web via DuckDuckGo, returning titles, URLs, and snippets
 
 tool results are displayed inline in the activity feed. edit and write tools show inline diffs with addition/deletion counts. bash output is shown truncated to the first 8 lines.
 
