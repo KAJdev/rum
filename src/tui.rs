@@ -651,9 +651,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(input_height),
-            Constraint::Min(4),
+            Constraint::Length(1),           // header
+            Constraint::Length(input_height), // input / user message
+            Constraint::Length(1),           // buffer after input
+            Constraint::Min(4),             // activity feed
+            Constraint::Length(1),           // buffer before bottom edge
         ])
         .split(size);
 
@@ -665,7 +667,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_input(frame, app, chunks[1]);
     }
 
-    render_activity(frame, app, chunks[2]);
+    // chunks[2] is the buffer after input
+    render_activity(frame, app, chunks[3]);
+    // chunks[4] is the buffer at the bottom
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
