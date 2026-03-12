@@ -790,13 +790,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let max_input = (size.height / 3).max(2);
 
     // slash command hints shown when input starts with "/"
-    let slash_hints: Vec<&SlashDef> = if !app.is_running && app.input.starts_with('/') {
+    let slash_hints: Vec<&SlashDef> = if app.input.starts_with('/') {
         matching_slash_hints(&app.input)
     } else {
         vec![]
     };
 
-    let message_height: u16 = if app.is_running {
+    let message_height: u16 = if !slash_hints.is_empty() {
+        (slash_hints.len() as u16).min(6)
+    } else if app.is_running {
         let mut total: u16 = 0;
         if let Some(ref msg) = app.current_message {
             total += visual_line_count(msg, size.width, 2) as u16;
@@ -805,8 +807,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             total += visual_line_count(qm, size.width, 2) as u16;
         }
         total
-    } else if !slash_hints.is_empty() {
-        (slash_hints.len() as u16).min(6)
     } else {
         0
     };
@@ -1085,7 +1085,7 @@ fn render_message_area(frame: &mut Frame, app: &App, area: Rect, slash_hints: &[
 
     let mut lines: Vec<Line> = Vec::new();
 
-    if app.is_running {
+    if app.is_running && slash_hints.is_empty() {
         let spin = spinner_char(app.spin_frame);
         if let Some(ref msg) = app.current_message {
             lines.extend(wrap_message_lines(msg, area.width, Style::default().fg(ACCENT), Some(spin)));
@@ -1618,7 +1618,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 app.input.insert(bp, '\n');
                 app.cursor_pos += 1;
             } else if !app.input.is_empty() {
-                if app.is_running {
+                // slash commands are dispatched immediately even during a running turn
+                if app.is_running && !app.input.starts_with('/') {
                     app.queue_message();
                 } else {
                     let msg = app.input.clone();
