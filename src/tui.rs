@@ -27,7 +27,26 @@ const YELLOW: Color = Color::Rgb(255, 180, 84);
 const DIM: Color = Color::Rgb(86, 91, 102);
 const BAR_COLOR: Color = Color::Rgb(60, 65, 75);
 
+const THINKING_COLOR: Color = Color::Rgb(180, 140, 255);
+const TOOL_COLOR: Color = Color::Rgb(100, 200, 220);
+const INPUT_COLOR: Color = Color::Rgb(80, 130, 190);
+
 const DEFAULT_CONTEXT: u32 = 200_000;
+
+// tokens accumulated in a single time bucket, broken down by type
+#[derive(Clone, Default)]
+struct TokenBucket {
+    text: u32,
+    thinking: u32,
+    tool: u32,
+    input: u32,
+}
+
+impl TokenBucket {
+    fn total(&self) -> u64 {
+        (self.text + self.thinking + self.tool + self.input) as u64
+    }
+}
 
 // the bar prefix string and its display width
 const BAR_STR: &str = "\u{2502} ";
@@ -76,8 +95,8 @@ pub struct App {
     last_input: u32,
     last_output: u32,
     context_limit: u32,
-    rate_samples: Vec<u64>,
-    rate_bucket_tokens: u32,
+    rate_samples: Vec<TokenBucket>,
+    rate_bucket: TokenBucket,
     last_sample: Instant,
     pub is_running: bool,
     pub should_quit: bool,
@@ -107,7 +126,7 @@ impl App {
             last_output: 0,
             context_limit,
             rate_samples: Vec::new(),
-            rate_bucket_tokens: 0,
+            rate_bucket: TokenBucket::default(),
             last_sample: Instant::now(),
             is_running: false,
             should_quit: false,
@@ -123,9 +142,9 @@ impl App {
 
     pub fn tick_rate(&mut self) {
         let now = Instant::now();
-        if now.duration_since(self.last_sample).as_millis() >= 500 {
-            self.rate_samples.push(self.rate_bucket_tokens as u64);
-            self.rate_bucket_tokens = 0;
+        if now.duration_since(self.last_sample).as_millis() >= 2000 {
+            self.rate_samples.push(self.rate_bucket.clone());
+            self.rate_bucket = TokenBucket::default();
             self.last_sample = now;
             if self.rate_samples.len() > 120 {
                 self.rate_samples.remove(0);
@@ -140,6 +159,8 @@ impl App {
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Thinking(t) => {
+                let approx = (t.len() as u32 / 4).max(1);
+                self.rate_bucket.thinking += approx;
                 if let Some(ActivityItem::Thinking(ref mut s)) = self.activity.last_mut() {
                     s.push_str(&t);
                 } else {
@@ -148,7 +169,7 @@ impl App {
             }
             AgentEvent::Text(t) => {
                 let approx = (t.len() as u32 / 4).max(1);
-                self.rate_bucket_tokens += approx;
+                self.rate_bucket.text += approx;
                 if let Some(ActivityItem::Text(ref mut s)) = self.activity.last_mut() {
                     s.push_str(&t);
                 } else {
@@ -167,6 +188,8 @@ impl App {
                 }));
             }
             AgentEvent::ToolInputDelta(json) => {
+                let approx = (json.len() as u32 / 4).max(1);
+                self.rate_bucket.tool += approx;
                 self.current_tool_input.push_str(&json);
                 if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.last_mut() {
                     if let Ok(partial) =
@@ -220,6 +243,7 @@ impl App {
                 self.total_output += output_tokens;
                 self.last_input = input_tokens;
                 self.last_output = output_tokens;
+                self.rate_bucket.input += input_tokens;
             }
             AgentEvent::TurnComplete => {
                 self.is_running = false;
@@ -739,9 +763,7 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
 }
 
 fn render_metrics(frame: &mut Frame, app: &App, area: Rect) {
-    // single-line metrics: sparkline | stats | context bar
-    //
-    // layout: [sparkline 12 chars] [stats] [padding] [context]
+    // layout: [sparkline] [stats] [padding] [context bar]
     let w = area.width as usize;
 
     let rate = app.avg_rate();
@@ -755,17 +777,15 @@ fn render_metrics(frame: &mut Frame, app: &App, area: Rect) {
     let empty = ctx_bar_width - filled;
     let ctx_color = if pct > 0.8 { RED } else if pct > 0.6 { YELLOW } else { ACCENT };
 
-    // build the right side: "  123k/200k [========] 62%"
     let ctx_label = format!("{}k/{}k", used_k, limit_k);
     let ctx_pct = format!("{:.0}%", pct * 100.0);
 
-    // build spans from left to right
     let mut spans: Vec<Span> = Vec::new();
 
-    // sparkline as braille-style bar using block chars
+    // colored sparkline
     let spark_width: usize = 16;
-    let spark_str = render_inline_sparkline(&app.rate_samples, spark_width);
-    spans.push(Span::styled(spark_str, Style::default().fg(ACCENT)));
+    let spark_spans = render_colored_sparkline(&app.rate_samples, spark_width);
+    spans.extend(spark_spans);
     spans.push(Span::styled(" ", Style::default()));
 
     // stats
@@ -779,7 +799,7 @@ fn render_metrics(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(DIM),
     ));
 
-    // compute padding between stats and context
+    // padding between stats and context
     let left_used: usize = spark_width + 1
         + format!("{:.0} tok/s", rate).len() + 2
         + format!("${:.3}", app.cost_usd()).len();
@@ -810,29 +830,79 @@ fn render_metrics(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-// render a tiny inline sparkline using block characters
-fn render_inline_sparkline(samples: &[u64], width: usize) -> String {
+// render a sparkline where each bar is colored by the dominant token type
+// in that bucket. colors: text=accent, thinking=purple, tool=cyan, input=blue.
+fn render_colored_sparkline(samples: &[TokenBucket], width: usize) -> Vec<Span<'static>> {
     let blocks = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
 
     if samples.is_empty() {
-        return " ".repeat(width);
+        return vec![Span::styled(" ".repeat(width), Style::default())];
     }
 
-    // take the last `width` samples
     let start = samples.len().saturating_sub(width);
     let window = &samples[start..];
-    let max = window.iter().copied().max().unwrap_or(1).max(1);
+    let max = window.iter().map(|b| b.total()).max().unwrap_or(1).max(1);
 
-    let mut out = String::with_capacity(width);
-    // pad if fewer samples than width
-    for _ in 0..(width.saturating_sub(window.len())) {
-        out.push(' ');
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    // leading padding
+    let pad_count = width.saturating_sub(window.len());
+    if pad_count > 0 {
+        spans.push(Span::styled(" ".repeat(pad_count), Style::default()));
     }
-    for &v in window {
-        let idx = ((v as f64 / max as f64) * 8.0).round() as usize;
-        out.push(blocks[idx.min(8)]);
+
+    // batch consecutive chars with the same color into a single span
+    let mut run_color: Option<Color> = None;
+    let mut run_chars = String::new();
+
+    for bucket in window {
+        let total = bucket.total();
+        let idx = ((total as f64 / max as f64) * 8.0).round() as usize;
+        let ch = blocks[idx.min(8)];
+
+        // pick color from the dominant token type
+        let color = if total == 0 {
+            DIM
+        } else {
+            dominant_color(bucket)
+        };
+
+        if run_color == Some(color) {
+            run_chars.push(ch);
+        } else {
+            if !run_chars.is_empty() {
+                spans.push(Span::styled(
+                    run_chars.clone(),
+                    Style::default().fg(run_color.unwrap_or(DIM)),
+                ));
+            }
+            run_chars.clear();
+            run_chars.push(ch);
+            run_color = Some(color);
+        }
     }
-    out
+    if !run_chars.is_empty() {
+        spans.push(Span::styled(
+            run_chars,
+            Style::default().fg(run_color.unwrap_or(DIM)),
+        ));
+    }
+
+    spans
+}
+
+// pick the color of whichever token type contributed the most to this bucket
+fn dominant_color(bucket: &TokenBucket) -> Color {
+    let pairs = [
+        (bucket.text, ACCENT),
+        (bucket.thinking, THINKING_COLOR),
+        (bucket.tool, TOOL_COLOR),
+        (bucket.input, INPUT_COLOR),
+    ];
+    pairs.iter()
+        .max_by_key(|(count, _)| *count)
+        .map(|(_, color)| *color)
+        .unwrap_or(ACCENT)
 }
 
 fn build_diff_lines(diff: &DiffInfo) -> Vec<Line<'static>> {
