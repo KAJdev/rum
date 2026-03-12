@@ -46,10 +46,10 @@ enum ActivityItem {
 #[derive(Debug, Clone)]
 struct ToolEntry {
     name: String,
-    display: String,
+    // argument portion (path, command, etc.) shown after the tool label
+    arg: String,
     status: ToolStatus,
     diff: Option<DiffInfo>,
-    // captured output (bash stdout/stderr, truncated)
     output: Option<String>,
     expanded: bool,
 }
@@ -148,7 +148,7 @@ impl App {
                 self.current_tool_input.clear();
                 self.activity.push(ActivityItem::Tool(ToolEntry {
                     name: name.clone(),
-                    display: format!("{}...", name),
+                    arg: String::new(),
                     status: ToolStatus::Running,
                     diff: None,
                     output: None,
@@ -161,7 +161,7 @@ impl App {
                     if let Ok(partial) =
                         serde_json::from_str::<serde_json::Value>(&self.current_tool_input)
                     {
-                        entry.display = format_tool_display(&entry.name, &partial);
+                        entry.arg = extract_tool_arg(&entry.name, &partial);
                     }
                 }
             }
@@ -171,7 +171,6 @@ impl App {
                 {
                     match &result {
                         ToolResult::Success { output, diff } => {
-                            // extract exit code from bash output
                             let exit_code = if name == "bash" {
                                 parse_exit_code(output)
                             } else {
@@ -179,11 +178,7 @@ impl App {
                             };
 
                             if let Some(d) = diff {
-                                entry.display = format!(
-                                    "{} {}",
-                                    capitalize_tool(&name),
-                                    d.path
-                                );
+                                entry.arg = d.path.clone();
                                 entry.diff = Some(d.clone());
                             }
 
@@ -296,30 +291,21 @@ fn capitalize_tool(name: &str) -> &str {
     }
 }
 
-fn format_tool_display(name: &str, input: &serde_json::Value) -> String {
+// extract the primary argument (path or command) from streaming tool input
+fn extract_tool_arg(name: &str, input: &serde_json::Value) -> String {
     match name {
-        "read" => {
-            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("...");
-            format!("Read {}", path)
-        }
-        "edit" => {
-            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("...");
-            format!("Edit {}", path)
-        }
-        "write" => {
-            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("...");
-            format!("Write {}", path)
+        "read" | "edit" | "write" => {
+            input.get("path").and_then(|v| v.as_str()).unwrap_or("...").to_string()
         }
         "bash" => {
             let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("...");
-            let short = if cmd.len() > 80 {
+            if cmd.len() > 80 {
                 format!("{}...", &cmd[..77])
             } else {
                 cmd.to_string()
-            };
-            format!("$ {}", short)
+            }
         }
-        _ => format!("{} ...", name),
+        _ => "...".to_string(),
     }
 }
 
@@ -544,16 +530,23 @@ fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
         match item {
             ActivityItem::Thinking(text) => {
                 let text = text.clone();
+                // empty line before thinking if preceded by something
+                if idx > 0 {
+                    lines.push(Line::from(""));
+                }
                 let style = Style::default().fg(DIM).add_modifier(Modifier::ITALIC);
                 let wrapped = wrap_text_with_bar(&text, w, style);
                 lines.extend(wrapped);
+                // empty line after thinking
+                if idx + 1 < n {
+                    lines.push(Line::from(""));
+                }
             }
             ActivityItem::Text(text) => {
                 let text = text.clone();
-
-                // blank line above text if previous item was a tool
-                if idx > 0 && matches!(&app.activity[idx - 1], ActivityItem::Tool(_)) {
-                    lines.push(Line::from(Span::styled(BAR_STR, Style::default().fg(BAR_COLOR))));
+                // empty line before text if preceded by something
+                if idx > 0 {
+                    lines.push(Line::from(""));
                 }
 
                 let mut md = crate::markdown::TuiMarkdownRenderer::new();
@@ -561,9 +554,9 @@ fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
                 let wrapped = wrap_md_lines_with_bar(md_lines, w);
                 lines.extend(wrapped);
 
-                // blank line below text if next item is a tool
-                if idx + 1 < n && matches!(&app.activity[idx + 1], ActivityItem::Tool(_)) {
-                    lines.push(Line::from(Span::styled(BAR_STR, Style::default().fg(BAR_COLOR))));
+                // empty line after text
+                if idx + 1 < n {
+                    lines.push(Line::from(""));
                 }
             }
             ActivityItem::Tool(entry) => {
@@ -589,17 +582,27 @@ fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16) {
+    let label = capitalize_tool(&entry.name);
+    let has_output = entry.output.is_some() || entry.diff.is_some();
+
     match &entry.status {
         ToolStatus::Running => {
-            lines.push(tool_line(vec![
+            let mut spans = vec![
                 Span::styled("\u{25cc} ", Style::default().fg(YELLOW)),
-                Span::styled(entry.display.clone(), Style::default().fg(YELLOW)),
-            ]));
+                Span::styled(label.to_string(), Style::default().fg(YELLOW)),
+            ];
+            if !entry.arg.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", entry.arg),
+                    Style::default().fg(MUTED),
+                ));
+            }
+            lines.push(tool_line(spans));
         }
         ToolStatus::Complete { exit_code } => {
             let mut spans = vec![];
 
-            // show exit status for bash commands
+            // exit status indicator for bash
             if entry.name == "bash" {
                 match exit_code {
                     Some(0) | None => {
@@ -614,8 +617,19 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                 }
             }
 
-            spans.push(Span::styled(entry.display.clone(), Style::default().fg(MUTED)));
+            // tool name in accent, argument in muted
+            spans.push(Span::styled(
+                label.to_string(),
+                Style::default().fg(ACCENT),
+            ));
+            if !entry.arg.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", entry.arg),
+                    Style::default().fg(MUTED),
+                ));
+            }
 
+            // diff stats
             if let Some(ref diff) = entry.diff {
                 if diff.stat.additions > 0 {
                     spans.push(Span::styled(
@@ -633,13 +647,13 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
 
             lines.push(tool_line(spans));
 
-            // show bash output (first few lines)
+            // bash output (first few lines, indented further)
             if let Some(ref output) = entry.output {
                 let display = strip_exit_prefix(output);
                 let out_lines: Vec<&str> = display.lines().take(8).collect();
                 for ol in &out_lines {
                     lines.push(tool_line(vec![
-                        Span::styled("  ", Style::default()),
+                        Span::styled("    ", Style::default()),
                         Span::styled((*ol).to_string(), Style::default().fg(DIM)),
                     ]));
                 }
@@ -647,18 +661,23 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                 if total_lines > 8 {
                     lines.push(tool_line(vec![
                         Span::styled(
-                            format!("  ...{} more lines", total_lines - 8),
+                            format!("    ...{} more lines", total_lines - 8),
                             Style::default().fg(DIM),
                         ),
                     ]));
                 }
             }
 
-            // show expanded diff
+            // expanded diff lines
             if entry.expanded {
                 if let Some(ref diff) = entry.diff {
                     lines.extend(build_diff_lines(diff));
                 }
+            }
+
+            // blank line after tools that produced output
+            if has_output {
+                lines.push(Line::from(""));
             }
         }
         ToolStatus::Error(e) => {
@@ -666,9 +685,10 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
             lines.push(tool_line(vec![
                 Span::styled("\u{2717} ", Style::default().fg(RED)),
                 Span::styled(
-                    format!("{} - {}", entry.display, short),
-                    Style::default().fg(RED),
+                    format!("{} ", label),
+                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(short, Style::default().fg(RED)),
             ]));
         }
     }
