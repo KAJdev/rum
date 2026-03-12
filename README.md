@@ -35,7 +35,7 @@ authenticate via pi first (`pi` then `/login`), or set `ANTHROPIC_API_KEY` in yo
 ```bash
 cargo install --path .
 
-# interactive mode
+# interactive TUI mode
 rum
 
 # with initial message
@@ -49,6 +49,9 @@ rum --thinking high "solve this complex problem"
 
 # different working directory
 rum -C /path/to/project
+
+# print mode: stream output to stdout without the TUI
+rum -p "explain this codebase"
 ```
 
 ## keybindings
@@ -56,11 +59,13 @@ rum -C /path/to/project
 | key | action |
 |-----|--------|
 | Enter | submit message |
-| Ctrl+C | clear input / quit |
-| Escape | quit |
+| Ctrl+C | clear input / cancel running / quit |
+| Escape | cancel running / quit |
 | Up/Down | scroll activity feed |
 | PageUp/PageDown | scroll by page |
 | Ctrl+O | toggle diff expansion |
+
+scrolling up disables auto-scroll. scrolling back to the bottom re-engages it.
 
 ## tools
 
@@ -75,10 +80,12 @@ rum provides four tools to the model:
 
 ```
 src/
-├── main.rs     - cli parsing, event loop, TUI/agent coordination
-├── config.rs   - loads pi's auth.json, settings.json, context files
-├── api.rs      - anthropic messages api with SSE streaming
-├── agent.rs    - agent loop: streaming, tool execution, turn management
-├── tools.rs    - tool definitions and implementations
-└── tui.rs      - ratatui-based diff-centric layout
+├── main.rs       - cli parsing, event loop, TUI/agent coordination
+├── config.rs     - loads pi's auth.json, settings.json, context files
+├── api.rs        - anthropic messages api with SSE streaming
+├── agent.rs      - agent loop: streaming, tool execution, turn management
+├── tools.rs      - tool definitions and implementations
+├── tui.rs        - ratatui-based diff-centric layout
+├── markdown.rs   - markdown-to-styled-text rendering (ansi + ratatui spans)
+└── print.rs      - non-interactive print mode, streams output to stdout
 ```

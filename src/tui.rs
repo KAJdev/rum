@@ -464,7 +464,7 @@ fn wrap_md_lines_with_bar(md_lines: Vec<Line<'static>>, max_width: u16) -> Vec<L
     out
 }
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
     let chunks = Layout::default()
@@ -537,7 +537,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(widget, area);
 }
 
-fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
+fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     let w = area.width;
 
@@ -589,10 +589,17 @@ fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    // don't use Wrap here since we do manual wrapping above
     let total_lines = lines.len() as u16;
+    let max_scroll = total_lines.saturating_sub(area.height);
+
+    // re-engage auto-scroll when manual scrolling reaches the bottom
+    if !app.auto_scroll && app.scroll_offset >= max_scroll {
+        app.scroll_offset = max_scroll;
+        app.auto_scroll = true;
+    }
+
     let scroll = if app.auto_scroll {
-        total_lines.saturating_sub(area.height)
+        max_scroll
     } else {
         app.scroll_offset
     };
@@ -852,7 +859,7 @@ impl Tui {
         Ok(())
     }
 
-    pub fn draw(&mut self, app: &App) -> Result<(), io::Error> {
+    pub fn draw(&mut self, app: &mut App) -> Result<(), io::Error> {
         self.terminal.draw(|frame| render(frame, app))?;
         Ok(())
     }
