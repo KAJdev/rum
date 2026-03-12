@@ -70,9 +70,9 @@ pub enum StreamEvent {
     ToolUseStart { id: String, name: String },
     ToolUseInput(String),
     ContentBlockStop,
-    MessageDelta { stop_reason: Option<String> },
+    MessageDelta { stop_reason: Option<String>, output_tokens: u32 },
     MessageStart { input_tokens: u32 },
-    MessageDone { output_tokens: u32 },
+    MessageDone,
     Error(String),
 }
 
@@ -207,14 +207,14 @@ pub fn parse_sse_event(text: &str) -> Option<StreamEvent> {
                 .pointer("/delta/stop_reason")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            Some(StreamEvent::MessageDelta { stop_reason })
-        }
-        "message_stop" => {
             let output_tokens = json
                 .pointer("/usage/output_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
-            Some(StreamEvent::MessageDone { output_tokens })
+            Some(StreamEvent::MessageDelta { stop_reason, output_tokens })
+        }
+        "message_stop" => {
+            Some(StreamEvent::MessageDone)
         }
         "error" => {
             let msg = json

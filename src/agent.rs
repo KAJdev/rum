@@ -207,12 +207,11 @@ impl Agent {
                             in_text = false;
                         }
                     }
-                    StreamEvent::MessageDelta { stop_reason: sr } => {
+                    StreamEvent::MessageDelta { stop_reason: sr, output_tokens: ot } => {
                         stop_reason = sr;
-                    }
-                    StreamEvent::MessageDone { output_tokens: ot } => {
                         output_tokens = ot;
                     }
+                    StreamEvent::MessageDone => {}
                     StreamEvent::Error(e) => {
                         let _ = event_tx.send(AgentEvent::Error(e));
                     }
