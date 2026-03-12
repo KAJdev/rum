@@ -12,6 +12,11 @@ const BOLD: &str = "\x1b[1m";
 const ITALIC: &str = "\x1b[3m";
 const RESET: &str = "\x1b[0m";
 
+// left edge bar for all model output, giving a visual "quote" feel
+const BAR: &str = "\x1b[38;5;242m\u{2502}\x1b[0m ";
+const BAR_DIM: &str = "\x1b[38;5;242m\u{2502} ";
+const BAR_PLAIN: &str = "\x1b[38;5;242m\u{2502}\x1b[0m";
+
 // tracks which json field is currently being streamed
 #[derive(Debug, Clone, PartialEq)]
 enum StreamingField {
@@ -302,17 +307,25 @@ impl PrintMode {
             AgentEvent::Thinking(t) => {
                 if !self.in_thinking {
                     self.in_thinking = true;
-                    eprint!("{DIM}{ITALIC}");
+                    eprint!("{BAR_DIM}{ITALIC}");
                     let _ = stderr.flush();
                 }
-                eprint!("{}", t);
+                // stream thinking, adding bar after newlines
+                for ch in t.chars() {
+                    if ch == '\n' {
+                        eprintln!("{RESET}");
+                        eprint!("{BAR_DIM}{ITALIC}");
+                    } else {
+                        eprint!("{ch}");
+                    }
+                }
                 let _ = stderr.flush();
             }
             AgentEvent::Text(t) => {
                 if self.in_thinking {
                     self.in_thinking = false;
                     eprintln!("{RESET}");
-                    eprintln!();
+                    eprintln!("{BAR_PLAIN}");
                 }
                 if !self.in_text {
                     self.in_text = true;
@@ -330,16 +343,16 @@ impl PrintMode {
                         self.has_partial = false;
                     }
                     for line in &lines {
-                        println!("{}", line);
+                        println!("{BAR}{line}");
                     }
                 }
 
                 // stream the current partial line as raw text
                 if let Some(raw) = self.md.peek_raw() {
                     if self.has_partial {
-                        print!("\r\x1b[2K{}", raw);
+                        print!("\r\x1b[2K{BAR}{raw}");
                     } else {
-                        print!("{}", raw);
+                        print!("{BAR}{raw}");
                         self.has_partial = true;
                     }
                     let _ = stdout.flush();
@@ -349,18 +362,17 @@ impl PrintMode {
                 if self.in_thinking {
                     self.in_thinking = false;
                     eprintln!("{RESET}");
-                    eprintln!();
+                    eprintln!("{BAR_PLAIN}");
                 }
                 if self.in_text {
-                    // flush remaining markdown
                     if self.has_partial {
                         eprint!("\r\x1b[2K");
                         self.has_partial = false;
                     }
                     for line in self.md.finish() {
-                        println!("{}", line);
+                        println!("{BAR}{line}");
                     }
-                    println!();
+                    eprintln!("{BAR_PLAIN}");
                     self.in_text = false;
                 }
                 self.tool_count += 1;
@@ -368,7 +380,7 @@ impl PrintMode {
                 self.streamed_path.clear();
                 self.tracker = Some(JsonFieldTracker::new(&name));
 
-                eprint!("{DIM}  \u{25cc} {name}...{RESET}");
+                eprint!("{BAR}{DIM}\u{25cc} {name}...{RESET}");
                 let _ = stderr.flush();
             }
             AgentEvent::ToolInputDelta(json) => {
@@ -399,7 +411,7 @@ impl PrintMode {
                                 } else {
                                     eprint!("\r\x1b[2K");
                                     eprintln!(
-                                        "  {DIM}{} {}{RESET}",
+                                        "{BAR}{DIM}{} {}{RESET}",
                                         cap_tool(&name),
                                         self.streamed_path,
                                     );
@@ -407,11 +419,11 @@ impl PrintMode {
                             }
                             "read" => {
                                 eprint!("\r\x1b[2K");
-                                eprintln!("  {DIM}Read {}{RESET}", self.streamed_path);
+                                eprintln!("{BAR}{DIM}Read {}{RESET}", self.streamed_path);
                             }
                             _ => {
                                 eprint!("\r\x1b[2K");
-                                eprintln!("  {DIM}{}{RESET}", name);
+                                eprintln!("{BAR}{DIM}{}{RESET}", name);
                             }
                         }
                     }
@@ -419,7 +431,7 @@ impl PrintMode {
                         self.error_count += 1;
                         eprint!("\r\x1b[2K");
                         let short = truncate(e, 120);
-                        eprintln!("  {RED}\u{2717} {name} \u{2014} {short}{RESET}");
+                        eprintln!("{BAR}{RED}\u{2717} {name} \u{2014} {short}{RESET}");
                     }
                 }
             }
@@ -441,7 +453,7 @@ impl PrintMode {
                         self.has_partial = false;
                     }
                     for line in self.md.finish() {
-                        println!("{}", line);
+                        println!("{BAR}{line}");
                     }
                     self.in_text = false;
                 }
@@ -453,7 +465,7 @@ impl PrintMode {
                     self.in_thinking = false;
                     eprintln!("{RESET}");
                 }
-                eprintln!("{RED}[error]{RESET} {e}");
+                eprintln!("{BAR}{RED}[error]{RESET} {e}");
             }
         }
 
@@ -475,15 +487,14 @@ impl PrintMode {
                     "edit" => "Edit",
                     _ => &self.current_tool_name,
                 };
-                eprint!("{DIM}  \u{25cc} {label} {}{RESET}", self.streamed_path);
+                eprint!("{BAR}{DIM}\u{25cc} {label} {}{RESET}", self.streamed_path);
                 let _ = stderr.flush();
             }
             PrintAction::StartCommand => {
-                eprint!("\r\x1b[2K{DIM}  $ {RESET}");
+                eprint!("\r\x1b[2K{BAR}{DIM}$ {RESET}");
                 let _ = stderr.flush();
             }
             PrintAction::StreamCommand(s) => {
-                // stream the command character by character, dim
                 eprint!("{DIM}{s}{RESET}");
                 let _ = stderr.flush();
             }
@@ -493,17 +504,17 @@ impl PrintMode {
             PrintAction::StartContent(path) => {
                 eprintln!();
                 if let Some(p) = &path {
-                    eprintln!("{DIM}  \u{250c}\u{2500} {p}{RESET}");
+                    eprintln!("{BAR}{DIM}\u{250c}\u{2500} {p}{RESET}");
                 } else {
-                    eprintln!("{DIM}  \u{250c}\u{2500}{RESET}");
+                    eprintln!("{BAR}{DIM}\u{250c}\u{2500}{RESET}");
                 }
-                eprint!("{DIM}  \u{2502}{RESET} ");
+                eprint!("{BAR}{DIM}\u{2502}{RESET} ");
             }
             PrintAction::StreamContent(s) => {
                 for ch in s.chars() {
                     if ch == '\n' {
                         eprintln!();
-                        eprint!("{DIM}  \u{2502}{RESET} ");
+                        eprint!("{BAR}{DIM}\u{2502}{RESET} ");
                     } else {
                         eprint!("{ch}");
                     }
@@ -512,38 +523,47 @@ impl PrintMode {
             }
             PrintAction::EndContent => {
                 eprintln!();
-                eprintln!("{DIM}  \u{2514}\u{2500}{RESET}");
+                eprintln!("{BAR}{DIM}\u{2514}\u{2500}{RESET}");
             }
         }
     }
 
     fn print_diff_summary(&self, name: &str, diff: &DiffInfo) {
-        let mut line = format!("  {DIM}{} {}{RESET}", cap_tool(name), diff.path);
+        let mut lines = vec![format!(
+            "{BAR}{DIM}{} {}{RESET}",
+            cap_tool(name),
+            diff.path,
+        )];
+
+        // append stat counts to the first line
         if diff.stat.additions > 0 {
-            line.push_str(&format!(" {GREEN}+{}{RESET}", diff.stat.additions));
+            let last = lines.last_mut().unwrap();
+            last.push_str(&format!(" {GREEN}+{}{RESET}", diff.stat.additions));
         }
         if diff.stat.deletions > 0 {
-            line.push_str(&format!(" {RED}-{}{RESET}", diff.stat.deletions));
+            let last = lines.last_mut().unwrap();
+            last.push_str(&format!(" {RED}-{}{RESET}", diff.stat.deletions));
         }
 
-        // show changed lines inline
         for hunk in &diff.hunks {
             for dl in &hunk.lines {
                 match dl.tag {
                     DiffLineTag::Delete => {
                         let content = dl.content.trim_end_matches('\n');
-                        line.push_str(&format!("\n    {RED}-{content}{RESET}"));
+                        lines.push(format!("{BAR}  {RED}-{content}{RESET}"));
                     }
                     DiffLineTag::Insert => {
                         let content = dl.content.trim_end_matches('\n');
-                        line.push_str(&format!("\n    {GREEN}+{content}{RESET}"));
+                        lines.push(format!("{BAR}  {GREEN}+{content}{RESET}"));
                     }
                     DiffLineTag::Equal => {}
                 }
             }
         }
 
-        eprintln!("{line}");
+        for line in &lines {
+            eprintln!("{line}");
+        }
     }
 
     pub fn print_summary(&self) {
