@@ -487,6 +487,36 @@ fn from_cc_name(name: &str) -> &str {
     }
 }
 
+fn clean_thinking_blocks(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .map(|m| {
+            let content = match m.content {
+                MessageContent::Blocks(blocks) => {
+                    let filtered: Vec<ContentBlock> = blocks
+                        .into_iter()
+                        .filter(|b| match b {
+                            ContentBlock::Thinking { signature, .. } => signature.is_some(),
+                            _ => true,
+                        })
+                        .collect();
+                    // if all blocks were unsigned thinking, keep an empty text block
+                    // so the message content array is not empty
+                    if filtered.is_empty() {
+                        MessageContent::Blocks(vec![ContentBlock::Text {
+                            text: String::new(),
+                        }])
+                    } else {
+                        MessageContent::Blocks(filtered)
+                    }
+                }
+                other => other,
+            };
+            Message { role: m.role, content }
+        })
+        .collect()
+}
+
 fn is_retryable_error(e: &str) -> bool {
     e.contains("429")
         || e.contains("rate_limit")
@@ -604,6 +634,11 @@ async fn stream_request(
     } else {
         messages.to_vec()
     };
+
+    // the api requires a signature on every thinking block in conversation
+    // history. blocks without signatures came from cancelled streams and
+    // must be stripped before sending.
+    let messages = clean_thinking_blocks(messages);
 
     let request = MessagesRequest {
         model: model.to_string(),
