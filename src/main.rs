@@ -213,10 +213,7 @@ async fn run_tui_mode(
                         app.scroll_offset = app.scroll_offset.saturating_add(1);
                     }
                     tui::InputAction::ToggleDiff => {
-                        let count = app.tool_diff_count();
-                        if count > 0 {
-                            app.toggle_diff(count - 1);
-                        }
+                        app.toggle_diff();
                     }
                     tui::InputAction::None => {}
                 }

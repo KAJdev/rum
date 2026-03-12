@@ -109,6 +109,7 @@ pub struct App {
     pub scroll_offset: u16,
     // when true, viewport follows new content to the bottom
     pub auto_scroll: bool,
+    pub diffs_expanded: bool,
     model_name: String,
     cwd: String,
     current_tool_input: String,
@@ -139,6 +140,7 @@ impl App {
             should_quit: false,
             scroll_offset: 0,
             auto_scroll: true,
+            diffs_expanded: true,
             model_name: model_name.to_string(),
             cwd: cwd.to_string(),
             current_tool_input: String::new(),
@@ -221,7 +223,7 @@ impl App {
                             if let Some(d) = diff {
                                 entry.arg = d.path.clone();
                                 entry.diff = Some(d.clone());
-                                entry.expanded = true;
+                                entry.expanded = self.diffs_expanded;
                             }
 
                             // store output for display (bash output, truncated)
@@ -319,25 +321,15 @@ impl App {
         self.queued_messages.clear();
     }
 
-    pub fn toggle_diff(&mut self, tool_index: usize) {
-        let mut count = 0;
+    pub fn toggle_diff(&mut self) {
+        self.diffs_expanded = !self.diffs_expanded;
         for item in &mut self.activity {
             if let ActivityItem::Tool(ref mut entry) = item {
                 if entry.diff.is_some() {
-                    if count == tool_index {
-                        entry.expanded = !entry.expanded;
-                        return;
-                    }
-                    count += 1;
+                    entry.expanded = self.diffs_expanded;
                 }
             }
         }
-    }
-
-    pub fn tool_diff_count(&self) -> usize {
-        self.activity.iter().filter(|item| {
-            matches!(item, ActivityItem::Tool(e) if e.diff.is_some())
-        }).count()
     }
 
     fn context_used(&self) -> u32 {
