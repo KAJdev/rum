@@ -272,8 +272,11 @@ pub struct PrintMode {
     streamed_path: String,
     current_tool_name: String,
     md: MarkdownRenderer,
-    // track whether we printed a partial line from markdown
     has_partial: bool,
+    // buffer for thinking text; we only display the latest paragraph
+    thinking_buf: String,
+    // number of lines currently rendered for the thinking paragraph
+    thinking_lines_rendered: usize,
 }
 
 impl PrintMode {
@@ -293,6 +296,8 @@ impl PrintMode {
             current_tool_name: String::new(),
             md: MarkdownRenderer::new(),
             has_partial: false,
+            thinking_buf: String::new(),
+            thinking_lines_rendered: 0,
         }
     }
 
@@ -312,24 +317,42 @@ impl PrintMode {
             AgentEvent::Thinking(t) => {
                 if !self.in_thinking {
                     self.in_thinking = true;
-                    eprint!("{BAR_DIM}{ITALIC}");
-                    let _ = stderr.flush();
+                    self.thinking_buf.clear();
+                    self.thinking_lines_rendered = 0;
                 }
-                // stream thinking, adding bar after newlines
-                for ch in t.chars() {
-                    if ch == '\n' {
-                        eprintln!("{RESET}");
-                        eprint!("{BAR_DIM}{ITALIC}");
-                    } else {
-                        eprint!("{ch}");
+
+                self.thinking_buf.push_str(&t);
+
+                // extract latest paragraph
+                let para = last_paragraph(&self.thinking_buf).to_string();
+                let para_lines: Vec<&str> = para.split('\n').collect();
+
+                // clear previously rendered thinking lines
+                if self.thinking_lines_rendered > 0 {
+                    // move cursor up and clear each line
+                    for _ in 0..self.thinking_lines_rendered {
+                        eprint!("\x1b[A\x1b[2K");
                     }
                 }
+
+                // render the current paragraph
+                self.thinking_lines_rendered = 0;
+                for (i, line) in para_lines.iter().enumerate() {
+                    if i > 0 {
+                        eprintln!();
+                    }
+                    eprint!("{BAR_DIM}{ITALIC}{line}{RESET}");
+                    self.thinking_lines_rendered += 1;
+                }
+                // move to next line so the cursor is at a clean position
+                eprintln!();
                 let _ = stderr.flush();
             }
             AgentEvent::Text(t) => {
                 if self.in_thinking {
                     self.in_thinking = false;
-                    eprintln!("{RESET}");
+                    self.thinking_buf.clear();
+                    self.thinking_lines_rendered = 0;
                     eprintln!();
                 }
                 if !self.in_text {
@@ -366,7 +389,8 @@ impl PrintMode {
             AgentEvent::ToolStart { id: _, name } => {
                 if self.in_thinking {
                     self.in_thinking = false;
-                    eprintln!("{RESET}");
+                    self.thinking_buf.clear();
+                    self.thinking_lines_rendered = 0;
                     eprintln!();
                 }
                 if self.in_text {
@@ -611,5 +635,15 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}...", &s[..max.saturating_sub(3)])
     } else {
         s.to_string()
+    }
+}
+
+fn last_paragraph(text: &str) -> &str {
+    let trimmed = text.trim_end();
+    if let Some(pos) = trimmed.rfind("\n\n") {
+        let after = trimmed[pos + 2..].trim_start_matches('\n');
+        if after.is_empty() { trimmed } else { after }
+    } else {
+        trimmed
     }
 }

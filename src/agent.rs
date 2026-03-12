@@ -90,12 +90,22 @@ impl Agent {
         user_message: &str,
         event_tx: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<()> {
+        let pre_len = self.messages.len();
+
         self.messages.push(Message {
             role: "user".to_string(),
             content: MessageContent::Text(user_message.to_string()),
         });
 
-        self.run_turn(event_tx).await
+        let result = self.run_turn(event_tx).await;
+
+        // on cancel, restore messages to pre-turn state
+        // to maintain valid user/assistant alternation for the next turn
+        if self.cancel.is_cancelled() {
+            self.messages.truncate(pre_len);
+        }
+
+        result
     }
 
     async fn run_turn(

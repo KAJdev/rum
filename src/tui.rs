@@ -334,6 +334,18 @@ fn parse_exit_code(output: &str) -> Option<i32> {
     }
 }
 
+// return the last paragraph from a block of text.
+// paragraphs are separated by blank lines (\n\n).
+fn last_paragraph(text: &str) -> &str {
+    let trimmed = text.trim_end();
+    if let Some(pos) = trimmed.rfind("\n\n") {
+        let after = trimmed[pos + 2..].trim_start_matches('\n');
+        if after.is_empty() { trimmed } else { after }
+    } else {
+        trimmed
+    }
+}
+
 // strip the "[exit code: N]\n" prefix from bash output for display
 fn strip_exit_prefix(s: &str) -> &str {
     if s.starts_with("[exit code: ") {
@@ -545,15 +557,16 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     for (idx, item) in app.activity.iter().enumerate() {
         match item {
             ActivityItem::Thinking(text) => {
-                let text = text.clone();
-                // empty line before thinking if preceded by something
+                // only show the most recent paragraph of thinking.
+                // thinking tends to be a stream of evolving reasoning;
+                // showing just the latest chunk keeps the display focused.
+                let para = last_paragraph(text);
                 if idx > 0 {
                     lines.push(Line::from(""));
                 }
                 let style = Style::default().fg(DIM).add_modifier(Modifier::ITALIC);
-                let wrapped = wrap_text_with_bar(&text, w, style);
+                let wrapped = wrap_text_with_bar(para, w, style);
                 lines.extend(wrapped);
-                // empty line after thinking
                 if idx + 1 < n {
                     lines.push(Line::from(""));
                 }
