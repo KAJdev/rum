@@ -2,11 +2,11 @@
 
 a diff-centric coding agent TUI built in rust.
 
-rum takes a different approach from chat-style agent interfaces. the user prompt sits at the top, with a live activity feed and inline diffs below it, plus a token burn rate chart and metrics at the bottom.
+rum takes a different approach from chat-style agent interfaces. the user prompt sits at the top, with a live activity feed and inline diffs below it, and token/cost metrics in the header bar.
 
 ```
 ┌──────────────────────────────────────────────┐
-│ rum  ~/dev/project  claude-sonnet-4           │
+│ rum  ~/dev/project  claude-sonnet-4  47k $0.1│
 ├──────────────────────────────────────────────┤
 │ › refactor the auth module to use jose       │
 │                                              │
@@ -16,13 +16,6 @@ rum takes a different approach from chat-style agent interfaces. the user prompt
 │   Edit src/auth/middleware.ts   +12 -18      │
 │ ◌ editing src/auth/refresh.ts...             │
 │                                              │
-│                                              │
-├──────────────────────────────────────────────┤
-│ TOKEN BURN RATE              2,340 tok/s     │
-│ ▃▅▇█▆▅▃▂▁ ▂▄▆▇█▇▅▃                         │
-│ 2m ago          reading··editing█  now       │
-├──────────────────────────────────────────────┤
-│ total: 47,820  cost: $0.096  elapsed: 03:14 │
 └──────────────────────────────────────────────┘
 ```
 

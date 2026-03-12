@@ -203,11 +203,11 @@ async fn run_tui_mode(
                     tui::InputAction::ScrollDown => {
                         app.scroll_offset = app.scroll_offset.saturating_add(1);
                     }
-                    tui::InputAction::ToggleDiff(idx) => {
-                        if app.expanded_diffs.contains(&idx) {
-                            app.expanded_diffs.remove(&idx);
-                        } else {
-                            app.expanded_diffs.insert(idx);
+                    tui::InputAction::ToggleDiff => {
+                        // toggle the last diff
+                        let count = app.tool_diff_count();
+                        if count > 0 {
+                            app.toggle_diff(count - 1);
                         }
                     }
                     tui::InputAction::None => {}
