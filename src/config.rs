@@ -214,14 +214,96 @@ pub struct ModelPricing {
     pub output: f64,
 }
 
+pub struct ModelDef {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub context_window: u32,
+    pub input_price: f64,
+    pub output_price: f64,
+}
+
+pub const ANTHROPIC_MODELS: &[ModelDef] = &[
+    ModelDef {
+        id: "claude-opus-4-6-20250514",
+        name: "Opus 4.6",
+        context_window: 200_000,
+        input_price: 15.0,
+        output_price: 75.0,
+    },
+    ModelDef {
+        id: "claude-sonnet-4-20250514",
+        name: "Sonnet 4",
+        context_window: 200_000,
+        input_price: 3.0,
+        output_price: 15.0,
+    },
+    ModelDef {
+        id: "claude-sonnet-4-5-20250514",
+        name: "Sonnet 4.5",
+        context_window: 200_000,
+        input_price: 3.0,
+        output_price: 15.0,
+    },
+    ModelDef {
+        id: "claude-haiku-3-5-20241022",
+        name: "Haiku 3.5",
+        context_window: 200_000,
+        input_price: 0.80,
+        output_price: 4.0,
+    },
+];
+
+pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
+
+pub fn match_model(pattern: &str) -> Option<&'static ModelDef> {
+    let p = pattern.to_lowercase();
+
+    // exact id match
+    if let Some(m) = ANTHROPIC_MODELS.iter().find(|m| m.id.to_lowercase() == p) {
+        return Some(m);
+    }
+
+    // common aliases
+    let resolved = match p.as_str() {
+        "opus" | "opus-4-6" | "opus-4.6" | "claude-opus-4-6" => {
+            Some("claude-opus-4-6-20250514")
+        }
+        "sonnet" | "sonnet-4" | "sonnet4" | "claude-sonnet-4" => {
+            Some("claude-sonnet-4-20250514")
+        }
+        "sonnet-4-5" | "sonnet-4.5" | "sonnet45" | "claude-sonnet-4-5" => {
+            Some("claude-sonnet-4-5-20250514")
+        }
+        "haiku" | "haiku-3-5" | "haiku-3.5" | "haiku35" | "claude-haiku-3-5" => {
+            Some("claude-haiku-3-5-20241022")
+        }
+        _ => None,
+    };
+
+    if let Some(id) = resolved {
+        return ANTHROPIC_MODELS.iter().find(|m| m.id == id);
+    }
+
+    // partial id or display name match
+    ANTHROPIC_MODELS
+        .iter()
+        .find(|m| m.id.to_lowercase().contains(&p) || m.name.to_lowercase().contains(&p))
+}
+
 pub fn model_pricing(model: &str) -> ModelPricing {
+    if let Some(def) = ANTHROPIC_MODELS.iter().find(|m| m.id == model) {
+        return ModelPricing {
+            input: def.input_price,
+            output: def.output_price,
+        };
+    }
+    // fallback heuristic for unknown model ids
     let m = model.to_lowercase();
     if m.contains("opus") {
         ModelPricing { input: 15.0, output: 75.0 }
     } else if m.contains("haiku") {
         ModelPricing { input: 0.80, output: 4.0 }
     } else {
-        // sonnet and unknown models
         ModelPricing { input: 3.0, output: 15.0 }
     }
 }

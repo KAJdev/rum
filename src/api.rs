@@ -133,6 +133,10 @@ impl ApiClient {
         })
     }
 
+    pub fn set_model(&mut self, model: &str) {
+        self.model = model.to_string();
+    }
+
     pub fn model_clone(&self) -> String {
         self.model.clone()
     }

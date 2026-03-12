@@ -15,6 +15,34 @@ use tokio::sync::mpsc;
 
 use crate::agent::AgentEvent;
 
+enum SlashCommand {
+    Model(Option<String>),
+    Thinking(Option<String>),
+    New,
+    Help,
+    Quit,
+}
+
+fn parse_slash_command(text: &str) -> Option<SlashCommand> {
+    let text = text.trim();
+    if !text.starts_with('/') {
+        return None;
+    }
+
+    let parts: Vec<&str> = text.splitn(2, ' ').collect();
+    let cmd = parts[0].to_lowercase();
+    let arg = parts.get(1).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+    match cmd.as_str() {
+        "/model" => Some(SlashCommand::Model(arg)),
+        "/thinking" => Some(SlashCommand::Thinking(arg)),
+        "/new" => Some(SlashCommand::New),
+        "/help" => Some(SlashCommand::Help),
+        "/quit" => Some(SlashCommand::Quit),
+        _ => None,
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "rum", about = "a diff-centric coding agent TUI")]
 struct Cli {
@@ -153,12 +181,13 @@ async fn run_tui_mode(
 
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (control_tx, control_rx) = mpsc::unbounded_channel::<agent::ControlMessage>();
 
     let agent_cwd = cwd.clone();
     let agent_cancel = cancel.clone();
     tokio::spawn(async move {
         let agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
-        agent_loop(agent, user_rx, agent_tx).await;
+        agent_loop(agent, user_rx, control_rx, agent_tx).await;
     });
 
     if !message_parts.is_empty() {
@@ -195,9 +224,16 @@ async fn run_tui_mode(
             if let Event::Key(key) = event::read()? {
                 match tui::handle_key_event(key, &mut app) {
                     tui::InputAction::Submit(msg) => {
-                        cancel.reset();
-                        app.start_new_message(&msg);
-                        let _ = user_tx.send(msg);
+                        if let Some(cmd) = parse_slash_command(&msg) {
+                            handle_slash_command(cmd, &mut app, &control_tx);
+                            if app.should_quit {
+                                break;
+                            }
+                        } else {
+                            cancel.reset();
+                            app.start_new_message(&msg);
+                            let _ = user_tx.send(msg);
+                        }
                     }
                     tui::InputAction::Cancel => {
                         cancel.cancel();
@@ -229,16 +265,147 @@ async fn run_tui_mode(
     Ok(())
 }
 
+fn handle_slash_command(
+    cmd: SlashCommand,
+    app: &mut tui::App,
+    control_tx: &mpsc::UnboundedSender<agent::ControlMessage>,
+) {
+    match cmd {
+        SlashCommand::Model(pattern) => {
+            handle_model_command(pattern, app, control_tx);
+        }
+        SlashCommand::Thinking(level) => {
+            handle_thinking_command(level, app, control_tx);
+        }
+        SlashCommand::New => {
+            app.reset_session();
+            let _ = control_tx.send(agent::ControlMessage::ClearHistory);
+            app.push_system_message("conversation cleared".to_string());
+        }
+        SlashCommand::Help => {
+            let help = "\
+available commands:\n\
+\n\
+  /model [name]       switch model (opus, sonnet, sonnet-4.5, haiku, ...)\n\
+  /thinking [level]   set thinking level (off, minimal, low, medium, high, xhigh)\n\
+  /new                start a new conversation\n\
+  /help               show this help\n\
+  /quit               quit rum";
+            app.push_system_message(help.to_string());
+        }
+        SlashCommand::Quit => {
+            app.should_quit = true;
+        }
+    }
+}
+
+fn handle_model_command(
+    pattern: Option<String>,
+    app: &mut tui::App,
+    control_tx: &mpsc::UnboundedSender<agent::ControlMessage>,
+) {
+    let current = app.model_name().to_string();
+
+    match pattern {
+        None => {
+            let mut lines = String::from("available models:\n");
+            for m in config::ANTHROPIC_MODELS {
+                let marker = if m.id == current { "\u{2192}" } else { " " };
+                lines.push_str(&format!(
+                    "\n {} {}  ({}  ${:.2}/${:.2} per 1M tok)",
+                    marker, m.id, m.name, m.input_price, m.output_price
+                ));
+            }
+            lines.push_str("\n\nusage: /model <name>");
+            lines.push_str("\naliases: opus, sonnet, sonnet-4.5, haiku");
+            app.push_system_message(lines);
+        }
+        Some(pat) => {
+            if let Some(model_def) = config::match_model(&pat) {
+                app.update_model(model_def.id);
+                let _ = control_tx.send(agent::ControlMessage::ChangeModel(
+                    model_def.id.to_string(),
+                ));
+                app.push_system_message(format!(
+                    "switched to {} ({})",
+                    model_def.id, model_def.name
+                ));
+            } else {
+                let mut msg = format!("no model matching \"{pat}\"");
+                msg.push_str("\navailable: ");
+                let names: Vec<&str> = config::ANTHROPIC_MODELS.iter().map(|m| m.id).collect();
+                msg.push_str(&names.join(", "));
+                app.push_system_message(msg);
+            }
+        }
+    }
+}
+
+fn handle_thinking_command(
+    level: Option<String>,
+    app: &mut tui::App,
+    control_tx: &mpsc::UnboundedSender<agent::ControlMessage>,
+) {
+    match level {
+        None => {
+            let msg = format!(
+                "thinking levels: {}\nusage: /thinking <level>",
+                config::THINKING_LEVELS.join(", ")
+            );
+            app.push_system_message(msg);
+        }
+        Some(lvl) => {
+            let lvl_lower = lvl.to_lowercase();
+            if config::THINKING_LEVELS.contains(&lvl_lower.as_str()) {
+                let _ = control_tx.send(agent::ControlMessage::ChangeThinking(
+                    lvl_lower.clone(),
+                ));
+                app.push_system_message(format!("thinking level set to {lvl_lower}"));
+            } else {
+                app.push_system_message(format!(
+                    "unknown thinking level \"{}\"\navailable: {}",
+                    lvl,
+                    config::THINKING_LEVELS.join(", ")
+                ));
+            }
+        }
+    }
+}
+
 async fn agent_loop(
     mut agent: agent::Agent,
     mut user_rx: mpsc::UnboundedReceiver<String>,
+    mut control_rx: mpsc::UnboundedReceiver<agent::ControlMessage>,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
 ) {
-    while let Some(message) = user_rx.recv().await {
-        let result = agent.send_message(&message, event_tx.clone()).await;
-        if let Err(e) = result {
-            let _ = event_tx.send(AgentEvent::Error(e.to_string()));
-            let _ = event_tx.send(AgentEvent::TurnComplete);
+    loop {
+        tokio::select! {
+            msg = user_rx.recv() => {
+                match msg {
+                    Some(message) => {
+                        let result = agent.send_message(&message, event_tx.clone()).await;
+                        if let Err(e) = result {
+                            let _ = event_tx.send(AgentEvent::Error(e.to_string()));
+                            let _ = event_tx.send(AgentEvent::TurnComplete);
+                        }
+                    }
+                    None => break,
+                }
+            }
+            ctrl = control_rx.recv() => {
+                match ctrl {
+                    Some(agent::ControlMessage::ChangeModel(model)) => {
+                        agent.set_model(&model);
+                    }
+                    Some(agent::ControlMessage::ChangeThinking(level)) => {
+                        agent.set_thinking(&level);
+                    }
+                    Some(agent::ControlMessage::ClearHistory) => {
+                        agent.clear_history();
+                    }
+                    None => break,
+                }
+            }
         }
     }
 }

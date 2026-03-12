@@ -54,6 +54,13 @@ pub enum AgentEvent {
     Error(String),
 }
 
+// control messages sent from the TUI to the agent between turns
+pub enum ControlMessage {
+    ChangeModel(String),
+    ChangeThinking(String),
+    ClearHistory,
+}
+
 pub struct Agent {
     client: ApiClient,
     messages: Vec<Message>,
@@ -84,6 +91,18 @@ impl Agent {
             cwd,
             cancel,
         }
+    }
+
+    pub fn set_model(&mut self, model: &str) {
+        self.client.set_model(model);
+    }
+
+    pub fn set_thinking(&mut self, level: &str) {
+        self.thinking_level = level.to_string();
+    }
+
+    pub fn clear_history(&mut self) {
+        self.messages.clear();
     }
 
     pub async fn send_message(

@@ -36,6 +36,35 @@ const INPUT_BG: Color = Color::Rgb(16, 20, 28);
 
 const DEFAULT_CONTEXT: u32 = 200_000;
 
+struct SlashDef {
+    name: &'static str,
+    args: &'static str,
+    description: &'static str,
+}
+
+const SLASH_COMMANDS: &[SlashDef] = &[
+    SlashDef { name: "/model", args: "[name]", description: "Switch model" },
+    SlashDef { name: "/thinking", args: "[level]", description: "Set thinking level" },
+    SlashDef { name: "/new", args: "", description: "Start new conversation" },
+    SlashDef { name: "/help", args: "", description: "Show available commands" },
+    SlashDef { name: "/quit", args: "", description: "Quit" },
+];
+
+fn matching_slash_hints(input: &str) -> Vec<&'static SlashDef> {
+    let parts: Vec<&str> = input.splitn(2, ' ').collect();
+    let cmd = parts[0].to_lowercase();
+    let has_arg = parts.len() > 1 && !parts[1].is_empty();
+
+    if has_arg {
+        return vec![];
+    }
+
+    SLASH_COMMANDS
+        .iter()
+        .filter(|h| h.name.starts_with(&cmd))
+        .collect()
+}
+
 // tokens accumulated in a single time bucket, broken down by type
 #[derive(Clone, Default)]
 struct TokenBucket {
@@ -64,6 +93,8 @@ enum ActivityItem {
     Text(String),
     // tool call entry
     Tool(ToolEntry),
+    // system/slash-command output, shown without bar prefix
+    System(String),
 }
 
 #[derive(Debug, Clone)]
@@ -343,6 +374,36 @@ impl App {
         }
     }
 
+    pub fn push_system_message(&mut self, msg: String) {
+        self.activity.push(ActivityItem::System(msg));
+        self.auto_scroll = true;
+    }
+
+    pub fn update_model(&mut self, model_id: &str) {
+        self.model_name = model_id.to_string();
+        self.context_limit = guess_context_limit(model_id);
+    }
+
+    pub fn reset_session(&mut self) {
+        self.activity.clear();
+        self.activity_render_cache.clear();
+        self.total_input = 0;
+        self.total_output = 0;
+        self.last_input = 0;
+        self.last_output = 0;
+        self.current_message = None;
+        self.queued_messages.clear();
+        self.rate_samples.clear();
+        self.rate_bucket = TokenBucket::default();
+        self.start_time = None;
+        self.scroll_offset = 0;
+        self.auto_scroll = true;
+    }
+
+    pub fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
     fn context_used(&self) -> u32 {
         self.last_input + self.last_output
     }
@@ -524,12 +585,10 @@ fn spinner_char(frame: u64) -> &'static str {
 }
 
 fn guess_context_limit(model: &str) -> u32 {
-    let m = model.to_lowercase();
-    if m.contains("opus") || m.contains("sonnet") || m.contains("haiku") {
-        DEFAULT_CONTEXT
-    } else {
-        DEFAULT_CONTEXT
+    if let Some(def) = crate::config::ANTHROPIC_MODELS.iter().find(|m| m.id == model) {
+        return def.context_window;
     }
+    DEFAULT_CONTEXT
 }
 
 fn capitalize_tool(name: &str) -> &str {
@@ -727,6 +786,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let max_input = (size.height / 3).max(2);
 
+    // slash command hints shown when input starts with "/"
+    let slash_hints: Vec<&SlashDef> = if !app.is_running && app.input.starts_with('/') {
+        matching_slash_hints(&app.input)
+    } else {
+        vec![]
+    };
+
     let message_height: u16 = if app.is_running {
         let mut total: u16 = 0;
         if let Some(ref msg) = app.current_message {
@@ -736,6 +802,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             total += visual_line_count(qm, size.width, 2) as u16;
         }
         total
+    } else if !slash_hints.is_empty() {
+        (slash_hints.len() as u16).min(6)
     } else {
         0
     };
@@ -758,7 +826,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(size);
 
     render_header(frame, app, chunks[0]);
-    render_message_area(frame, app, chunks[1]);
+    render_message_area(frame, app, chunks[1], &slash_hints);
     render_input_area(frame, app, chunks[2]);
 
     // chunks[3] is the buffer after input
@@ -1007,7 +1075,7 @@ fn wrap_input_text(
     (lines, cursor_visual)
 }
 
-fn render_message_area(frame: &mut Frame, app: &App, area: Rect) {
+fn render_message_area(frame: &mut Frame, app: &App, area: Rect, slash_hints: &[&SlashDef]) {
     if area.height == 0 {
         return;
     }
@@ -1021,6 +1089,19 @@ fn render_message_area(frame: &mut Frame, app: &App, area: Rect) {
         }
         for qm in &app.queued_messages {
             lines.extend(wrap_message_lines(qm, area.width, Style::default().fg(MUTED), None));
+        }
+    } else if !slash_hints.is_empty() {
+        for hint in slash_hints {
+            let cmd_text = if hint.args.is_empty() {
+                hint.name.to_string()
+            } else {
+                format!("{} {}", hint.name, hint.args)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(cmd_text, Style::default().fg(ACCENT)),
+                Span::styled(format!("  {}", hint.description), Style::default().fg(MUTED)),
+            ]));
         }
     }
 
@@ -1067,6 +1148,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         let (content_len, expanded, status_tag) = match &app.activity[idx] {
             ActivityItem::Thinking(t) => (t.len(), false, 0u8),
             ActivityItem::Text(t) => (t.len(), false, 0u8),
+            ActivityItem::System(t) => (t.len(), false, 0u8),
             ActivityItem::Tool(e) => {
                 let st = match &e.status {
                     ToolStatus::Running => 0,
@@ -1108,7 +1190,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     for idx in 0..n {
         let is_tt = matches!(
             &app.activity[idx],
-            ActivityItem::Thinking(_) | ActivityItem::Text(_)
+            ActivityItem::Thinking(_) | ActivityItem::Text(_) | ActivityItem::System(_)
         );
         if is_tt && idx > 0 {
             total += 1;
@@ -1161,7 +1243,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let is_tt = matches!(
                 &app.activity[idx],
-                ActivityItem::Thinking(_) | ActivityItem::Text(_)
+                ActivityItem::Thinking(_) | ActivityItem::Text(_) | ActivityItem::System(_)
             );
 
             // pre-spacing
@@ -1213,6 +1295,19 @@ fn render_activity_item(item: &ActivityItem, w: u16) -> Vec<Line<'static>> {
         ActivityItem::Tool(entry) => {
             let mut lines = Vec::new();
             render_tool_entry(&mut lines, entry, w);
+            lines
+        }
+        ActivityItem::System(text) => {
+            let mut lines = Vec::new();
+            for line in text.lines() {
+                lines.push(Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(line.to_string(), Style::default().fg(MUTED)),
+                ]));
+            }
+            if lines.is_empty() {
+                lines.push(Line::from(""));
+            }
             lines
         }
     }
