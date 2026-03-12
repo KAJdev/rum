@@ -89,6 +89,7 @@ pub struct App {
     cursor_pos: usize,
     activity: Vec<ActivityItem>,
     current_message: Option<String>,
+    queued_messages: Vec<String>,
     // summed across all api calls (for cost calculation)
     total_input: u32,
     total_output: u32,
@@ -123,6 +124,7 @@ impl App {
             cursor_pos: 0,
             activity: Vec::new(),
             current_message: None,
+            queued_messages: Vec::new(),
             total_input: 0,
             total_output: 0,
             last_input: 0,
@@ -266,6 +268,28 @@ impl App {
         self.auto_scroll = true;
         self.current_tool_input.clear();
         self.start_time = Some(Instant::now());
+        self.queued_messages.clear();
+    }
+
+    pub fn queue_message(&mut self) {
+        if !self.input.is_empty() {
+            self.queued_messages.push(self.input.clone());
+            self.input.clear();
+            self.cursor_pos = 0;
+        }
+    }
+
+    pub fn take_queued_messages(&mut self) -> String {
+        let msgs: Vec<String> = self.queued_messages.drain(..).collect();
+        msgs.join("\n\n")
+    }
+
+    pub fn has_queued_messages(&self) -> bool {
+        !self.queued_messages.is_empty()
+    }
+
+    pub fn clear_queue(&mut self) {
+        self.queued_messages.clear();
     }
 
     pub fn toggle_diff(&mut self, tool_index: usize) {
@@ -639,11 +663,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let max_input = (size.height / 3).max(2);
     let input_height = if app.is_running {
-        app.current_message.as_ref()
-            .map(|m| m.split('\n').count() as u16)
-            .unwrap_or(1)
-            .max(1)
-            .min(max_input)
+        let msg_lines = app.current_message.as_ref()
+            .map(|m| m.split('\n').count())
+            .unwrap_or(0);
+        let queued_lines: usize = app.queued_messages.iter()
+            .map(|m| m.split('\n').count())
+            .sum();
+        let active_lines = app.input_line_count();
+        ((msg_lines + queued_lines + active_lines) as u16).max(1).min(max_input)
     } else {
         (app.input_line_count() as u16).max(1).min(max_input)
     };
@@ -661,11 +688,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_header(frame, app, chunks[0]);
 
-    if app.is_running {
-        render_user_message(frame, app, chunks[1]);
-    } else {
-        render_input(frame, app, chunks[1]);
-    }
+    render_input_area(frame, app, chunks[1]);
 
     // chunks[2] is the buffer after input
     render_activity(frame, app, chunks[3]);
@@ -738,35 +761,38 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_user_message(frame: &mut Frame, app: &App, area: Rect) {
-    if let Some(ref msg) = app.current_message {
-        let mut lines: Vec<Line> = Vec::new();
-        for (i, line_text) in msg.split('\n').enumerate() {
-            let prefix = if i == 0 { "\u{203a} " } else { "  " };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                Span::styled(line_text.to_string(), Style::default().fg(FG)),
-            ]));
-        }
-        let widget = Paragraph::new(lines)
-            .style(Style::default().bg(BG));
-        frame.render_widget(widget, area);
-    }
-}
+fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+    let mut prefix_lines: u16 = 0;
 
-fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    let input_lines: Vec<&str> = app.input.split('\n').collect();
+    // when running, show the submitted message and queued messages as dim lines
+    if app.is_running {
+        if let Some(ref msg) = app.current_message {
+            for (i, line_text) in msg.split('\n').enumerate() {
+                let prefix = if i == 0 { "\u{203a} " } else { "  " };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(MUTED)),
+                    Span::styled(line_text.to_string(), Style::default().fg(MUTED)),
+                ]));
+            }
+        }
+        for queued_msg in &app.queued_messages {
+            for (i, line_text) in queued_msg.split('\n').enumerate() {
+                let prefix = if i == 0 { "\u{203a} " } else { "  " };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(MUTED)),
+                    Span::styled(line_text.to_string(), Style::default().fg(MUTED)),
+                ]));
+            }
+        }
+        prefix_lines = lines.len() as u16;
+    }
+
+    // active input
+    let input_lines_vec: Vec<&str> = app.input.split('\n').collect();
     let (cursor_line, _cursor_col) = app.cursor_line_col();
 
-    let visible_lines = area.height as usize;
-    let input_scroll: u16 = if cursor_line >= visible_lines {
-        (cursor_line - visible_lines + 1) as u16
-    } else {
-        0
-    };
-
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, line_text) in input_lines.iter().enumerate() {
+    for (i, line_text) in input_lines_vec.iter().enumerate() {
         let prefix = if i == 0 { "\u{203a} " } else { "  " };
         lines.push(Line::from(vec![
             Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
@@ -774,9 +800,17 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
+    let cursor_abs = prefix_lines + cursor_line as u16;
+    let visible = area.height;
+    let scroll: u16 = if cursor_abs >= visible {
+        cursor_abs - visible + 1
+    } else {
+        0
+    };
+
     let widget = Paragraph::new(lines)
         .style(Style::default().bg(BG))
-        .scroll((input_scroll, 0));
+        .scroll((scroll, 0));
     frame.render_widget(widget, area);
 
     // place the native terminal cursor
@@ -784,9 +818,9 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let line_start = app.input[..byte_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let text_before_cursor = &app.input[line_start..byte_pos];
     let display_col = UnicodeWidthStr::width(text_before_cursor) as u16;
-    let prefix_width: u16 = 2; // "› " or "  "
+    let prefix_width: u16 = 2;
     let cx = area.x + prefix_width + display_col;
-    let cy = area.y + (cursor_line as u16).saturating_sub(input_scroll);
+    let cy = area.y + cursor_abs.saturating_sub(scroll);
     frame.set_cursor_position((cx, cy));
 }
 
@@ -1149,21 +1183,15 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         return InputAction::Quit;
     }
 
-    if app.is_running {
-        match key.code {
-            KeyCode::Up => return InputAction::ScrollUp,
-            KeyCode::Down => return InputAction::ScrollDown,
-            KeyCode::PageUp => {
-                app.auto_scroll = false;
-                app.scroll_offset = app.scroll_offset.saturating_sub(10);
-                return InputAction::None;
-            }
-            KeyCode::PageDown => {
-                app.scroll_offset = app.scroll_offset.saturating_add(10);
-                return InputAction::None;
-            }
-            _ => return InputAction::None,
-        }
+    // page scroll (always available)
+    if key.code == KeyCode::PageUp {
+        app.auto_scroll = false;
+        app.scroll_offset = app.scroll_offset.saturating_sub(10);
+        return InputAction::None;
+    }
+    if key.code == KeyCode::PageDown {
+        app.scroll_offset = app.scroll_offset.saturating_add(10);
+        return InputAction::None;
     }
 
     match key.code {
@@ -1173,10 +1201,14 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 app.input.insert(bp, '\n');
                 app.cursor_pos += 1;
             } else if !app.input.is_empty() {
-                let msg = app.input.clone();
-                app.input.clear();
-                app.cursor_pos = 0;
-                return InputAction::Submit(msg);
+                if app.is_running {
+                    app.queue_message();
+                } else {
+                    let msg = app.input.clone();
+                    app.input.clear();
+                    app.cursor_pos = 0;
+                    return InputAction::Submit(msg);
+                }
             }
         }
         KeyCode::Backspace => {

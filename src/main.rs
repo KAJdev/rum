@@ -184,6 +184,14 @@ async fn run_tui_mode(
             }
         }
 
+        // send queued follow-up messages when the current turn finishes
+        if !app.is_running && app.has_queued_messages() {
+            let combined = app.take_queued_messages();
+            cancel.reset();
+            app.start_new_message(&combined);
+            let _ = user_tx.send(combined);
+        }
+
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 match tui::handle_key_event(key, &mut app) {
@@ -195,6 +203,7 @@ async fn run_tui_mode(
                     tui::InputAction::Cancel => {
                         cancel.cancel();
                         app.is_running = false;
+                        app.clear_queue();
                     }
                     tui::InputAction::Quit => break,
                     tui::InputAction::ScrollUp => {
