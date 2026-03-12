@@ -57,6 +57,8 @@ const BAR_WIDTH: u16 = 2;
 
 #[derive(Debug, Clone)]
 enum ActivityItem {
+    // user's prompt, shown as a quoted line
+    UserMessage(String),
     // thinking text from the model, shown dim/italic
     Thinking(String),
     // text output from the model, rendered as markdown with bar prefix
@@ -263,12 +265,13 @@ impl App {
 
     pub fn start_new_message(&mut self, message: &str) {
         self.current_message = Some(message.to_string());
-        self.activity.clear();
+        self.activity.push(ActivityItem::UserMessage(message.to_string()));
         self.is_running = true;
-        self.scroll_offset = 0;
         self.auto_scroll = true;
         self.current_tool_input.clear();
-        self.start_time = Some(Instant::now());
+        if self.start_time.is_none() {
+            self.start_time = Some(Instant::now());
+        }
         self.queued_messages.clear();
     }
 
@@ -664,14 +667,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let max_input = (size.height / 3).max(2);
     let input_height = if app.is_running {
-        let msg_lines = app.current_message.as_ref()
-            .map(|m| m.split('\n').count())
-            .unwrap_or(0);
         let queued_lines: usize = app.queued_messages.iter()
             .map(|m| m.split('\n').count())
             .sum();
         let active_lines = app.input_line_count();
-        ((msg_lines + queued_lines + active_lines) as u16).max(1).min(max_input)
+        ((queued_lines + active_lines) as u16).max(1).min(max_input)
     } else {
         (app.input_line_count() as u16).max(1).min(max_input)
     };
@@ -766,17 +766,8 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     let mut prefix_lines: u16 = 0;
 
-    // when running, show the submitted message and queued messages as dim lines
+    // show queued followup messages as dim lines above the active input
     if app.is_running {
-        if let Some(ref msg) = app.current_message {
-            for (i, line_text) in msg.split('\n').enumerate() {
-                let prefix = if i == 0 { "\u{203a} " } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(MUTED)),
-                    Span::styled(line_text.to_string(), Style::default().fg(MUTED)),
-                ]));
-            }
-        }
         for queued_msg in &app.queued_messages {
             for (i, line_text) in queued_msg.split('\n').enumerate() {
                 let prefix = if i == 0 { "\u{203a} " } else { "  " };
@@ -832,6 +823,18 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     let n = app.activity.len();
     for (idx, item) in app.activity.iter().enumerate() {
         match item {
+            ActivityItem::UserMessage(text) => {
+                if idx > 0 {
+                    lines.push(Line::from(""));
+                }
+                for (i, line_text) in text.split('\n').enumerate() {
+                    let prefix = if i == 0 { "\u{203a} " } else { "  " };
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                        Span::styled(line_text.to_string(), Style::default().fg(FG)),
+                    ]));
+                }
+            }
             ActivityItem::Thinking(text) => {
                 // only show the most recent paragraph of thinking.
                 // thinking tends to be a stream of evolving reasoning;
