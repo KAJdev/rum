@@ -84,7 +84,11 @@ async fn run_print_mode(
 
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
-    // spawn agent in a task that owns all its data
+    // build the api client on this thread (before spawn) since
+    // AuthEntry contains non-Send types. the client extracts what
+    // it needs and is itself Send-safe.
+    let api_client = api::ApiClient::new(cfg)?;
+
     tokio::spawn({
         let msg = msg.clone();
         let cfg_model = cfg.model.clone();
@@ -92,32 +96,18 @@ async fn run_print_mode(
         let cfg_system = cfg.system_prompt.clone();
         let cfg_context = cfg.context_files.clone();
         let cfg_provider = cfg.provider.clone();
-        let cfg_api_key = cfg.api_key.clone();
-        let cfg_auth = cfg.auth_entry.as_ref().map(|e| match e {
-            config::AuthEntry::OAuth { access, .. } => access.clone(),
-            config::AuthEntry::ApiKey { key } => key.clone(),
-        });
         let cwd = cwd.clone();
         let tx = agent_tx.clone();
 
         async move {
-            let key = cfg_auth.or(cfg_api_key.clone());
             let rebuilt_cfg = config::Config {
                 provider: cfg_provider,
                 model: cfg_model,
                 thinking_level: cfg_thinking,
-                api_key: key,
+                api_key: None,
                 auth_entry: None,
                 system_prompt: cfg_system,
                 context_files: cfg_context,
-            };
-            let api_client = match api::ApiClient::new(&rebuilt_cfg) {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = tx.send(AgentEvent::Error(e.to_string()));
-                    let _ = tx.send(AgentEvent::TurnComplete);
-                    return;
-                }
             };
             let cancel = agent::CancelToken::new();
             let mut agent = agent::Agent::new(&rebuilt_cfg, api_client, cwd, cancel);

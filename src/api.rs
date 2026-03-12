@@ -8,20 +8,35 @@ use crate::tools;
 pub struct MessagesRequest {
     pub model: String,
     pub max_tokens: u32,
-    pub system: String,
+    pub system: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
     pub tools: Vec<serde_json::Value>,
     pub messages: Vec<Message>,
     pub stream: bool,
 }
 
 #[derive(Debug, Serialize)]
-pub struct ThinkingConfig {
-    #[serde(rename = "type")]
-    pub thinking_type: String,
-    pub budget_tokens: u32,
+#[serde(untagged)]
+pub enum ThinkingConfig {
+    Budget {
+        #[serde(rename = "type")]
+        thinking_type: String,
+        budget_tokens: u32,
+    },
+    Adaptive {
+        #[serde(rename = "type")]
+        thinking_type: String,
+    },
 }
+
+#[derive(Debug, Serialize)]
+pub struct OutputConfig {
+    pub effort: String,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -76,20 +91,29 @@ pub enum StreamEvent {
     Error(String),
 }
 
+// whether the credential is an oauth bearer token or a raw api key.
+// oauth tokens use Authorization: Bearer, api keys use x-api-key.
+#[derive(Debug, Clone)]
+pub enum AuthMethod {
+    ApiKey(String),
+    Bearer(String),
+}
+
 pub struct ApiClient {
-    api_key: String,
+    auth: AuthMethod,
     model: String,
     base_url: String,
 }
 
 impl ApiClient {
     pub fn new(config: &Config) -> Result<Self> {
-        let api_key = if let Some(ref key) = config.api_key {
-            key.clone()
+        let auth = if let Some(ref key) = config.api_key {
+            // env var api keys always use x-api-key
+            AuthMethod::ApiKey(key.clone())
         } else if let Some(AuthEntry::OAuth { ref access, .. }) = config.auth_entry {
-            access.clone()
+            AuthMethod::Bearer(access.clone())
         } else if let Some(AuthEntry::ApiKey { ref key }) = config.auth_entry {
-            key.clone()
+            AuthMethod::ApiKey(key.clone())
         } else {
             bail!(
                 "no api key found for provider '{}'. set the appropriate env var or run `pi` and `/login`.",
@@ -103,7 +127,7 @@ impl ApiClient {
         };
 
         Ok(Self {
-            api_key,
+            auth,
             model: config.model.clone(),
             base_url,
         })
@@ -113,8 +137,8 @@ impl ApiClient {
         self.model.clone()
     }
 
-    pub fn api_key_clone(&self) -> String {
-        self.api_key.clone()
+    pub fn auth_clone(&self) -> AuthMethod {
+        self.auth.clone()
     }
 
     pub fn base_url_clone(&self) -> String {

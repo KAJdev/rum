@@ -119,9 +119,8 @@ impl Agent {
             let system = self.system_prompt.clone();
             let thinking = self.thinking_level.clone();
 
-            // spawn streaming in a separate task
             let client_model = self.client.model_clone();
-            let client_api_key = self.client.api_key_clone();
+            let client_auth = self.client.auth_clone();
             let client_base_url = self.client.base_url_clone();
             let tools_json = self.client.build_tools_json();
 
@@ -129,7 +128,7 @@ impl Agent {
                 let client = reqwest::Client::new();
                 if let Err(e) = stream_request(
                     &client,
-                    &client_api_key,
+                    &client_auth,
                     &client_base_url,
                     &client_model,
                     &messages,
@@ -195,6 +194,8 @@ impl Agent {
                         }
                     }
                     StreamEvent::ToolUseStart { id, name } => {
+                        // map claude code tool names back to our lowercase names
+                        let name = from_cc_name(&name).to_string();
                         in_tool = true;
                         in_text = false;
                         current_tool_id = id.clone();
@@ -335,9 +336,34 @@ impl Agent {
 }
 
 // standalone streaming function that owns all its data
+// claude code tool name casing for oauth stealth mode
+fn to_cc_name(name: &str) -> &str {
+    match name {
+        "read" => "Read",
+        "write" => "Write",
+        "edit" => "Edit",
+        "bash" => "Bash",
+        _ => name,
+    }
+}
+
+fn from_cc_name(name: &str) -> &str {
+    match name {
+        "Read" => "read",
+        "Write" => "write",
+        "Edit" => "edit",
+        "Bash" => "bash",
+        _ => name,
+    }
+}
+
+fn is_adaptive_model(model: &str) -> bool {
+    model.contains("opus-4-6") || model.contains("opus-4.6")
+}
+
 async fn stream_request(
     client: &reqwest::Client,
-    api_key: &str,
+    auth: &crate::api::AuthMethod,
     base_url: &str,
     model: &str,
     messages: &[Message],
@@ -346,52 +372,141 @@ async fn stream_request(
     tools_json: &[serde_json::Value],
     tx: mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
-    use crate::api::{MessagesRequest, ThinkingConfig};
+    use crate::api::{AuthMethod, MessagesRequest, OutputConfig, ThinkingConfig};
     use futures::StreamExt;
 
-    let thinking_budget = match thinking_level {
-        "minimal" => Some(1024u32),
-        "low" => Some(4096),
-        "medium" => Some(10240),
-        "high" => Some(32768),
-        "xhigh" => Some(65536),
-        _ => None,
+    let is_oauth = matches!(auth, AuthMethod::Bearer(_));
+
+    // adaptive thinking for opus 4.6+, budget-based for older models
+    let (thinking, output_config, max_tokens) = if is_adaptive_model(model) && thinking_level != "off" {
+        let effort = match thinking_level {
+            "minimal" | "low" => "low",
+            "medium" => "medium",
+            "high" => "high",
+            "xhigh" => "max",
+            _ => "high",
+        };
+        (
+            Some(ThinkingConfig::Adaptive {
+                thinking_type: "adaptive".to_string(),
+            }),
+            Some(OutputConfig { effort: effort.to_string() }),
+            16384,
+        )
+    } else {
+        let thinking_budget = match thinking_level {
+            "minimal" => Some(1024u32),
+            "low" => Some(4096),
+            "medium" => Some(10240),
+            "high" => Some(32768),
+            "xhigh" => Some(65536),
+            _ => None,
+        };
+
+        let thinking = thinking_budget.map(|budget| ThinkingConfig::Budget {
+            thinking_type: "enabled".to_string(),
+            budget_tokens: budget,
+        });
+
+        // max_tokens must be strictly greater than the thinking budget
+        let max_tokens = match thinking_budget {
+            Some(budget) => budget + 16384,
+            None => 8192,
+        };
+
+        (thinking, None, max_tokens)
     };
 
-    let thinking = thinking_budget.map(|budget| ThinkingConfig {
-        thinking_type: "enabled".to_string(),
-        budget_tokens: budget,
-    });
+    // oauth requires claude code identity in system prompt
+    let system_value = if is_oauth {
+        serde_json::json!([
+            { "type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude." },
+            { "type": "text", "text": system }
+        ])
+    } else {
+        serde_json::Value::String(system.to_string())
+    };
 
-    // max_tokens must be strictly greater than the thinking budget
-    let max_tokens = match thinking_budget {
-        Some(budget) => budget + 16384,
-        None => 8192,
+    // oauth requires claude code tool name casing
+    let tools = if is_oauth {
+        tools_json.iter().map(|t| {
+            let mut t = t.clone();
+            if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
+                t["name"] = serde_json::Value::String(to_cc_name(name).to_string());
+            }
+            t
+        }).collect()
+    } else {
+        tools_json.to_vec()
+    };
+
+    // remap tool names in conversation history for oauth
+    let messages = if is_oauth {
+        messages.iter().map(|m| {
+            let content = match &m.content {
+                MessageContent::Blocks(blocks) => {
+                    MessageContent::Blocks(blocks.iter().map(|b| match b {
+                        ContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+                            id: id.clone(),
+                            name: to_cc_name(name).to_string(),
+                            input: input.clone(),
+                        },
+                        other => other.clone(),
+                    }).collect())
+                }
+                other => other.clone(),
+            };
+            Message { role: m.role.clone(), content }
+        }).collect::<Vec<_>>()
+    } else {
+        messages.to_vec()
     };
 
     let request = MessagesRequest {
         model: model.to_string(),
         max_tokens,
-        system: system.to_string(),
+        system: system_value,
         thinking,
-        tools: tools_json.to_vec(),
-        messages: messages.to_vec(),
+        output_config,
+        tools,
+        messages,
         stream: true,
     };
 
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("x-api-key", api_key.parse()?);
+    match auth {
+        AuthMethod::ApiKey(key) => {
+            headers.insert("x-api-key", key.parse()?);
+        }
+        AuthMethod::Bearer(token) => {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", token).parse()?,
+            );
+        }
+    }
     headers.insert("anthropic-version", "2023-06-01".parse()?);
     headers.insert(
         reqwest::header::CONTENT_TYPE,
         "application/json".parse()?,
     );
 
-    if request.thinking.is_some() {
+    // build beta features list
+    let mut beta_features = Vec::new();
+    if is_oauth {
+        beta_features.push("claude-code-20250219");
+        beta_features.push("oauth-2025-04-20");
         headers.insert(
-            "anthropic-beta",
-            "interleaved-thinking-2025-05-14".parse()?,
+            reqwest::header::USER_AGENT,
+            "claude-cli/2.1.2 (external, cli)".parse()?,
         );
+        headers.insert("x-app", "cli".parse()?);
+    }
+    if request.thinking.is_some() {
+        beta_features.push("interleaved-thinking-2025-05-14");
+    }
+    if !beta_features.is_empty() {
+        headers.insert("anthropic-beta", beta_features.join(",").parse()?);
     }
 
     let response = client
