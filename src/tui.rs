@@ -33,6 +33,7 @@ const BAR_COLOR: Color = Color::Rgb(60, 65, 75);
 const THINKING_COLOR: Color = Color::Rgb(180, 140, 255);
 const TOOL_COLOR: Color = Color::Rgb(100, 200, 220);
 const INPUT_COLOR: Color = Color::Rgb(80, 130, 190);
+const INPUT_BG: Color = Color::Rgb(16, 20, 28);
 
 const DEFAULT_CONTEXT: u32 = 200_000;
 
@@ -114,6 +115,8 @@ pub struct App {
     start_time: Option<Instant>,
     // cached terminal width for manual line wrapping
     term_width: u16,
+    // animation frame counter, incremented every render tick
+    spin_frame: u64,
 }
 
 impl App {
@@ -144,10 +147,12 @@ impl App {
             current_tool_input: String::new(),
             start_time: None,
             term_width,
+            spin_frame: 0,
         }
     }
 
     pub fn tick_rate(&mut self) {
+        self.spin_frame = self.spin_frame.wrapping_add(1);
         let now = Instant::now();
         if now.duration_since(self.last_sample).as_millis() >= 2000 {
             self.rate_samples.push(self.rate_bucket.clone());
@@ -484,6 +489,14 @@ impl App {
     }
 }
 
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// ~60fps ticks, slow down to ~8 transitions/sec
+fn spinner_char(frame: u64) -> &'static str {
+    let idx = (frame / 8) as usize % SPINNER_FRAMES.len();
+    SPINNER_FRAMES[idx]
+}
+
 fn guess_context_limit(model: &str) -> u32 {
     let m = model.to_lowercase();
     if m.contains("opus") || m.contains("sonnet") || m.contains("haiku") {
@@ -678,44 +691,44 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
     let max_input = (size.height / 3).max(2);
-    let input_height = if app.is_running {
-        let msg_lines = app.current_message.as_ref()
-            .map(|m| {
-                let content_width = (size.width as usize).saturating_sub(2);
-                if content_width == 0 { return 1u16; }
-                let mut count: u16 = 0;
-                for line in m.split('\n') {
-                    let w = UnicodeWidthStr::width(line);
-                    if w == 0 { count += 1; } else {
-                        count += ((w + content_width - 1) / content_width) as u16;
-                    }
-                }
-                count.max(1)
-            })
-            .unwrap_or(1);
-        msg_lines.max(1).min(max_input)
+
+    let message_height: u16 = if app.is_running {
+        let mut total: u16 = 0;
+        if let Some(ref msg) = app.current_message {
+            total += visual_line_count(msg, size.width, 2) as u16;
+        }
+        for qm in &app.queued_messages {
+            total += visual_line_count(qm, size.width, 2) as u16;
+        }
+        total
     } else {
-        (app.input_visual_line_count() as u16).max(1).min(max_input)
+        0
     };
+
+    let input_only_height = (app.input_visual_line_count() as u16).max(1);
+    let combined = (message_height + input_only_height).max(1).min(max_input);
+    let msg_h = message_height.min(combined);
+    let input_h = combined - msg_h;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),           // header
-            Constraint::Length(input_height), // input / user message
-            Constraint::Length(1),           // buffer after input
-            Constraint::Min(4),             // activity feed
-            Constraint::Length(1),           // buffer before bottom edge
+            Constraint::Length(1),       // header
+            Constraint::Length(msg_h),   // current/queued messages
+            Constraint::Length(input_h), // input field
+            Constraint::Length(1),       // buffer after input
+            Constraint::Min(4),         // activity feed
+            Constraint::Length(1),       // buffer before bottom edge
         ])
         .split(size);
 
     render_header(frame, app, chunks[0]);
+    render_message_area(frame, app, chunks[1]);
+    render_input_area(frame, app, chunks[2]);
 
-    render_input_area(frame, app, chunks[1]);
-
-    // chunks[2] is the buffer after input
-    render_activity(frame, app, chunks[3]);
-    // chunks[4] is the buffer at the bottom
+    // chunks[3] is the buffer after input
+    render_activity(frame, app, chunks[4]);
+    // chunks[5] is the buffer at the bottom
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -784,6 +797,76 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+// count visual lines after soft-wrapping text to fit within
+// (max_width - prefix_width) columns
+fn visual_line_count(text: &str, max_width: u16, prefix_width: usize) -> usize {
+    let content_width = (max_width as usize).saturating_sub(prefix_width);
+    if content_width == 0 { return 1; }
+    let mut count = 0;
+    for line in text.split('\n') {
+        let w = UnicodeWidthStr::width(line);
+        if w == 0 { count += 1; } else {
+            count += (w + content_width - 1) / content_width;
+        }
+    }
+    count.max(1)
+}
+
+// wrap a message into indented lines with a given text style.
+// used for rendering the active message and queued messages above the input.
+fn wrap_message_lines(text: &str, max_width: u16, text_style: Style, spinner: Option<&str>) -> Vec<Line<'static>> {
+    let prefix_width = 2usize;
+    let content_width = (max_width as usize).saturating_sub(prefix_width);
+    if content_width == 0 { return vec![]; }
+
+    let mut lines = Vec::new();
+    for logical_line in text.split('\n') {
+        if logical_line.is_empty() {
+            lines.push(Line::from(vec![Span::styled("  ", Style::default())]));
+            continue;
+        }
+        let chars: Vec<char> = logical_line.chars().collect();
+        let mut chunk_start = 0;
+        while chunk_start < chars.len() {
+            let mut w = 0;
+            let mut chunk_end = chunk_start;
+            while chunk_end < chars.len() {
+                let cw = unicode_width::UnicodeWidthChar::width(chars[chunk_end]).unwrap_or(0);
+                if w + cw > content_width { break; }
+                w += cw;
+                chunk_end += 1;
+            }
+            if chunk_end == chunk_start { chunk_end = chunk_start + 1; }
+            let chunk_text: String = chars[chunk_start..chunk_end].iter().collect();
+
+            let prefix = if lines.is_empty() {
+                if let Some(s) = spinner {
+                    format!("{} ", s)
+                } else {
+                    "  ".to_string()
+                }
+            } else {
+                "  ".to_string()
+            };
+            let prefix_style = if lines.is_empty() && spinner.is_some() {
+                Style::default().fg(ACCENT)
+            } else {
+                Style::default()
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(prefix, prefix_style),
+                Span::styled(chunk_text, text_style),
+            ]));
+            chunk_start = chunk_end;
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(vec![Span::styled("  ", Style::default())]));
+    }
+    lines
+}
+
 // wrap input/message text into visual lines with a prefix on the first line.
 // returns the visual lines and, if a cursor char position is given,
 // the (visual_row, visual_col) of the cursor.
@@ -791,6 +874,7 @@ fn wrap_input_text(
     text: &str,
     max_width: u16,
     cursor_char_pos: Option<usize>,
+    text_color: Color,
 ) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
     let prefix_width: usize = 2;
     let content_width = (max_width as usize).saturating_sub(prefix_width);
@@ -863,7 +947,7 @@ fn wrap_input_text(
 
             lines.push(Line::from(vec![
                 Span::styled(row_prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                Span::styled(chunk_text, Style::default().fg(FG)),
+                Span::styled(chunk_text, Style::default().fg(text_color)),
             ]));
 
             chunk_start = chunk_end;
@@ -888,38 +972,49 @@ fn wrap_input_text(
     (lines, cursor_visual)
 }
 
-fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
-    if app.is_running {
-        let text = app.current_message.as_deref().unwrap_or("");
-        let (lines, _) = wrap_input_text(text, area.width, None);
-
-        let widget = Paragraph::new(lines)
-            .style(Style::default().bg(BG))
-            .scroll((0, 0));
-        frame.render_widget(widget, area);
-    } else {
-        let (lines, cursor_pos) = wrap_input_text(&app.input, area.width, Some(app.cursor_pos));
-
-        let cursor_row = cursor_pos.map(|(r, _)| r).unwrap_or(0);
-        let visible = area.height;
-        let scroll: u16 = if cursor_row >= visible {
-            cursor_row - visible + 1
-        } else {
-            0
-        };
-
-        let widget = Paragraph::new(lines)
-            .style(Style::default().bg(BG))
-            .scroll((scroll, 0));
-        frame.render_widget(widget, area);
-
-        // place the native terminal cursor
-        let prefix_width: u16 = 2;
-        let (vrow, vcol) = cursor_pos.unwrap_or((0, 0));
-        let cx = area.x + prefix_width + vcol;
-        let cy = area.y + vrow.saturating_sub(scroll);
-        frame.set_cursor_position((cx, cy));
+fn render_message_area(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
     }
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    if app.is_running {
+        let spin = spinner_char(app.spin_frame);
+        if let Some(ref msg) = app.current_message {
+            lines.extend(wrap_message_lines(msg, area.width, Style::default().fg(ACCENT), Some(spin)));
+        }
+        for qm in &app.queued_messages {
+            lines.extend(wrap_message_lines(qm, area.width, Style::default().fg(MUTED), None));
+        }
+    }
+
+    let widget = Paragraph::new(lines)
+        .style(Style::default().bg(BG));
+    frame.render_widget(widget, area);
+}
+
+fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
+    let (input_lines, cursor_pos) = wrap_input_text(&app.input, area.width, Some(app.cursor_pos), FG);
+
+    let visible = area.height;
+    let cursor_row = cursor_pos.map(|(r, _)| r).unwrap_or(0);
+    let scroll: u16 = if cursor_row >= visible {
+        cursor_row - visible + 1
+    } else {
+        0
+    };
+
+    let widget = Paragraph::new(input_lines)
+        .style(Style::default().bg(INPUT_BG))
+        .scroll((scroll, 0));
+    frame.render_widget(widget, area);
+
+    let prefix_width: u16 = 2;
+    let (vrow, vcol) = cursor_pos.unwrap_or((0, 0));
+    let cx = area.x + prefix_width + vcol;
+    let cy = area.y + vrow.saturating_sub(scroll);
+    frame.set_cursor_position((cx, cy));
 }
 
 fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -985,6 +1080,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let scroll = if app.auto_scroll {
+        app.scroll_offset = max_scroll;
         max_scroll
     } else {
         app.scroll_offset
