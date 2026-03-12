@@ -15,8 +15,9 @@ pub struct RumSettings {
 }
 
 pub fn rum_config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".config")
         .join("rum")
 }
 

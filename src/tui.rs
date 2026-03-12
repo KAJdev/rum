@@ -50,19 +50,65 @@ const SLASH_COMMANDS: &[SlashDef] = &[
     SlashDef { name: "/quit", args: "", description: "Quit" },
 ];
 
-fn matching_slash_hints(input: &str) -> Vec<&'static SlashDef> {
-    let parts: Vec<&str> = input.splitn(2, ' ').collect();
-    let cmd = parts[0].to_lowercase();
-    let has_arg = parts.len() > 1 && !parts[1].is_empty();
+struct Suggestion {
+    display: String,
+    description: String,
+    // full string placed in the input field when this suggestion is applied
+    completion: String,
+}
 
-    if has_arg {
+fn slash_suggestions(input: &str) -> Vec<Suggestion> {
+    if !input.starts_with('/') {
         return vec![];
     }
+    let parts: Vec<&str> = input.splitn(2, ' ').collect();
+    let cmd_part = parts[0].to_lowercase();
 
-    SLASH_COMMANDS
-        .iter()
-        .filter(|h| h.name.starts_with(&cmd))
-        .collect()
+    if parts.len() == 1 {
+        // completing the command name
+        return SLASH_COMMANDS.iter()
+            .filter(|h| h.name.starts_with(cmd_part.as_str()))
+            .map(|h| Suggestion {
+                display: if h.args.is_empty() {
+                    h.name.to_string()
+                } else {
+                    format!("{} {}", h.name, h.args)
+                },
+                description: h.description.to_string(),
+                // commands with args get a trailing space so the next Tab starts arg completion
+                completion: if h.args.is_empty() {
+                    h.name.to_string()
+                } else {
+                    format!("{} ", h.name)
+                },
+            })
+            .collect();
+    }
+
+    // completing a command argument
+    let arg_partial = parts[1].to_lowercase();
+    match cmd_part.as_str() {
+        "/model" => crate::config::ANTHROPIC_MODELS.iter()
+            .filter(|m| {
+                m.id.to_lowercase().contains(arg_partial.as_str())
+                    || m.name.to_lowercase().contains(arg_partial.as_str())
+            })
+            .map(|m| Suggestion {
+                display: m.id.to_string(),
+                description: m.name.to_string(),
+                completion: format!("/model {}", m.id),
+            })
+            .collect(),
+        "/thinking" => crate::config::THINKING_LEVELS.iter()
+            .filter(|l| l.starts_with(arg_partial.as_str()))
+            .map(|l| Suggestion {
+                display: l.to_string(),
+                description: String::new(),
+                completion: format!("/thinking {}", l),
+            })
+            .collect(),
+        _ => vec![],
+    }
 }
 
 // tokens accumulated in a single time bucket, broken down by type
@@ -163,6 +209,9 @@ pub struct App {
     spin_frame: u64,
     // per-item cache of rendered lines for the activity feed
     activity_render_cache: Vec<CachedRender>,
+    // slash command tab-completion state
+    slash_prefix: Option<String>,
+    slash_selected: Option<usize>,
 }
 
 impl App {
@@ -196,6 +245,8 @@ impl App {
             term_width,
             spin_frame: 0,
             activity_render_cache: Vec::new(),
+            slash_prefix: None,
+            slash_selected: None,
         }
     }
 
@@ -355,6 +406,11 @@ impl App {
 
     pub fn clear_queue(&mut self) {
         self.queued_messages.clear();
+    }
+
+    pub fn reset_slash_completion(&mut self) {
+        self.slash_prefix = None;
+        self.slash_selected = None;
     }
 
     // pop the last queued message back into the input for editing
@@ -799,15 +855,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let max_input = (size.height / 3).max(2);
 
-    // slash command hints shown when input starts with "/"
-    let slash_hints: Vec<&SlashDef> = if app.input.starts_with('/') {
-        matching_slash_hints(&app.input)
+    // slash command suggestions shown when input starts with "/".
+    // use the snapshot taken at first Tab press so cycling doesn't narrow the set.
+    let completion_input = app.slash_prefix.as_deref().unwrap_or(app.input.as_str());
+    let suggestions: Vec<Suggestion> = if app.input.starts_with('/') {
+        slash_suggestions(completion_input)
     } else {
         vec![]
     };
+    let slash_selected = app.slash_selected;
 
-    let message_height: u16 = if !slash_hints.is_empty() {
-        (slash_hints.len() as u16).min(6)
+    let message_height: u16 = if !suggestions.is_empty() {
+        (suggestions.len() as u16).min(8)
     } else if app.is_running {
         let mut total: u16 = 0;
         if let Some(ref msg) = app.current_message {
@@ -839,7 +898,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(size);
 
     render_header(frame, app, chunks[0]);
-    render_message_area(frame, app, chunks[1], &slash_hints);
+    render_message_area(frame, app, chunks[1], &suggestions, slash_selected);
     render_input_area(frame, app, chunks[2]);
 
     // chunks[3] is the buffer after input
@@ -1088,14 +1147,14 @@ fn wrap_input_text(
     (lines, cursor_visual)
 }
 
-fn render_message_area(frame: &mut Frame, app: &App, area: Rect, slash_hints: &[&SlashDef]) {
+fn render_message_area(frame: &mut Frame, app: &App, area: Rect, suggestions: &[Suggestion], selected: Option<usize>) {
     if area.height == 0 {
         return;
     }
 
     let mut lines: Vec<Line> = Vec::new();
 
-    if app.is_running && slash_hints.is_empty() {
+    if app.is_running && suggestions.is_empty() {
         let spin = spinner_char(app.spin_frame);
         if let Some(ref msg) = app.current_message {
             lines.extend(wrap_message_lines(msg, area.width, Style::default().fg(ACCENT), Some(spin)));
@@ -1103,23 +1162,30 @@ fn render_message_area(frame: &mut Frame, app: &App, area: Rect, slash_hints: &[
         for qm in &app.queued_messages {
             lines.extend(wrap_message_lines(qm, area.width, Style::default().fg(MUTED), None));
         }
-    } else if !slash_hints.is_empty() {
-        for hint in slash_hints {
-            let cmd_text = if hint.args.is_empty() {
-                hint.name.to_string()
+    } else if !suggestions.is_empty() {
+        for (i, s) in suggestions.iter().enumerate() {
+            let is_sel = selected == Some(i);
+            let (cmd_style, desc_style) = if is_sel {
+                (
+                    Style::default().fg(BG).bg(ACCENT),
+                    Style::default().fg(BG).bg(ACCENT),
+                )
             } else {
-                format!("{} {}", hint.name, hint.args)
+                (Style::default().fg(ACCENT), Style::default().fg(MUTED))
             };
-            lines.push(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(cmd_text, Style::default().fg(ACCENT)),
-                Span::styled(format!("  {}", hint.description), Style::default().fg(MUTED)),
-            ]));
+            let prefix = if is_sel { "\u{203a} " } else { "  " };
+            let mut spans = vec![
+                Span::styled(prefix, cmd_style),
+                Span::styled(s.display.clone(), cmd_style),
+            ];
+            if !s.description.is_empty() {
+                spans.push(Span::styled(format!("  {}", s.description), desc_style));
+            }
+            lines.push(Line::from(spans));
         }
     }
 
-    let widget = Paragraph::new(lines)
-        .style(Style::default().bg(BG));
+    let widget = Paragraph::new(lines).style(Style::default().bg(BG));
     frame.render_widget(widget, area);
 }
 
@@ -1599,6 +1665,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         }
         app.input.clear();
         app.cursor_pos = 0;
+        app.reset_slash_completion();
         return InputAction::None;
     }
 
@@ -1624,14 +1691,17 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
     match key.code {
         KeyCode::Enter => {
             if shift || alt || ctrl {
+                app.reset_slash_completion();
                 let bp = app.cursor_byte_pos();
                 app.input.insert(bp, '\n');
                 app.cursor_pos += 1;
             } else if !app.input.is_empty() {
                 // slash commands are dispatched immediately even during a running turn
                 if app.is_running && !app.input.starts_with('/') {
+                    app.reset_slash_completion();
                     app.queue_message();
                 } else {
+                    app.reset_slash_completion();
                     let msg = app.input.clone();
                     app.input.clear();
                     app.cursor_pos = 0;
@@ -1639,7 +1709,45 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 }
             }
         }
+        KeyCode::Tab | KeyCode::BackTab => {
+            if app.input.starts_with('/') {
+                let forward = key.code == KeyCode::Tab;
+                // snapshot the input before the first Tab so cycling doesn't narrow the set
+                if app.slash_prefix.is_none() {
+                    app.slash_prefix = Some(app.input.clone());
+                }
+                let prefix = app.slash_prefix.clone().unwrap();
+                let suggestions = slash_suggestions(&prefix);
+                let count = suggestions.len();
+                if count == 0 {
+                    return InputAction::None;
+                }
+                let next = if forward {
+                    match app.slash_selected {
+                        None => 0,
+                        Some(i) => (i + 1) % count,
+                    }
+                } else {
+                    match app.slash_selected {
+                        None | Some(0) => count - 1,
+                        Some(i) => i - 1,
+                    }
+                };
+                app.slash_selected = Some(next);
+                let completion = suggestions[next].completion.clone();
+                // when a command name is completed (trailing space), reset the prefix
+                // so the next Tab opens a fresh arg-completion session
+                let is_cmd_completion = completion.ends_with(' ');
+                app.input = completion;
+                app.cursor_pos = app.char_count();
+                if is_cmd_completion {
+                    app.slash_prefix = Some(app.input.clone());
+                    app.slash_selected = None;
+                }
+            }
+        }
         KeyCode::Backspace => {
+            app.reset_slash_completion();
             if super_key {
                 app.delete_to_line_start();
             } else if alt || ctrl {
@@ -1654,6 +1762,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
             }
         }
         KeyCode::Delete => {
+            app.reset_slash_completion();
             if app.cursor_pos < app.char_count() {
                 let bp = app.cursor_byte_pos();
                 app.input.remove(bp);
@@ -1704,11 +1813,12 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 match c {
                     'a' => app.move_line_start(),
                     'e' => app.move_line_end(),
-                    'u' => app.delete_to_line_start(),
-                    'k' => app.delete_to_line_end(),
-                    'w' => app.delete_word_backward(),
+                    'u' => { app.reset_slash_completion(); app.delete_to_line_start(); }
+                    'k' => { app.reset_slash_completion(); app.delete_to_line_end(); }
+                    'w' => { app.reset_slash_completion(); app.delete_word_backward(); }
                     'j' => {
                         // ctrl+j inserts newline (traditional unix LF)
+                        app.reset_slash_completion();
                         let bp = app.cursor_byte_pos();
                         app.input.insert(bp, '\n');
                         app.cursor_pos += 1;
@@ -1724,6 +1834,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                     'f' => app.move_word_right(),
                     'd' => {
                         // alt+d: delete word forward
+                        app.reset_slash_completion();
                         let start = app.cursor_pos;
                         app.move_word_right();
                         let end = app.cursor_pos;
@@ -1739,6 +1850,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                     _ => {}
                 }
             } else {
+                app.reset_slash_completion();
                 let bp = app.cursor_byte_pos();
                 app.input.insert(bp, c);
                 app.cursor_pos += 1;
