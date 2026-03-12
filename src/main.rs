@@ -119,7 +119,8 @@ async fn run_print_mode(
                     return;
                 }
             };
-            let mut agent = agent::Agent::new(&rebuilt_cfg, api_client, cwd);
+            let cancel = agent::CancelToken::new();
+            let mut agent = agent::Agent::new(&rebuilt_cfg, api_client, cwd, cancel);
             let result = agent.send_message(&msg, tx.clone()).await;
             if let Err(e) = result {
                 let _ = tx.send(AgentEvent::Error(e.to_string()));
@@ -158,12 +159,15 @@ async fn run_tui_mode(
     let mut terminal = tui::Tui::new()?;
     let mut app = tui::App::new(&cfg.model, &cwd.to_string_lossy());
 
+    let cancel = agent::CancelToken::new();
+
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
     let agent_cwd = cwd.clone();
+    let agent_cancel = cancel.clone();
     tokio::spawn(async move {
-        let agent = agent::Agent::new(&cfg, api_client, agent_cwd);
+        let agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
         agent_loop(agent, user_rx, agent_tx).await;
     });
 
@@ -194,8 +198,13 @@ async fn run_tui_mode(
             if let Event::Key(key) = event::read()? {
                 match tui::handle_key_event(key, &mut app) {
                     tui::InputAction::Submit(msg) => {
+                        cancel.reset();
                         app.start_new_message(&msg);
                         let _ = user_tx.send(msg);
+                    }
+                    tui::InputAction::Cancel => {
+                        cancel.cancel();
+                        app.is_running = false;
                     }
                     tui::InputAction::Quit => break,
                     tui::InputAction::ScrollUp => {
@@ -205,7 +214,6 @@ async fn run_tui_mode(
                         app.scroll_offset = app.scroll_offset.saturating_add(1);
                     }
                     tui::InputAction::ToggleDiff => {
-                        // toggle the last diff
                         let count = app.tool_diff_count();
                         if count > 0 {
                             app.toggle_diff(count - 1);

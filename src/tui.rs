@@ -82,6 +82,8 @@ pub struct App {
     pub is_running: bool,
     pub should_quit: bool,
     pub scroll_offset: u16,
+    // when true, viewport follows new content to the bottom
+    auto_scroll: bool,
     model_name: String,
     cwd: String,
     current_tool_input: String,
@@ -110,6 +112,7 @@ impl App {
             is_running: false,
             should_quit: false,
             scroll_offset: 0,
+            auto_scroll: true,
             model_name: model_name.to_string(),
             cwd: cwd.to_string(),
             current_tool_input: String::new(),
@@ -233,6 +236,7 @@ impl App {
         self.activity.clear();
         self.is_running = true;
         self.scroll_offset = 0;
+        self.auto_scroll = true;
         self.current_tool_input.clear();
         self.start_time = Some(Instant::now());
     }
@@ -586,9 +590,15 @@ fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // don't use Wrap here since we do manual wrapping above
+    let total_lines = lines.len() as u16;
+    let scroll = if app.auto_scroll {
+        total_lines.saturating_sub(area.height)
+    } else {
+        app.scroll_offset
+    };
     let activity = Paragraph::new(lines)
         .style(Style::default().bg(BG))
-        .scroll((app.scroll_offset, 0));
+        .scroll((scroll, 0));
 
     frame.render_widget(activity, area);
 }
@@ -856,6 +866,7 @@ impl Drop for Tui {
 
 pub enum InputAction {
     Submit(String),
+    Cancel,
     Quit,
     ScrollUp,
     ScrollDown,
@@ -864,9 +875,10 @@ pub enum InputAction {
 }
 
 pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
+    // ctrl+c: cancel if running, quit if idle with empty input, clear input otherwise
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         if app.is_running {
-            return InputAction::Quit;
+            return InputAction::Cancel;
         }
         if app.input.is_empty() {
             return InputAction::Quit;
@@ -876,7 +888,11 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         return InputAction::None;
     }
 
+    // escape: cancel if running, quit if idle
     if key.code == KeyCode::Esc {
+        if app.is_running {
+            return InputAction::Cancel;
+        }
         return InputAction::Quit;
     }
 

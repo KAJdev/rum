@@ -1,11 +1,36 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::api::{ApiClient, ContentBlock, Message, MessageContent, StreamEvent};
 use crate::config::Config;
 use crate::tools::{self, ToolResult};
+
+// shared flag for cooperative cancellation.
+// set to true when the user hits escape during a running operation.
+#[derive(Clone)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn reset(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
 
 // events sent from the agent to the TUI
 #[derive(Debug, Clone)]
@@ -34,10 +59,11 @@ pub struct Agent {
     system_prompt: String,
     thinking_level: String,
     cwd: PathBuf,
+    cancel: CancelToken,
 }
 
 impl Agent {
-    pub fn new(config: &Config, client: ApiClient, cwd: PathBuf) -> Self {
+    pub fn new(config: &Config, client: ApiClient, cwd: PathBuf, cancel: CancelToken) -> Self {
         let mut system = config.system_prompt.clone();
         for ctx in &config.context_files {
             system.push_str("\n\n");
@@ -55,6 +81,7 @@ impl Agent {
             system_prompt: system,
             thinking_level: config.thinking_level.clone(),
             cwd,
+            cancel,
         }
     }
 
@@ -88,7 +115,7 @@ impl Agent {
             let client_base_url = self.client.base_url_clone();
             let tools_json = self.client.build_tools_json();
 
-            tokio::spawn(async move {
+            let stream_handle = tokio::spawn(async move {
                 let client = reqwest::Client::new();
                 let _ = stream_request(
                     &client,
@@ -122,6 +149,10 @@ impl Agent {
             let mut tool_results: HashMap<String, ToolResult> = HashMap::new();
 
             while let Some(evt) = stream_rx.recv().await {
+                if self.cancel.is_cancelled() {
+                    stream_handle.abort();
+                    break;
+                }
                 match evt {
                     StreamEvent::MessageStart { input_tokens: it } => {
                         input_tokens = it;
@@ -183,7 +214,12 @@ impl Agent {
                                 input: input.clone(),
                             });
 
-                            // execute the tool once, cache result
+                            // skip tool execution if cancelled
+                            if self.cancel.is_cancelled() {
+                                in_tool = false;
+                                continue;
+                            }
+
                             let result = tools::execute_tool(
                                 &current_tool_name,
                                 &input,
@@ -222,6 +258,12 @@ impl Agent {
                 input_tokens,
                 output_tokens,
             });
+
+            // bail out if cancelled
+            if self.cancel.is_cancelled() {
+                let _ = event_tx.send(AgentEvent::TurnComplete);
+                break;
+            }
 
             // add assistant message
             self.messages.push(Message {
