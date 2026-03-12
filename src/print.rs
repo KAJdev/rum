@@ -258,6 +258,7 @@ fn unescape_json_str(s: &str) -> String {
 
 pub struct PrintMode {
     start: Instant,
+    model: String,
     // summed across all api calls (for cost calculation)
     total_input: u32,
     total_output: u32,
@@ -280,9 +281,10 @@ pub struct PrintMode {
 }
 
 impl PrintMode {
-    pub fn new() -> Self {
+    pub fn new(model: &str) -> Self {
         Self {
             start: Instant::now(),
+            model: model.to_string(),
             total_input: 0,
             total_output: 0,
             last_input: 0,
@@ -599,8 +601,9 @@ impl PrintMode {
     pub fn print_summary(&self) {
         let elapsed = self.start.elapsed();
         let context = self.last_input + self.last_output;
-        let cost = self.total_input as f64 * 3.0 / 1_000_000.0
-            + self.total_output as f64 * 15.0 / 1_000_000.0;
+        let p = crate::config::model_pricing(&self.model);
+        let cost = self.total_input as f64 * p.input / 1_000_000.0
+            + self.total_output as f64 * p.output / 1_000_000.0;
         let rate = if elapsed.as_secs_f64() > 0.0 {
             self.total_output as f64 / elapsed.as_secs_f64()
         } else {

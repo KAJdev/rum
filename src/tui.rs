@@ -327,8 +327,9 @@ impl App {
     }
 
     fn cost_usd(&self) -> f64 {
-        self.total_input as f64 * 3.0 / 1_000_000.0
-            + self.total_output as f64 * 15.0 / 1_000_000.0
+        let p = crate::config::model_pricing(&self.model_name);
+        self.total_input as f64 * p.input / 1_000_000.0
+            + self.total_output as f64 * p.output / 1_000_000.0
     }
 
     fn avg_rate(&self) -> f64 {

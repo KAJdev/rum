@@ -206,3 +206,21 @@ pub fn load_config(cwd: &Path) -> Result<Config> {
         context_files,
     })
 }
+
+// per-million-token pricing for anthropic models
+pub struct ModelPricing {
+    pub input: f64,
+    pub output: f64,
+}
+
+pub fn model_pricing(model: &str) -> ModelPricing {
+    let m = model.to_lowercase();
+    if m.contains("opus") {
+        ModelPricing { input: 15.0, output: 75.0 }
+    } else if m.contains("haiku") {
+        ModelPricing { input: 0.80, output: 4.0 }
+    } else {
+        // sonnet and unknown models
+        ModelPricing { input: 3.0, output: 15.0 }
+    }
+}

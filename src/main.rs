@@ -121,7 +121,7 @@ async fn run_print_mode(
 
     drop(agent_tx);
 
-    let mut pm = print::PrintMode::new();
+    let mut pm = print::PrintMode::new(&cfg.model);
     pm.print_header(&cfg.model, &cwd.to_string_lossy(), &msg);
 
     while let Some(evt) = agent_rx.recv().await {
