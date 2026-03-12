@@ -32,7 +32,6 @@ const BAR_COLOR: Color = Color::Rgb(60, 65, 75);
 
 const THINKING_COLOR: Color = Color::Rgb(180, 140, 255);
 const TOOL_COLOR: Color = Color::Rgb(100, 200, 220);
-const INPUT_COLOR: Color = Color::Rgb(80, 130, 190);
 const INPUT_BG: Color = Color::Rgb(16, 20, 28);
 
 const DEFAULT_CONTEXT: u32 = 200_000;
@@ -43,12 +42,13 @@ struct TokenBucket {
     text: u32,
     thinking: u32,
     tool: u32,
-    input: u32,
 }
 
 impl TokenBucket {
     fn total(&self) -> u64 {
-        (self.text + self.thinking + self.tool + self.input) as u64
+        // input tokens are excluded: they're a usage count reported once
+        // per api call, not streaming throughput
+        (self.text + self.thinking + self.tool) as u64
     }
 }
 
@@ -257,7 +257,6 @@ impl App {
                 self.total_output += output_tokens;
                 self.last_input = input_tokens;
                 self.last_output = output_tokens;
-                self.rate_bucket.input += input_tokens;
             }
             AgentEvent::TurnComplete => {
                 self.is_running = false;
@@ -1272,7 +1271,6 @@ fn dominant_color(bucket: &TokenBucket) -> Color {
         (bucket.text, ACCENT),
         (bucket.thinking, THINKING_COLOR),
         (bucket.tool, TOOL_COLOR),
-        (bucket.input, INPUT_COLOR),
     ];
     pairs.iter()
         .max_by_key(|(count, _)| *count)
