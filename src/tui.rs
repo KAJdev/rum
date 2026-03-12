@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::Paragraph,
     Frame, Terminal,
 };
 use std::io::{self, Stdout};
@@ -308,6 +308,137 @@ impl App {
             0.0
         }
     }
+
+    // cursor_pos is a char-count offset. convert to byte index for
+    // String insert/remove operations.
+    fn cursor_byte_pos(&self) -> usize {
+        self.input.char_indices()
+            .nth(self.cursor_pos)
+            .map(|(i, _)| i)
+            .unwrap_or(self.input.len())
+    }
+
+    fn char_count(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    // (line_number, column_in_chars) from cursor_pos
+    fn cursor_line_col(&self) -> (usize, usize) {
+        let text_before: String = self.input.chars().take(self.cursor_pos).collect();
+        let line = text_before.matches('\n').count();
+        let col = match text_before.rfind('\n') {
+            Some(i) => text_before[i + 1..].chars().count(),
+            None => text_before.chars().count(),
+        };
+        (line, col)
+    }
+
+    fn input_line_count(&self) -> usize {
+        self.input.split('\n').count()
+    }
+
+    fn delete_to_line_start(&mut self) {
+        let (_, col) = self.cursor_line_col();
+        if col == 0 {
+            if self.cursor_pos > 0 {
+                let bp = self.cursor_byte_pos();
+                let prev = self.input[..bp].char_indices().last().map(|(i, _)| i);
+                if let Some(pb) = prev {
+                    self.input.remove(pb);
+                    self.cursor_pos -= 1;
+                }
+            }
+        } else {
+            let bp = self.cursor_byte_pos();
+            let start = bp - self.input[..bp].chars().rev().take(col)
+                .map(|c| c.len_utf8()).sum::<usize>();
+            self.input.replace_range(start..bp, "");
+            self.cursor_pos -= col;
+        }
+    }
+
+    fn delete_to_line_end(&mut self) {
+        let bp = self.cursor_byte_pos();
+        let end = self.input[bp..].find('\n')
+            .map(|i| bp + i)
+            .unwrap_or(self.input.len());
+        self.input.replace_range(bp..end, "");
+    }
+
+    fn delete_word_backward(&mut self) {
+        if self.cursor_pos == 0 { return; }
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut new_pos = self.cursor_pos;
+        while new_pos > 0 && chars[new_pos - 1].is_whitespace() { new_pos -= 1; }
+        while new_pos > 0 && !chars[new_pos - 1].is_whitespace() { new_pos -= 1; }
+        let byte_start = self.input.char_indices()
+            .nth(new_pos).map(|(i, _)| i).unwrap_or(0);
+        let byte_end = self.cursor_byte_pos();
+        self.input.replace_range(byte_start..byte_end, "");
+        self.cursor_pos = new_pos;
+    }
+
+    fn move_word_left(&mut self) {
+        if self.cursor_pos == 0 { return; }
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut pos = self.cursor_pos;
+        while pos > 0 && chars[pos - 1].is_whitespace() { pos -= 1; }
+        while pos > 0 && !chars[pos - 1].is_whitespace() { pos -= 1; }
+        self.cursor_pos = pos;
+    }
+
+    fn move_word_right(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+        let mut pos = self.cursor_pos;
+        while pos < len && !chars[pos].is_whitespace() { pos += 1; }
+        while pos < len && chars[pos].is_whitespace() { pos += 1; }
+        self.cursor_pos = pos;
+    }
+
+    fn move_line_start(&mut self) {
+        let (_, col) = self.cursor_line_col();
+        self.cursor_pos -= col;
+    }
+
+    fn move_line_end(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut pos = self.cursor_pos;
+        while pos < chars.len() && chars[pos] != '\n' { pos += 1; }
+        self.cursor_pos = pos;
+    }
+
+    // returns false if already on the first line
+    fn move_cursor_up(&mut self) -> bool {
+        let (line, col) = self.cursor_line_col();
+        if line == 0 { return false; }
+        let lines: Vec<&str> = self.input.split('\n').collect();
+        let prev_len = lines[line - 1].chars().count();
+        let new_col = col.min(prev_len);
+        let mut new_pos = 0;
+        for i in 0..line - 1 {
+            new_pos += lines[i].chars().count() + 1;
+        }
+        new_pos += new_col;
+        self.cursor_pos = new_pos;
+        true
+    }
+
+    // returns false if already on the last line
+    fn move_cursor_down(&mut self) -> bool {
+        let (line, col) = self.cursor_line_col();
+        let lines: Vec<&str> = self.input.split('\n').collect();
+        if line >= lines.len() - 1 { return false; }
+        let next_len = lines[line + 1].chars().count();
+        let new_col = col.min(next_len);
+        let mut new_pos = 0;
+        for i in 0..=line {
+            new_pos += lines[i].chars().count() + 1;
+        }
+        new_pos += new_col;
+        self.cursor_pos = new_pos;
+        true
+    }
 }
 
 fn guess_context_limit(model: &str) -> u32 {
@@ -503,14 +634,23 @@ fn wrap_md_lines_with_bar(md_lines: Vec<Line<'static>>, max_width: u16) -> Vec<L
 pub fn render(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
+    let max_input = (size.height / 3).max(2);
+    let input_height = if app.is_running {
+        app.current_message.as_ref()
+            .map(|m| m.split('\n').count() as u16)
+            .unwrap_or(1)
+            .max(1)
+            .min(max_input)
+    } else {
+        (app.input_line_count() as u16).max(1).min(max_input)
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
-            Constraint::Length(2), // user message / input
-            Constraint::Min(4),   // activity feed
-            Constraint::Length(1), // buffer
-            Constraint::Length(1), // metrics bar
+            Constraint::Length(1),
+            Constraint::Length(input_height),
+            Constraint::Min(4),
         ])
         .split(size);
 
@@ -523,28 +663,67 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_activity(frame, app, chunks[2]);
-    // chunks[3] is the empty buffer line
-    render_metrics(frame, app, chunks[4]);
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    let w = area.width as usize;
+
     let mut spans = vec![
         Span::styled("rum", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {}  ", app.cwd), Style::default().fg(FG)),
         Span::styled(&app.model_name, Style::default().fg(MUTED)),
     ];
 
-    let cost = app.cost_usd();
-    let ctx = app.context_used();
-    if ctx > 0 {
-        let left_len = 4 + app.cwd.len() + 4 + app.model_name.len();
-        let ctx_k = ctx / 1000;
-        let limit_k = app.context_limit / 1000;
-        let stats_str = format!("{}k/{}k  ${:.3}", ctx_k, limit_k, cost);
-        let padding = (area.width as usize).saturating_sub(left_len + stats_str.len());
-        spans.push(Span::styled(" ".repeat(padding), Style::default()));
-        spans.push(Span::styled(stats_str, Style::default().fg(MUTED)));
-    }
+    let left_len = 4 + app.cwd.len() + 4 + app.model_name.len();
+
+    // build right-side metrics
+    let rate = app.avg_rate();
+    let pct = app.context_pct();
+    let used_k = app.context_used() / 1000;
+    let limit_k = app.context_limit / 1000;
+
+    let spark_width: usize = 16;
+    let ctx_bar_width: usize = 8;
+    let filled = ((pct * ctx_bar_width as f64).round() as usize).min(ctx_bar_width);
+    let empty = ctx_bar_width - filled;
+    let ctx_color = if pct > 0.8 { RED } else if pct > 0.6 { YELLOW } else { ACCENT };
+
+    let rate_str = format!("{:.0} tok/s", rate);
+    let cost_str = format!("${:.3}", app.cost_usd());
+    let ctx_label = format!("{}k/{}k", used_k, limit_k);
+    let ctx_pct = format!("{:.0}%", pct * 100.0);
+
+    // right side width: spark + " " + rate + "  " + cost + "  " + ctx_label + " [" + bar + "] " + pct
+    let right_len = spark_width + 1 + rate_str.len() + 2 + cost_str.len() + 2
+        + ctx_label.len() + 2 + ctx_bar_width + 2 + ctx_pct.len();
+
+    let pad = w.saturating_sub(left_len + right_len);
+    spans.push(Span::styled(" ".repeat(pad), Style::default()));
+
+    // sparkline
+    let spark_spans = render_colored_sparkline(&app.rate_samples, spark_width);
+    spans.extend(spark_spans);
+    spans.push(Span::styled(" ", Style::default()));
+
+    // rate + cost
+    spans.push(Span::styled(rate_str, Style::default().fg(MUTED)));
+    spans.push(Span::styled("  ", Style::default()));
+    spans.push(Span::styled(cost_str, Style::default().fg(DIM)));
+    spans.push(Span::styled("  ", Style::default()));
+
+    // context bar
+    spans.push(Span::styled(ctx_label, Style::default().fg(DIM)));
+    spans.push(Span::styled(" [", Style::default().fg(DIM)));
+    spans.push(Span::styled(
+        "\u{2588}".repeat(filled),
+        Style::default().fg(ctx_color),
+    ));
+    spans.push(Span::styled(
+        "\u{2591}".repeat(empty),
+        Style::default().fg(Color::Rgb(30, 33, 40)),
+    ));
+    spans.push(Span::styled("] ", Style::default().fg(DIM)));
+    spans.push(Span::styled(ctx_pct, Style::default().fg(ctx_color)));
 
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
@@ -554,25 +733,54 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_user_message(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(ref msg) = app.current_message {
-        let widget = Paragraph::new(Line::from(vec![
-            Span::styled("\u{203a} ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            Span::styled(msg.as_str(), Style::default().fg(FG)),
-        ]))
-        .style(Style::default().bg(BG))
-        .wrap(Wrap { trim: false });
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, line_text) in msg.split('\n').enumerate() {
+            let prefix = if i == 0 { "\u{203a} " } else { "  " };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled(line_text.to_string(), Style::default().fg(FG)),
+            ]));
+        }
+        let widget = Paragraph::new(lines)
+            .style(Style::default().bg(BG));
         frame.render_widget(widget, area);
     }
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    let widget = Paragraph::new(Line::from(vec![
-        Span::styled("\u{203a} ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled(&app.input, Style::default().fg(FG)),
-        Span::styled("\u{2588}", Style::default().fg(ACCENT)),
-    ]))
-    .style(Style::default().bg(BG))
-    .wrap(Wrap { trim: false });
+    let input_lines: Vec<&str> = app.input.split('\n').collect();
+    let (cursor_line, _cursor_col) = app.cursor_line_col();
+
+    let visible_lines = area.height as usize;
+    let input_scroll: u16 = if cursor_line >= visible_lines {
+        (cursor_line - visible_lines + 1) as u16
+    } else {
+        0
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, line_text) in input_lines.iter().enumerate() {
+        let prefix = if i == 0 { "\u{203a} " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(line_text.to_string(), Style::default().fg(FG)),
+        ]));
+    }
+
+    let widget = Paragraph::new(lines)
+        .style(Style::default().bg(BG))
+        .scroll((input_scroll, 0));
     frame.render_widget(widget, area);
+
+    // place the native terminal cursor
+    let byte_pos = app.cursor_byte_pos();
+    let line_start = app.input[..byte_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let text_before_cursor = &app.input[line_start..byte_pos];
+    let display_col = UnicodeWidthStr::width(text_before_cursor) as u16;
+    let prefix_width: u16 = 2; // "› " or "  "
+    let cx = area.x + prefix_width + display_col;
+    let cy = area.y + (cursor_line as u16).saturating_sub(input_scroll);
+    frame.set_cursor_position((cx, cy));
 }
 
 fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -762,74 +970,6 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
     }
 }
 
-fn render_metrics(frame: &mut Frame, app: &App, area: Rect) {
-    // layout: [sparkline] [stats] [padding] [context bar]
-    let w = area.width as usize;
-
-    let rate = app.avg_rate();
-    let pct = app.context_pct();
-    let used_k = app.context_used() / 1000;
-    let limit_k = app.context_limit / 1000;
-
-    // context bar: 8 chars wide
-    let ctx_bar_width: usize = 8;
-    let filled = ((pct * ctx_bar_width as f64).round() as usize).min(ctx_bar_width);
-    let empty = ctx_bar_width - filled;
-    let ctx_color = if pct > 0.8 { RED } else if pct > 0.6 { YELLOW } else { ACCENT };
-
-    let ctx_label = format!("{}k/{}k", used_k, limit_k);
-    let ctx_pct = format!("{:.0}%", pct * 100.0);
-
-    let mut spans: Vec<Span> = Vec::new();
-
-    // colored sparkline
-    let spark_width: usize = 16;
-    let spark_spans = render_colored_sparkline(&app.rate_samples, spark_width);
-    spans.extend(spark_spans);
-    spans.push(Span::styled(" ", Style::default()));
-
-    // stats
-    spans.push(Span::styled(
-        format!("{:.0} tok/s", rate),
-        Style::default().fg(MUTED),
-    ));
-    spans.push(Span::styled("  ", Style::default()));
-    spans.push(Span::styled(
-        format!("${:.3}", app.cost_usd()),
-        Style::default().fg(DIM),
-    ));
-
-    // padding between stats and context
-    let left_used: usize = spark_width + 1
-        + format!("{:.0} tok/s", rate).len() + 2
-        + format!("${:.3}", app.cost_usd()).len();
-    let right_len = 2 + ctx_label.len() + 1 + 1 + ctx_bar_width + 1 + 1 + ctx_pct.len();
-    let pad = w.saturating_sub(left_used + right_len);
-    spans.push(Span::styled(" ".repeat(pad), Style::default()));
-
-    // context
-    spans.push(Span::styled(format!("  {}", ctx_label), Style::default().fg(DIM)));
-    spans.push(Span::styled(" [", Style::default().fg(DIM)));
-    spans.push(Span::styled(
-        "\u{2588}".repeat(filled),
-        Style::default().fg(ctx_color),
-    ));
-    spans.push(Span::styled(
-        "\u{2591}".repeat(empty),
-        Style::default().fg(Color::Rgb(30, 33, 40)),
-    ));
-    spans.push(Span::styled("] ", Style::default().fg(DIM)));
-    spans.push(Span::styled(
-        ctx_pct,
-        Style::default().fg(ctx_color),
-    ));
-
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
-        area,
-    );
-}
-
 // render a sparkline where each bar is colored by the dominant token type
 // in that bucket. colors: text=accent, thinking=purple, tool=cyan, input=blue.
 fn render_colored_sparkline(samples: &[TokenBucket], width: usize) -> Vec<Span<'static>> {
@@ -967,8 +1107,13 @@ pub enum InputAction {
 }
 
 pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let super_key = key.modifiers.contains(KeyModifiers::SUPER);
+
     // ctrl+c: cancel if running, quit if idle with empty input, clear input otherwise
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+    if ctrl && key.code == KeyCode::Char('c') {
         if app.is_running {
             return InputAction::Cancel;
         }
@@ -1007,7 +1152,11 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
 
     match key.code {
         KeyCode::Enter => {
-            if !app.input.is_empty() {
+            if shift || alt {
+                let bp = app.cursor_byte_pos();
+                app.input.insert(bp, '\n');
+                app.cursor_pos += 1;
+            } else if !app.input.is_empty() {
                 let msg = app.input.clone();
                 app.input.clear();
                 app.cursor_pos = 0;
@@ -1015,33 +1164,79 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
             }
         }
         KeyCode::Backspace => {
-            if app.cursor_pos > 0 {
-                app.input.remove(app.cursor_pos - 1);
-                app.cursor_pos -= 1;
+            if super_key {
+                app.delete_to_line_start();
+            } else if alt || ctrl {
+                app.delete_word_backward();
+            } else if app.cursor_pos > 0 {
+                let bp = app.cursor_byte_pos();
+                let prev = app.input[..bp].char_indices().last().map(|(i, _)| i);
+                if let Some(pb) = prev {
+                    app.input.remove(pb);
+                    app.cursor_pos -= 1;
+                }
+            }
+        }
+        KeyCode::Delete => {
+            if app.cursor_pos < app.char_count() {
+                let bp = app.cursor_byte_pos();
+                app.input.remove(bp);
             }
         }
         KeyCode::Left => {
-            app.cursor_pos = app.cursor_pos.saturating_sub(1);
+            if super_key {
+                app.move_line_start();
+            } else if alt {
+                app.move_word_left();
+            } else {
+                app.cursor_pos = app.cursor_pos.saturating_sub(1);
+            }
         }
         KeyCode::Right => {
-            if app.cursor_pos < app.input.len() {
+            if super_key {
+                app.move_line_end();
+            } else if alt {
+                app.move_word_right();
+            } else if app.cursor_pos < app.char_count() {
                 app.cursor_pos += 1;
             }
         }
-        KeyCode::Up => return InputAction::ScrollUp,
-        KeyCode::Down => return InputAction::ScrollDown,
-        KeyCode::Char(c) => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'o' {
-                return InputAction::ToggleDiff;
+        KeyCode::Up => {
+            if app.input_line_count() > 1 && app.move_cursor_up() {
+                // moved within multi-line input
+            } else {
+                return InputAction::ScrollUp;
             }
-            app.input.insert(app.cursor_pos, c);
-            app.cursor_pos += 1;
+        }
+        KeyCode::Down => {
+            if app.input_line_count() > 1 && app.move_cursor_down() {
+                // moved within multi-line input
+            } else {
+                return InputAction::ScrollDown;
+            }
         }
         KeyCode::Home => {
-            app.cursor_pos = 0;
+            app.move_line_start();
         }
         KeyCode::End => {
-            app.cursor_pos = app.input.len();
+            app.move_line_end();
+        }
+        KeyCode::Char(c) => {
+            if ctrl {
+                match c {
+                    'a' => app.move_line_start(),
+                    'e' => app.move_line_end(),
+                    'u' => app.delete_to_line_start(),
+                    'k' => app.delete_to_line_end(),
+                    'w' => app.delete_word_backward(),
+                    'o' => return InputAction::ToggleDiff,
+                    _ => {}
+                }
+            } else {
+                let bp = app.cursor_byte_pos();
+                app.input.insert(bp, c);
+                app.cursor_pos += 1;
+            }
         }
         _ => {}
     }
