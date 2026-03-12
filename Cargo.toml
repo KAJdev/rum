@@ -1,0 +1,21 @@
+[package]
+name = "rum"
+version = "0.1.0"
+edition = "2021"
+description = "a diff-centric coding agent TUI"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+dirs = "6"
+futures = "0.3"
+ratatui = "0.29"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+similar = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+unicode-width = "0.2"
+chrono = "0.4"
