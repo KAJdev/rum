@@ -226,9 +226,10 @@ impl App {
                                 entry.expanded = self.diffs_expanded;
                             }
 
-                            // store output for display (bash output, truncated)
+                            // store output for display (bash output, truncated).
+                            // skip when a diff is present since the header already shows the path and stats.
                             let trimmed = output.trim();
-                            if !trimmed.is_empty() && trimmed != "(no output)" {
+                            if entry.diff.is_none() && !trimmed.is_empty() && trimmed != "(no output)" {
                                 let display_output = if trimmed.len() > 2000 {
                                     format!("{}...", &trimmed[..2000])
                                 } else {
