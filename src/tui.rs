@@ -1,5 +1,8 @@
 use crossterm::{
-    event::{KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        KeyCode, KeyEvent, KeyModifiers,
+        KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -1073,12 +1076,21 @@ impl Tui {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
+        // enable kitty keyboard protocol so terminals report modifier
+        // keys on Enter (needed for shift+enter newline detection)
+        let _ = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        );
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
     }
 
     pub fn restore(&mut self) -> Result<(), io::Error> {
+        let _ = execute!(self.terminal.backend_mut(), PopKeyboardEnhancementFlags);
         disable_raw_mode()?;
         execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
         Ok(())
@@ -1152,7 +1164,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
 
     match key.code {
         KeyCode::Enter => {
-            if shift || alt {
+            if shift || alt || ctrl {
                 let bp = app.cursor_byte_pos();
                 app.input.insert(bp, '\n');
                 app.cursor_pos += 1;
@@ -1229,6 +1241,12 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                     'u' => app.delete_to_line_start(),
                     'k' => app.delete_to_line_end(),
                     'w' => app.delete_word_backward(),
+                    'j' => {
+                        // ctrl+j inserts newline (traditional unix LF)
+                        let bp = app.cursor_byte_pos();
+                        app.input.insert(bp, '\n');
+                        app.cursor_pos += 1;
+                    }
                     'o' => return InputAction::ToggleDiff,
                     _ => {}
                 }
