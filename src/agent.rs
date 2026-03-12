@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::api::{ApiClient, ContentBlock, Message, MessageContent, StreamEvent};
@@ -112,7 +113,10 @@ impl Agent {
         &mut self,
         event_tx: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<()> {
+        let mut retries = 0u32;
+
         loop {
+            let mut stream_errors: Vec<String> = Vec::new();
             let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<StreamEvent>();
 
             let messages = self.messages.clone();
@@ -265,7 +269,7 @@ impl Agent {
                     }
                     StreamEvent::MessageDone => {}
                     StreamEvent::Error(e) => {
-                        let _ = event_tx.send(AgentEvent::Error(e));
+                        stream_errors.push(e);
                     }
                 }
             }
@@ -281,15 +285,45 @@ impl Agent {
                 break;
             }
 
-            // if we got no response blocks at all, something went wrong
-            // (stream died, network error, etc.)
+            // retry on transient errors when no content was produced
             if response_blocks.is_empty() && stop_reason.is_none() {
-                let _ = event_tx.send(AgentEvent::Error(
-                    "stream ended without a response".to_string(),
-                ));
+                let has_retryable = stream_errors.iter().any(|e| is_retryable_error(e));
+                let has_non_retryable = stream_errors.iter().any(|e| !is_retryable_error(e));
+                let silent_failure = stream_errors.is_empty();
+
+                if retries < 3 && !has_non_retryable && (has_retryable || silent_failure) {
+                    retries += 1;
+                    let delay = 1u64 << retries.min(4);
+                    let msg = stream_errors.first()
+                        .map(|e| e.chars().take(80).collect::<String>())
+                        .unwrap_or_else(|| "no response".to_string());
+                    let _ = event_tx.send(AgentEvent::Thinking(
+                        format!("retrying in {}s ({}/3): {}\n", delay, retries, msg),
+                    ));
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                    continue;
+                }
+
+                // retries exhausted or non-retryable error
+                for e in &stream_errors {
+                    let _ = event_tx.send(AgentEvent::Error(e.clone()));
+                }
+                if stream_errors.is_empty() {
+                    let _ = event_tx.send(AgentEvent::Error(
+                        "stream ended without a response".to_string(),
+                    ));
+                }
                 let _ = event_tx.send(AgentEvent::TurnComplete);
                 break;
             }
+
+            // forward any errors that occurred alongside a partial response
+            for e in &stream_errors {
+                let _ = event_tx.send(AgentEvent::Error(e.clone()));
+            }
+
+            // successful response resets retry counter
+            retries = 0;
 
             // add assistant message
             self.messages.push(Message {
@@ -343,6 +377,7 @@ fn to_cc_name(name: &str) -> &str {
         "write" => "Write",
         "edit" => "Edit",
         "bash" => "Bash",
+        "web_search" => "WebSearch",
         _ => name,
     }
 }
@@ -353,8 +388,20 @@ fn from_cc_name(name: &str) -> &str {
         "Write" => "write",
         "Edit" => "edit",
         "Bash" => "bash",
+        "WebSearch" => "web_search",
         _ => name,
     }
+}
+
+fn is_retryable_error(e: &str) -> bool {
+    e.contains("429")
+        || e.contains("rate_limit")
+        || e.contains("overloaded")
+        || e.contains("529")
+        || e.contains("stream error")
+        || e.contains("stream read error")
+        || e.contains("connection")
+        || e.contains("timed out")
 }
 
 fn is_adaptive_model(model: &str) -> bool {

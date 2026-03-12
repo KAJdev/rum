@@ -85,6 +85,18 @@ enum ToolStatus {
     Error(String),
 }
 
+// cached rendered lines for a single activity item.
+// invalidated when content length, terminal width, expand state, or
+// tool status changes.
+#[derive(Clone, Default)]
+struct CachedRender {
+    lines: Vec<Line<'static>>,
+    content_len: usize,
+    width: u16,
+    expanded: bool,
+    status_tag: u8,
+}
+
 pub struct App {
     input: String,
     cursor_pos: usize,
@@ -117,6 +129,8 @@ pub struct App {
     term_width: u16,
     // animation frame counter, incremented every render tick
     spin_frame: u64,
+    // per-item cache of rendered lines for the activity feed
+    activity_render_cache: Vec<CachedRender>,
 }
 
 impl App {
@@ -148,6 +162,7 @@ impl App {
             start_time: None,
             term_width,
             spin_frame: 0,
+            activity_render_cache: Vec::new(),
         }
     }
 
@@ -512,6 +527,7 @@ fn capitalize_tool(name: &str) -> &str {
         "edit" => "Edit",
         "write" => "Write",
         "bash" => "Bash",
+        "web_search" => "Search",
         _ => name,
     }
 }
@@ -528,6 +544,14 @@ fn extract_tool_arg(name: &str, input: &serde_json::Value) -> String {
                 format!("{}...", &cmd[..77])
             } else {
                 cmd.to_string()
+            }
+        }
+        "web_search" => {
+            let q = input.get("query").and_then(|v| v.as_str()).unwrap_or("...");
+            if q.len() > 80 {
+                format!("{}...", &q[..77])
+            } else {
+                q.to_string()
             }
         }
         _ => "...".to_string(),
@@ -1018,59 +1042,78 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
     let w = area.width;
-
     let n = app.activity.len();
-    for (idx, item) in app.activity.iter().enumerate() {
-        match item {
-            ActivityItem::Thinking(text) => {
-                // only show the most recent paragraph of thinking.
-                // thinking tends to be a stream of evolving reasoning;
-                // showing just the latest chunk keeps the display focused.
-                let para = last_paragraph(text);
-                if idx > 0 {
-                    lines.push(Line::from(""));
-                }
-                let style = Style::default().fg(DIM).add_modifier(Modifier::ITALIC);
-                let wrapped = wrap_text_with_bar(para, w, style);
-                lines.extend(wrapped);
-                if idx + 1 < n {
-                    lines.push(Line::from(""));
-                }
-            }
-            ActivityItem::Text(text) => {
-                let text = text.clone();
-                // empty line before text if preceded by something
-                if idx > 0 {
-                    lines.push(Line::from(""));
-                }
 
-                let mut md = crate::markdown::TuiMarkdownRenderer::new();
-                let md_lines = md.render_lines(&text);
-                let wrapped = wrap_md_lines_with_bar(md_lines, w);
-                lines.extend(wrapped);
+    // sync cache length with activity list
+    app.activity_render_cache.truncate(n);
+    while app.activity_render_cache.len() < n {
+        app.activity_render_cache.push(CachedRender::default());
+    }
 
-                // empty line after text
-                if idx + 1 < n {
-                    lines.push(Line::from(""));
-                }
+    // re-render only stale items
+    for idx in 0..n {
+        let (content_len, expanded, status_tag) = match &app.activity[idx] {
+            ActivityItem::Thinking(t) => (t.len(), false, 0u8),
+            ActivityItem::Text(t) => (t.len(), false, 0u8),
+            ActivityItem::Tool(e) => {
+                let st = match &e.status {
+                    ToolStatus::Running => 0,
+                    ToolStatus::Complete { .. } => 1,
+                    ToolStatus::Error(_) => 2,
+                };
+                let len = e.arg.len()
+                    + e.output.as_ref().map_or(0, |o| o.len())
+                    + match &e.status {
+                        ToolStatus::Error(s) => s.len(),
+                        _ => 0,
+                    };
+                (len, e.expanded, st)
             }
-            ActivityItem::Tool(entry) => {
-                render_tool_entry(&mut lines, entry, w);
-            }
+        };
+
+        let stale = {
+            let c = &app.activity_render_cache[idx];
+            c.content_len != content_len
+                || c.width != w
+                || c.expanded != expanded
+                || c.status_tag != status_tag
+        };
+
+        if stale {
+            let item_lines = render_activity_item(&app.activity[idx], w);
+            app.activity_render_cache[idx] = CachedRender {
+                lines: item_lines,
+                content_len,
+                width: w,
+                expanded,
+                status_tag,
+            };
         }
     }
 
-    // thinking / waiting indicators at the tail
-    if app.is_running && lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  waiting...",
-            Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-        )));
+    // compute total line count including inter-item spacing
+    let mut total: usize = 0;
+    for idx in 0..n {
+        let is_tt = matches!(
+            &app.activity[idx],
+            ActivityItem::Thinking(_) | ActivityItem::Text(_)
+        );
+        if is_tt && idx > 0 {
+            total += 1;
+        }
+        total += app.activity_render_cache[idx].lines.len();
+        if is_tt && idx + 1 < n {
+            total += 1;
+        }
     }
 
-    let total_lines = lines.len() as u16;
+    let show_waiting = app.is_running && total == 0;
+    if show_waiting {
+        total = 1;
+    }
+
+    let total_lines = total as u16;
     let max_scroll = total_lines.saturating_sub(area.height);
 
     // re-engage auto-scroll when manual scrolling reaches the bottom
@@ -1085,11 +1128,83 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         app.scroll_offset
     };
-    let activity = Paragraph::new(lines)
-        .style(Style::default().bg(BG))
-        .scroll((scroll, 0));
 
+    // only build the visible window of lines
+    let vp_start = scroll as usize;
+    let vp_end = vp_start + area.height as usize;
+    let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+
+    if show_waiting {
+        if vp_start == 0 {
+            lines.push(Line::from(Span::styled(
+                "  waiting...",
+                Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+            )));
+        }
+    } else {
+        let mut cursor: usize = 0;
+        for idx in 0..n {
+            if cursor >= vp_end {
+                break;
+            }
+
+            let is_tt = matches!(
+                &app.activity[idx],
+                ActivityItem::Thinking(_) | ActivityItem::Text(_)
+            );
+
+            // pre-spacing
+            if is_tt && idx > 0 {
+                if cursor >= vp_start {
+                    lines.push(Line::from(""));
+                }
+                cursor += 1;
+            }
+
+            // item lines
+            for line in &app.activity_render_cache[idx].lines {
+                if cursor >= vp_start && cursor < vp_end {
+                    lines.push(line.clone());
+                }
+                cursor += 1;
+                if cursor >= vp_end {
+                    break;
+                }
+            }
+
+            // post-spacing
+            if is_tt && idx + 1 < n {
+                if cursor >= vp_start && cursor < vp_end {
+                    lines.push(Line::from(""));
+                }
+                cursor += 1;
+            }
+        }
+    }
+
+    let activity = Paragraph::new(lines).style(Style::default().bg(BG));
     frame.render_widget(activity, area);
+}
+
+// render a single activity item into lines (no inter-item spacing)
+fn render_activity_item(item: &ActivityItem, w: u16) -> Vec<Line<'static>> {
+    match item {
+        ActivityItem::Thinking(text) => {
+            let para = last_paragraph(text);
+            let style = Style::default().fg(DIM).add_modifier(Modifier::ITALIC);
+            wrap_text_with_bar(para, w, style)
+        }
+        ActivityItem::Text(text) => {
+            let mut md = crate::markdown::TuiMarkdownRenderer::new();
+            let md_lines = md.render_lines(text);
+            wrap_md_lines_with_bar(md_lines, w)
+        }
+        ActivityItem::Tool(entry) => {
+            let mut lines = Vec::new();
+            render_tool_entry(&mut lines, entry, w);
+            lines
+        }
+    }
 }
 
 fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16) {
@@ -1477,6 +1592,28 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                         app.cursor_pos += 1;
                     }
                     'o' => return InputAction::ToggleDiff,
+                    _ => {}
+                }
+            } else if alt {
+                // terminals without kitty protocol send Alt+Left/Right
+                // as ESC b / ESC f, which arrive as Alt+Char('b')/'f'
+                match c {
+                    'b' => app.move_word_left(),
+                    'f' => app.move_word_right(),
+                    'd' => {
+                        // alt+d: delete word forward
+                        let start = app.cursor_pos;
+                        app.move_word_right();
+                        let end = app.cursor_pos;
+                        if end > start {
+                            let byte_start = app.input.char_indices()
+                                .nth(start).map(|(i, _)| i).unwrap_or(app.input.len());
+                            let byte_end = app.input.char_indices()
+                                .nth(end).map(|(i, _)| i).unwrap_or(app.input.len());
+                            app.input.replace_range(byte_start..byte_end, "");
+                            app.cursor_pos = start;
+                        }
+                    }
                     _ => {}
                 }
             } else {

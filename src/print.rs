@@ -629,6 +629,7 @@ fn cap_tool(name: &str) -> &str {
         "edit" => "Edit",
         "write" => "Write",
         "bash" => "Bash",
+        "web_search" => "Search",
         _ => name,
     }
 }

@@ -126,6 +126,7 @@ Available tools:
 - bash: Execute bash commands (ls, grep, find, etc.)
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
+- web_search: Search the web using DuckDuckGo
 
 Guidelines:
 - Use bash for file operations like ls, rg, find
