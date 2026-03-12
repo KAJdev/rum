@@ -57,8 +57,8 @@ const BAR_WIDTH: u16 = 2;
 
 #[derive(Debug, Clone)]
 enum ActivityItem {
-    // user's prompt, shown as a quoted line
-    UserMessage(String),
+    // user's prompt. pending=true means queued but not yet sent to the agent.
+    UserMessage { text: String, pending: bool },
     // thinking text from the model, shown dim/italic
     Thinking(String),
     // text output from the model, rendered as markdown with bar prefix
@@ -265,26 +265,45 @@ impl App {
 
     pub fn start_new_message(&mut self, message: &str) {
         self.current_message = Some(message.to_string());
-        self.activity.push(ActivityItem::UserMessage(message.to_string()));
+        self.activity.push(ActivityItem::UserMessage {
+            text: message.to_string(),
+            pending: false,
+        });
         self.is_running = true;
         self.auto_scroll = true;
         self.current_tool_input.clear();
         if self.start_time.is_none() {
             self.start_time = Some(Instant::now());
         }
-        self.queued_messages.clear();
     }
 
+    // queue a followup message while the agent is running.
+    // appears in the activity feed immediately as pending.
     pub fn queue_message(&mut self) {
         if !self.input.is_empty() {
+            self.activity.push(ActivityItem::UserMessage {
+                text: self.input.clone(),
+                pending: true,
+            });
             self.queued_messages.push(self.input.clone());
             self.input.clear();
             self.cursor_pos = 0;
         }
     }
 
-    pub fn take_queued_messages(&mut self) -> String {
+    // mark pending messages as sent and return their combined text
+    pub fn flush_queued_messages(&mut self) -> String {
+        for item in &mut self.activity {
+            if let ActivityItem::UserMessage { pending, .. } = item {
+                if *pending {
+                    *pending = false;
+                }
+            }
+        }
         let msgs: Vec<String> = self.queued_messages.drain(..).collect();
+        self.is_running = true;
+        self.auto_scroll = true;
+        self.current_tool_input.clear();
         msgs.join("\n\n")
     }
 
@@ -293,6 +312,10 @@ impl App {
     }
 
     pub fn clear_queue(&mut self) {
+        // remove pending messages from activity
+        self.activity.retain(|item| {
+            !matches!(item, ActivityItem::UserMessage { pending: true, .. })
+        });
         self.queued_messages.clear();
     }
 
@@ -666,15 +689,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
     let max_input = (size.height / 3).max(2);
-    let input_height = if app.is_running {
-        let queued_lines: usize = app.queued_messages.iter()
-            .map(|m| m.split('\n').count())
-            .sum();
-        let active_lines = app.input_line_count();
-        ((queued_lines + active_lines) as u16).max(1).min(max_input)
-    } else {
-        (app.input_line_count() as u16).max(1).min(max_input)
-    };
+    let input_height = (app.input_line_count() as u16).max(1).min(max_input);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -764,21 +779,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
-    let mut prefix_lines: u16 = 0;
-
-    // show queued followup messages as dim lines above the active input
-    if app.is_running {
-        for queued_msg in &app.queued_messages {
-            for (i, line_text) in queued_msg.split('\n').enumerate() {
-                let prefix = if i == 0 { "\u{203a} " } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(MUTED)),
-                    Span::styled(line_text.to_string(), Style::default().fg(MUTED)),
-                ]));
-            }
-        }
-        prefix_lines = lines.len() as u16;
-    }
 
     // active input
     let input_lines_vec: Vec<&str> = app.input.split('\n').collect();
@@ -792,10 +792,9 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    let cursor_abs = prefix_lines + cursor_line as u16;
     let visible = area.height;
-    let scroll: u16 = if cursor_abs >= visible {
-        cursor_abs - visible + 1
+    let scroll: u16 = if cursor_line as u16 >= visible {
+        cursor_line as u16 - visible + 1
     } else {
         0
     };
@@ -812,7 +811,7 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
     let display_col = UnicodeWidthStr::width(text_before_cursor) as u16;
     let prefix_width: u16 = 2;
     let cx = area.x + prefix_width + display_col;
-    let cy = area.y + cursor_abs.saturating_sub(scroll);
+    let cy = area.y + (cursor_line as u16).saturating_sub(scroll);
     frame.set_cursor_position((cx, cy));
 }
 
@@ -823,15 +822,32 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     let n = app.activity.len();
     for (idx, item) in app.activity.iter().enumerate() {
         match item {
-            ActivityItem::UserMessage(text) => {
+            ActivityItem::UserMessage { text, pending } => {
                 if idx > 0 {
                     lines.push(Line::from(""));
                 }
+                let (prefix_style, text_style) = if *pending {
+                    // queued, not yet sent to the agent
+                    (
+                        Style::default().fg(DIM),
+                        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+                    )
+                } else {
+                    // in the conversation history
+                    (
+                        Style::default().fg(MUTED),
+                        Style::default().fg(FG),
+                    )
+                };
                 for (i, line_text) in text.split('\n').enumerate() {
-                    let prefix = if i == 0 { "\u{203a} " } else { "  " };
+                    let prefix = if i == 0 {
+                        if *pending { "\u{23f3} " } else { "\u{203a} " }
+                    } else {
+                        "  "
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                        Span::styled(line_text.to_string(), Style::default().fg(FG)),
+                        Span::styled(prefix, prefix_style),
+                        Span::styled(line_text.to_string(), text_style),
                     ]));
                 }
             }

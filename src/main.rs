@@ -186,9 +186,8 @@ async fn run_tui_mode(
 
         // send queued follow-up messages when the current turn finishes
         if !app.is_running && app.has_queued_messages() {
-            let combined = app.take_queued_messages();
             cancel.reset();
-            app.start_new_message(&combined);
+            let combined = app.flush_queued_messages();
             let _ = user_tx.send(combined);
         }
 
