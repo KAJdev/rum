@@ -295,9 +295,14 @@ async fn exec_edit(input: &serde_json::Value, cwd: &Path) -> ToolResult {
 
     let new_content = content.replacen(old_text, new_text, 1);
 
-    // compute diff
+    let display_path = path
+        .strip_prefix(cwd)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .to_string();
+
     let diff_info = compute_diff(
-        &path.to_string_lossy(),
+        &display_path,
         old_text,
         new_text,
     );
@@ -305,12 +310,6 @@ async fn exec_edit(input: &serde_json::Value, cwd: &Path) -> ToolResult {
     if let Err(e) = std::fs::write(&path, &new_content) {
         return ToolResult::Error(format!("failed to write {}: {}", path.display(), e));
     }
-
-    let display_path = path
-        .strip_prefix(cwd)
-        .unwrap_or(&path)
-        .to_string_lossy()
-        .to_string();
 
     ToolResult::Success {
         output: format!("edited {}", display_path),
