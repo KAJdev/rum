@@ -485,6 +485,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Constraint::Length(1), // header
             Constraint::Length(2), // user message / input
             Constraint::Min(4),   // activity feed
+            Constraint::Length(1), // buffer
             Constraint::Length(1), // metrics bar
         ])
         .split(size);
@@ -498,7 +499,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_activity(frame, app, chunks[2]);
-    render_metrics(frame, app, chunks[3]);
+    // chunks[3] is the empty buffer line
+    render_metrics(frame, app, chunks[4]);
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
