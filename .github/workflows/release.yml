@@ -1,0 +1,159 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: tar czf rum-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release rum
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: 7z a rum-${{ matrix.target }}.zip ./target/${{ matrix.target }}/release/rum.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rum-${{ matrix.target }}
+          path: rum-${{ matrix.target }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create checksums
+        run: sha256sum rum-* > checksums-sha256.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --repo ${{ github.repository }} \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            rum-* checksums-sha256.txt
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      - name: Update homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          REPO="${{ github.repository }}"
+
+          # download the release archives
+          gh release download "v${VERSION}" \
+            --repo "${REPO}" \
+            --pattern "rum-x86_64-apple-darwin.tar.gz" \
+            --pattern "rum-aarch64-apple-darwin.tar.gz" \
+            --pattern "rum-x86_64-unknown-linux-gnu.tar.gz" \
+            --pattern "rum-aarch64-unknown-linux-gnu.tar.gz"
+
+          SHA_MACOS_X86=$(sha256sum rum-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
+          SHA_MACOS_ARM=$(sha256sum rum-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_X86=$(sha256sum rum-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_ARM=$(sha256sum rum-aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
+
+          cat > rum.rb <<EOF
+          class Rum < Formula
+            desc "A diff-centric coding agent TUI"
+            homepage "https://github.com/${REPO}"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/rum-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_MACOS_ARM}"
+              else
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/rum-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_MACOS_X86}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/rum-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_ARM}"
+              else
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/rum-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_X86}"
+              end
+            end
+
+            def install
+              bin.install "rum"
+            end
+
+            test do
+              assert_match "rum", shell_output("#{bin}/rum --help")
+            end
+          end
+          EOF
+
+          # push to tap repo
+          gh repo clone KAJdev/homebrew-rum -- --depth 1 || {
+            gh repo create KAJdev/homebrew-rum --public --description "Homebrew tap for rum"
+            gh repo clone KAJdev/homebrew-rum -- --depth 1
+          }
+
+          mkdir -p homebrew-rum/Formula
+          cp rum.rb homebrew-rum/Formula/rum.rb
+
+          cd homebrew-rum
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/rum.rb
+          git diff --cached --quiet || {
+            git commit -m "rum ${VERSION}"
+            git push
+          }
