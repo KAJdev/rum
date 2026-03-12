@@ -219,6 +219,7 @@ impl App {
                             if let Some(d) = diff {
                                 entry.arg = d.path.clone();
                                 entry.diff = Some(d.clone());
+                                entry.expanded = true;
                             }
 
                             // store output for display (bash output, truncated)
