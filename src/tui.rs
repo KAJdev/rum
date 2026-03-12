@@ -57,8 +57,6 @@ const BAR_WIDTH: u16 = 2;
 
 #[derive(Debug, Clone)]
 enum ActivityItem {
-    // user's prompt. pending=true means queued but not yet sent to the agent.
-    UserMessage { text: String, pending: bool },
     // thinking text from the model, shown dim/italic
     Thinking(String),
     // text output from the model, rendered as markdown with bar prefix
@@ -268,10 +266,6 @@ impl App {
 
     pub fn start_new_message(&mut self, message: &str) {
         self.current_message = Some(message.to_string());
-        self.activity.push(ActivityItem::UserMessage {
-            text: message.to_string(),
-            pending: false,
-        });
         self.is_running = true;
         self.auto_scroll = true;
         self.current_tool_input.clear();
@@ -284,30 +278,20 @@ impl App {
     // appears in the activity feed immediately as pending.
     pub fn queue_message(&mut self) {
         if !self.input.is_empty() {
-            self.activity.push(ActivityItem::UserMessage {
-                text: self.input.clone(),
-                pending: true,
-            });
             self.queued_messages.push(self.input.clone());
             self.input.clear();
             self.cursor_pos = 0;
         }
     }
 
-    // mark pending messages as sent and return their combined text
     pub fn flush_queued_messages(&mut self) -> String {
-        for item in &mut self.activity {
-            if let ActivityItem::UserMessage { pending, .. } = item {
-                if *pending {
-                    *pending = false;
-                }
-            }
-        }
         let msgs: Vec<String> = self.queued_messages.drain(..).collect();
+        let combined = msgs.join("\n\n");
+        self.current_message = Some(combined.clone());
         self.is_running = true;
         self.auto_scroll = true;
         self.current_tool_input.clear();
-        msgs.join("\n\n")
+        combined
     }
 
     pub fn has_queued_messages(&self) -> bool {
@@ -315,10 +299,6 @@ impl App {
     }
 
     pub fn clear_queue(&mut self) {
-        // remove pending messages from activity
-        self.activity.retain(|item| {
-            !matches!(item, ActivityItem::UserMessage { pending: true, .. })
-        });
         self.queued_messages.clear();
     }
 
@@ -682,7 +662,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
     let max_input = (size.height / 3).max(2);
-    let input_height = (app.input_line_count() as u16).max(1).min(max_input);
+    let input_height = if app.is_running {
+        // show the pinned current message
+        let msg_lines = app.current_message.as_ref()
+            .map(|m| m.split('\n').count() as u16)
+            .unwrap_or(1);
+        msg_lines.max(1).min(max_input)
+    } else {
+        (app.input_line_count() as u16).max(1).min(max_input)
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -773,39 +761,57 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
-    // active input
-    let input_lines_vec: Vec<&str> = app.input.split('\n').collect();
-    let (cursor_line, _cursor_col) = app.cursor_line_col();
+    if app.is_running {
+        // show the current message pinned while the agent is working
+        if let Some(ref msg) = app.current_message {
+            for (i, line_text) in msg.split('\n').enumerate() {
+                let prefix = if i == 0 { "\u{203a} " } else { "  " };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                    Span::styled(line_text.to_string(), Style::default().fg(FG)),
+                ]));
+            }
+        }
 
-    for (i, line_text) in input_lines_vec.iter().enumerate() {
-        let prefix = if i == 0 { "\u{203a} " } else { "  " };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            Span::styled(line_text.to_string(), Style::default().fg(FG)),
-        ]));
-    }
-
-    let visible = area.height;
-    let scroll: u16 = if cursor_line as u16 >= visible {
-        cursor_line as u16 - visible + 1
+        let widget = Paragraph::new(lines)
+            .style(Style::default().bg(BG))
+            .scroll((0, 0));
+        frame.render_widget(widget, area);
     } else {
-        0
-    };
+        // editable input
+        let input_lines_vec: Vec<&str> = app.input.split('\n').collect();
+        let (cursor_line, _cursor_col) = app.cursor_line_col();
 
-    let widget = Paragraph::new(lines)
-        .style(Style::default().bg(BG))
-        .scroll((scroll, 0));
-    frame.render_widget(widget, area);
+        for (i, line_text) in input_lines_vec.iter().enumerate() {
+            let prefix = if i == 0 { "\u{203a} " } else { "  " };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled(line_text.to_string(), Style::default().fg(FG)),
+            ]));
+        }
 
-    // place the native terminal cursor
-    let byte_pos = app.cursor_byte_pos();
-    let line_start = app.input[..byte_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let text_before_cursor = &app.input[line_start..byte_pos];
-    let display_col = UnicodeWidthStr::width(text_before_cursor) as u16;
-    let prefix_width: u16 = 2;
-    let cx = area.x + prefix_width + display_col;
-    let cy = area.y + (cursor_line as u16).saturating_sub(scroll);
-    frame.set_cursor_position((cx, cy));
+        let visible = area.height;
+        let scroll: u16 = if cursor_line as u16 >= visible {
+            cursor_line as u16 - visible + 1
+        } else {
+            0
+        };
+
+        let widget = Paragraph::new(lines)
+            .style(Style::default().bg(BG))
+            .scroll((scroll, 0));
+        frame.render_widget(widget, area);
+
+        // place the native terminal cursor
+        let byte_pos = app.cursor_byte_pos();
+        let line_start = app.input[..byte_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let text_before_cursor = &app.input[line_start..byte_pos];
+        let display_col = UnicodeWidthStr::width(text_before_cursor) as u16;
+        let prefix_width: u16 = 2;
+        let cx = area.x + prefix_width + display_col;
+        let cy = area.y + (cursor_line as u16).saturating_sub(scroll);
+        frame.set_cursor_position((cx, cy));
+    }
 }
 
 fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -815,35 +821,6 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     let n = app.activity.len();
     for (idx, item) in app.activity.iter().enumerate() {
         match item {
-            ActivityItem::UserMessage { text, pending } => {
-                if idx > 0 {
-                    lines.push(Line::from(""));
-                }
-                let (prefix_style, text_style) = if *pending {
-                    // queued, not yet sent to the agent
-                    (
-                        Style::default().fg(DIM),
-                        Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-                    )
-                } else {
-                    // in the conversation history
-                    (
-                        Style::default().fg(MUTED),
-                        Style::default().fg(FG),
-                    )
-                };
-                for (i, line_text) in text.split('\n').enumerate() {
-                    let prefix = if i == 0 {
-                        if *pending { "\u{23f3} " } else { "\u{203a} " }
-                    } else {
-                        "  "
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(prefix, prefix_style),
-                        Span::styled(line_text.to_string(), text_style),
-                    ]));
-                }
-            }
             ActivityItem::Thinking(text) => {
                 // only show the most recent paragraph of thinking.
                 // thinking tends to be a stream of evolving reasoning;
