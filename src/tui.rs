@@ -153,6 +153,7 @@ pub struct App {
     pub auto_scroll: bool,
     pub diffs_expanded: bool,
     model_name: String,
+    thinking_level: String,
     cwd: String,
     current_tool_input: String,
     start_time: Option<Instant>,
@@ -165,7 +166,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(model_name: &str, cwd: &str) -> Self {
+    pub fn new(model_name: &str, thinking_level: &str, cwd: &str) -> Self {
         let context_limit = guess_context_limit(model_name);
         let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
         Self {
@@ -188,6 +189,7 @@ impl App {
             auto_scroll: true,
             diffs_expanded: true,
             model_name: model_name.to_string(),
+            thinking_level: thinking_level.to_string(),
             cwd: cwd.to_string(),
             current_tool_input: String::new(),
             start_time: None,
@@ -387,6 +389,10 @@ impl App {
         self.context_limit = guess_context_limit(model_id);
     }
 
+    pub fn update_thinking(&mut self, level: &str) {
+        self.thinking_level = level.to_string();
+    }
+
     pub fn reset_session(&mut self) {
         self.activity.clear();
         self.activity_render_cache.clear();
@@ -405,6 +411,10 @@ impl App {
 
     pub fn model_name(&self) -> &str {
         &self.model_name
+    }
+
+    pub fn thinking_level(&self) -> &str {
+        &self.thinking_level
     }
 
     fn context_used(&self) -> u32 {

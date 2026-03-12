@@ -85,14 +85,21 @@ impl Agent {
             cwd.display()
         ));
 
+        let messages = crate::persistence::load_history(&cwd);
+
         Self {
             client,
-            messages: Vec::new(),
+            messages,
             system_prompt: system,
             thinking_level: config.thinking_level.clone(),
             cwd,
             cancel,
         }
+    }
+
+    // number of messages loaded from the persisted history on startup
+    pub fn loaded_history_len(&self) -> usize {
+        self.messages.len()
     }
 
     pub fn set_model(&mut self, model: &str) {
@@ -105,6 +112,7 @@ impl Agent {
 
     pub fn clear_history(&mut self) {
         self.messages.clear();
+        let _ = crate::persistence::clear_history(&self.cwd);
     }
 
     pub async fn send_message(
@@ -127,6 +135,8 @@ impl Agent {
         if self.cancel.is_cancelled() && self.messages.len() == pre_len + 1 {
             self.messages.truncate(pre_len);
         }
+
+        let _ = crate::persistence::save_history(&self.cwd, &self.messages);
 
         result
     }

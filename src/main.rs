@@ -2,6 +2,7 @@ mod agent;
 mod api;
 mod config;
 mod markdown;
+mod persistence;
 mod print;
 mod tools;
 mod tui;
@@ -81,6 +82,16 @@ async fn main() -> Result<()> {
     };
 
     let mut cfg = config::load_config(&cwd)?;
+
+    // rum settings (model, thinking, diffs_expanded) persist the user's
+    // last interactive choice across sessions. cli flags override them.
+    let rum_settings = persistence::load_settings();
+    if let Some(model) = rum_settings.model {
+        cfg.model = model;
+    }
+    if let Some(thinking) = rum_settings.thinking_level {
+        cfg.thinking_level = thinking;
+    }
 
     if let Some(model) = cli.model {
         cfg.model = model;
@@ -175,7 +186,13 @@ async fn run_tui_mode(
     let api_client = api::ApiClient::new(&cfg)?;
 
     let mut terminal = tui::Tui::new()?;
-    let mut app = tui::App::new(&cfg.model, &cwd.to_string_lossy());
+    let mut app = tui::App::new(&cfg.model, &cfg.thinking_level, &cwd.to_string_lossy());
+
+    // apply persisted diffs_expanded state (saved by the user's last toggle)
+    let rum_settings = persistence::load_settings();
+    if let Some(expanded) = rum_settings.diffs_expanded {
+        app.diffs_expanded = expanded;
+    }
 
     let cancel = agent::CancelToken::new();
 
@@ -185,8 +202,17 @@ async fn run_tui_mode(
 
     let agent_cwd = cwd.clone();
     let agent_cancel = cancel.clone();
+
+    // construct the agent before spawning so we can read the loaded history length
+    let agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
+    let history_len = agent.loaded_history_len();
+    if history_len > 0 {
+        app.push_system_message(format!(
+            "resumed previous session ({history_len} messages in context)  /new to start fresh"
+        ));
+    }
+
     tokio::spawn(async move {
-        let agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
         agent_loop(agent, user_rx, control_rx, agent_tx).await;
     });
 
@@ -226,6 +252,14 @@ async fn run_tui_mode(
                     tui::InputAction::Submit(msg) => {
                         if let Some(cmd) = parse_slash_command(&msg) {
                             handle_slash_command(cmd, &mut app, &control_tx);
+                            if !app.should_quit {
+                                // persist any settings that may have changed
+                                let _ = persistence::save_settings(&persistence::RumSettings {
+                                    model: Some(app.model_name().to_string()),
+                                    thinking_level: Some(app.thinking_level().to_string()),
+                                    diffs_expanded: Some(app.diffs_expanded),
+                                });
+                            }
                             if app.should_quit {
                                 break;
                             }
@@ -250,6 +284,11 @@ async fn run_tui_mode(
                     }
                     tui::InputAction::ToggleDiff => {
                         app.toggle_diff();
+                        let _ = persistence::save_settings(&persistence::RumSettings {
+                            model: Some(app.model_name().to_string()),
+                            thinking_level: Some(app.thinking_level().to_string()),
+                            diffs_expanded: Some(app.diffs_expanded),
+                        });
                     }
                     tui::InputAction::None => {}
                 }
@@ -360,6 +399,7 @@ fn handle_thinking_command(
                 let _ = control_tx.send(agent::ControlMessage::ChangeThinking(
                     lvl_lower.clone(),
                 ));
+                app.update_thinking(&lvl_lower);
                 app.push_system_message(format!("thinking level set to {lvl_lower}"));
             } else {
                 app.push_system_message(format!(
