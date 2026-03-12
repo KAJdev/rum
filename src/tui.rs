@@ -67,8 +67,14 @@ pub struct App {
     cursor_pos: usize,
     activity: Vec<ActivityItem>,
     current_message: Option<String>,
+    // summed across all api calls (for cost calculation)
     total_input: u32,
     total_output: u32,
+    // from the most recent api call (for context window display).
+    // each call's input_tokens already includes the full conversation
+    // history, so these reflect actual context window usage.
+    last_input: u32,
+    last_output: u32,
     context_limit: u32,
     rate_samples: Vec<u64>,
     rate_bucket_tokens: u32,
@@ -95,6 +101,8 @@ impl App {
             current_message: None,
             total_input: 0,
             total_output: 0,
+            last_input: 0,
+            last_output: 0,
             context_limit,
             rate_samples: Vec::new(),
             rate_bucket_tokens: 0,
@@ -207,6 +215,8 @@ impl App {
             } => {
                 self.total_input += input_tokens;
                 self.total_output += output_tokens;
+                self.last_input = input_tokens;
+                self.last_output = output_tokens;
             }
             AgentEvent::TurnComplete => {
                 self.is_running = false;
@@ -249,7 +259,7 @@ impl App {
     }
 
     fn context_used(&self) -> u32 {
-        self.total_input + self.total_output
+        self.last_input + self.last_output
     }
 
     fn context_pct(&self) -> f64 {
@@ -483,10 +493,12 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     ];
 
     let cost = app.cost_usd();
-    let total = app.context_used();
-    if total > 0 {
+    let ctx = app.context_used();
+    if ctx > 0 {
         let left_len = 4 + app.cwd.len() + 4 + app.model_name.len();
-        let stats_str = format!("{} tokens  ${:.3}", total, cost);
+        let ctx_k = ctx / 1000;
+        let limit_k = app.context_limit / 1000;
+        let stats_str = format!("{}k/{}k  ${:.3}", ctx_k, limit_k, cost);
         let padding = (area.width as usize).saturating_sub(left_len + stats_str.len());
         spans.push(Span::styled(" ".repeat(padding), Style::default()));
         spans.push(Span::styled(stats_str, Style::default().fg(MUTED)));

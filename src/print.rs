@@ -258,8 +258,12 @@ fn unescape_json_str(s: &str) -> String {
 
 pub struct PrintMode {
     start: Instant,
+    // summed across all api calls (for cost calculation)
     total_input: u32,
     total_output: u32,
+    // from the most recent api call (for context window display)
+    last_input: u32,
+    last_output: u32,
     tool_count: u32,
     error_count: u32,
     in_text: bool,
@@ -278,6 +282,8 @@ impl PrintMode {
             start: Instant::now(),
             total_input: 0,
             total_output: 0,
+            last_input: 0,
+            last_output: 0,
             tool_count: 0,
             error_count: 0,
             in_text: false,
@@ -440,6 +446,8 @@ impl PrintMode {
             } => {
                 self.total_input += input_tokens;
                 self.total_output += output_tokens;
+                self.last_input = input_tokens;
+                self.last_output = output_tokens;
             }
             AgentEvent::TurnComplete => {
                 if self.in_thinking {
@@ -566,7 +574,7 @@ impl PrintMode {
 
     pub fn print_summary(&self) {
         let elapsed = self.start.elapsed();
-        let total = self.total_input + self.total_output;
+        let context = self.last_input + self.last_output;
         let cost = self.total_input as f64 * 3.0 / 1_000_000.0
             + self.total_output as f64 * 15.0 / 1_000_000.0;
         let rate = if elapsed.as_secs_f64() > 0.0 {
@@ -577,7 +585,7 @@ impl PrintMode {
 
         eprintln!();
         eprintln!(
-            "{DIM}{total} tokens \u{00b7} ${cost:.3} \u{00b7} {} tools \u{00b7} {rate:.0} tok/s \u{00b7} {:.1}s{RESET}",
+            "{DIM}{context} tokens \u{00b7} ${cost:.3} \u{00b7} {} tools \u{00b7} {rate:.0} tok/s \u{00b7} {:.1}s{RESET}",
             self.tool_count,
             elapsed.as_secs_f64(),
         );
