@@ -364,6 +364,22 @@ impl App {
         self.input.split('\n').count()
     }
 
+    // visual line count after soft-wrapping to terminal width
+    fn input_visual_line_count(&self) -> usize {
+        let content_width = (self.term_width as usize).saturating_sub(2); // prefix width
+        if content_width == 0 { return 1; }
+        let mut count = 0;
+        for line in self.input.split('\n') {
+            let w = UnicodeWidthStr::width(line);
+            if w == 0 {
+                count += 1;
+            } else {
+                count += (w + content_width - 1) / content_width;
+            }
+        }
+        count.max(1)
+    }
+
     fn delete_to_line_start(&mut self) {
         let (_, col) = self.cursor_line_col();
         if col == 0 {
@@ -663,13 +679,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let max_input = (size.height / 3).max(2);
     let input_height = if app.is_running {
-        // show the pinned current message
         let msg_lines = app.current_message.as_ref()
-            .map(|m| m.split('\n').count() as u16)
+            .map(|m| {
+                let content_width = (size.width as usize).saturating_sub(2);
+                if content_width == 0 { return 1u16; }
+                let mut count: u16 = 0;
+                for line in m.split('\n') {
+                    let w = UnicodeWidthStr::width(line);
+                    if w == 0 { count += 1; } else {
+                        count += ((w + content_width - 1) / content_width) as u16;
+                    }
+                }
+                count.max(1)
+            })
             .unwrap_or(1);
         msg_lines.max(1).min(max_input)
     } else {
-        (app.input_line_count() as u16).max(1).min(max_input)
+        (app.input_visual_line_count() as u16).max(1).min(max_input)
     };
 
     let chunks = Layout::default()
@@ -758,41 +784,126 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
+// wrap input/message text into visual lines with a prefix on the first line.
+// returns the visual lines and, if a cursor char position is given,
+// the (visual_row, visual_col) of the cursor.
+fn wrap_input_text(
+    text: &str,
+    max_width: u16,
+    cursor_char_pos: Option<usize>,
+) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    let prefix_width: usize = 2;
+    let content_width = (max_width as usize).saturating_sub(prefix_width);
+    if content_width == 0 {
+        return (vec![], None);
+    }
 
-    if app.is_running {
-        // show the current message pinned while the agent is working
-        if let Some(ref msg) = app.current_message {
-            for (i, line_text) in msg.split('\n').enumerate() {
-                let prefix = if i == 0 { "\u{203a} " } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                    Span::styled(line_text.to_string(), Style::default().fg(FG)),
-                ]));
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cursor_visual: Option<(u16, u16)> = None;
+    let mut char_offset: usize = 0; // running char position across the whole input
+
+    for (line_idx, logical_line) in text.split('\n').enumerate() {
+        let prefix = if lines.is_empty() { "\u{203a} " } else { "  " };
+
+        if logical_line.is_empty() {
+            // check if cursor is on this empty line
+            if let Some(cp) = cursor_char_pos {
+                if cp == char_offset {
+                    cursor_visual = Some((lines.len() as u16, 0));
+                }
             }
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            ]));
+            // advance past the newline separator (except after the last line)
+            char_offset += 1; // for the '\n'
+            continue;
         }
+
+        let chars: Vec<char> = logical_line.chars().collect();
+        let mut chunk_start: usize = 0; // index into chars[]
+
+        while chunk_start < chars.len() {
+            let row_prefix = if lines.is_empty() { "\u{203a} " } else { "  " };
+
+            // find how many chars fit in content_width
+            let mut w: usize = 0;
+            let mut chunk_end = chunk_start;
+            while chunk_end < chars.len() {
+                let cw = unicode_width::UnicodeWidthChar::width(chars[chunk_end]).unwrap_or(0);
+                if w + cw > content_width {
+                    break;
+                }
+                w += cw;
+                chunk_end += 1;
+            }
+            if chunk_end == chunk_start {
+                // single char wider than content_width, force it
+                chunk_end = chunk_start + 1;
+            }
+
+            let chunk_text: String = chars[chunk_start..chunk_end].iter().collect();
+
+            // check if cursor falls within this visual row
+            if let Some(cp) = cursor_char_pos {
+                let abs_start = char_offset + chunk_start;
+                let abs_end = char_offset + chunk_end;
+                if cp >= abs_start && cp < abs_end {
+                    let col_chars = &chars[chunk_start..(chunk_start + (cp - abs_start))];
+                    let col_w: usize = col_chars.iter()
+                        .map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0))
+                        .sum();
+                    cursor_visual = Some((lines.len() as u16, col_w as u16));
+                }
+                // cursor at end of last chunk of this logical line
+                if cp == abs_end && chunk_end == chars.len() {
+                    cursor_visual = Some((lines.len() as u16, w as u16));
+                }
+            }
+
+            lines.push(Line::from(vec![
+                Span::styled(row_prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled(chunk_text, Style::default().fg(FG)),
+            ]));
+
+            chunk_start = chunk_end;
+        }
+
+        // advance char_offset past this logical line + newline separator
+        char_offset += chars.len();
+        if line_idx < text.matches('\n').count() {
+            char_offset += 1; // '\n'
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("\u{203a} ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        ]));
+        if cursor_char_pos == Some(0) {
+            cursor_visual = Some((0, 0));
+        }
+    }
+
+    (lines, cursor_visual)
+}
+
+fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
+    if app.is_running {
+        let text = app.current_message.as_deref().unwrap_or("");
+        let (lines, _) = wrap_input_text(text, area.width, None);
 
         let widget = Paragraph::new(lines)
             .style(Style::default().bg(BG))
             .scroll((0, 0));
         frame.render_widget(widget, area);
     } else {
-        // editable input
-        let input_lines_vec: Vec<&str> = app.input.split('\n').collect();
-        let (cursor_line, _cursor_col) = app.cursor_line_col();
+        let (lines, cursor_pos) = wrap_input_text(&app.input, area.width, Some(app.cursor_pos));
 
-        for (i, line_text) in input_lines_vec.iter().enumerate() {
-            let prefix = if i == 0 { "\u{203a} " } else { "  " };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                Span::styled(line_text.to_string(), Style::default().fg(FG)),
-            ]));
-        }
-
+        let cursor_row = cursor_pos.map(|(r, _)| r).unwrap_or(0);
         let visible = area.height;
-        let scroll: u16 = if cursor_line as u16 >= visible {
-            cursor_line as u16 - visible + 1
+        let scroll: u16 = if cursor_row >= visible {
+            cursor_row - visible + 1
         } else {
             0
         };
@@ -803,13 +914,10 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(widget, area);
 
         // place the native terminal cursor
-        let byte_pos = app.cursor_byte_pos();
-        let line_start = app.input[..byte_pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let text_before_cursor = &app.input[line_start..byte_pos];
-        let display_col = UnicodeWidthStr::width(text_before_cursor) as u16;
         let prefix_width: u16 = 2;
-        let cx = area.x + prefix_width + display_col;
-        let cy = area.y + (cursor_line as u16).saturating_sub(scroll);
+        let (vrow, vcol) = cursor_pos.unwrap_or((0, 0));
+        let cx = area.x + prefix_width + vcol;
+        let cy = area.y + vrow.saturating_sub(scroll);
         frame.set_cursor_position((cx, cy));
     }
 }
