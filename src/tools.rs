@@ -698,9 +698,7 @@ async fn exec_explore(
         content: MessageContent::Text(prompt),
     }];
 
-    let max_turns = 20;
-
-    for _turn in 0..max_turns {
+    loop {
         // build request headers
         let mut headers = reqwest::header::HeaderMap::new();
         match &api_ctx.auth {
@@ -923,8 +921,6 @@ async fn exec_explore(
             content: MessageContent::Blocks(result_blocks),
         });
     }
-
-    ToolResult::Error("explore: reached max turns without producing a writeup".to_string())
 }
 
 async fn exec_web_search(input: &serde_json::Value) -> ToolResult {

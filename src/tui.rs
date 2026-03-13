@@ -1490,6 +1490,19 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                 ));
             }
             lines.push(tool_line(spans));
+
+            // show the most recent streaming output lines while running.
+            // used by explore to display sub-tool calls as they happen.
+            if let Some(ref output) = entry.output {
+                let out_lines: Vec<&str> = output.lines().collect();
+                let start = out_lines.len().saturating_sub(8);
+                for ol in &out_lines[start..] {
+                    lines.push(tool_line(vec![
+                        Span::styled("    ", Style::default()),
+                        Span::styled((*ol).to_string(), Style::default().fg(DIM)),
+                    ]));
+                }
+            }
         }
         ToolStatus::Complete { exit_code } => {
             let mut spans = vec![];
