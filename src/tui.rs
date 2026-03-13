@@ -423,8 +423,9 @@ impl App {
                             if let Some(d) = diff {
                                 entry.arg = d.path.clone();
                                 entry.diff = Some(d.clone());
-                                entry.expanded = self.diffs_expanded;
                             }
+
+                            entry.expanded = self.diffs_expanded;
 
                             // store output for display, truncated.
                             // skip when a diff is present (path+stats in the header is enough).
@@ -593,9 +594,7 @@ impl App {
         self.diffs_expanded = !self.diffs_expanded;
         for item in &mut self.activity {
             if let ActivityItem::Tool(ref mut entry) = item {
-                if entry.diff.is_some() {
-                    entry.expanded = self.diffs_expanded;
-                }
+                entry.expanded = self.diffs_expanded;
             }
         }
     }
@@ -1884,6 +1883,10 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
     frame.set_cursor_position((cx, cy));
 }
 
+fn is_collapsed_tool(item: &ActivityItem) -> bool {
+    matches!(item, ActivityItem::Tool(e) if !e.expanded && !matches!(e.status, ToolStatus::Running))
+}
+
 fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     let w = area.width;
     let n = app.activity.len();
@@ -1939,11 +1942,17 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    // compute total line count including inter-item spacing
+    // compute total line count including inter-item spacing.
+    // collapsed tool entries stack without blank lines between them.
     let mut total: usize = 0;
     for idx in 0..n {
         if idx > 0 {
-            total += 1;
+            let both_collapsed_tools =
+                is_collapsed_tool(&app.activity[idx - 1])
+                && is_collapsed_tool(&app.activity[idx]);
+            if !both_collapsed_tools {
+                total += 1;
+            }
         }
         total += app.activity_render_cache[idx].lines.len();
     }
@@ -1988,12 +1997,17 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
                 break;
             }
 
-            // 1 blank line between every pair of items
+            // blank line between items, except between consecutive collapsed tools
             if idx > 0 {
-                if cursor >= vp_start {
-                    lines.push(Line::from(""));
+                let both_collapsed_tools =
+                    is_collapsed_tool(&app.activity[idx - 1])
+                    && is_collapsed_tool(&app.activity[idx]);
+                if !both_collapsed_tools {
+                    if cursor >= vp_start {
+                        lines.push(Line::from(""));
+                    }
+                    cursor += 1;
                 }
-                cursor += 1;
             }
 
             // item lines
@@ -2229,29 +2243,29 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
 
             lines.push(tool_line(spans));
 
-            // bash output (first few lines, indented further)
-            if let Some(ref output) = entry.output {
-                let display = strip_exit_prefix(output);
-                let out_lines: Vec<&str> = display.lines().take(8).collect();
-                for ol in &out_lines {
-                    lines.push(tool_line(vec![
-                        Span::styled("    ", Style::default()),
-                        Span::styled((*ol).to_string(), Style::default().fg(DIM)),
-                    ]));
-                }
-                let total_lines = display.lines().count();
-                if total_lines > 8 {
-                    lines.push(tool_line(vec![
-                        Span::styled(
-                            format!("    ...{} more lines", total_lines - 8),
-                            Style::default().fg(DIM),
-                        ),
-                    ]));
-                }
-            }
-
-            // expanded diff lines
             if entry.expanded {
+                // tool output (first few lines, indented)
+                if let Some(ref output) = entry.output {
+                    let display = strip_exit_prefix(output);
+                    let out_lines: Vec<&str> = display.lines().take(8).collect();
+                    for ol in &out_lines {
+                        lines.push(tool_line(vec![
+                            Span::styled("    ", Style::default()),
+                            Span::styled((*ol).to_string(), Style::default().fg(DIM)),
+                        ]));
+                    }
+                    let total_lines = display.lines().count();
+                    if total_lines > 8 {
+                        lines.push(tool_line(vec![
+                            Span::styled(
+                                format!("    ...{} more lines", total_lines - 8),
+                                Style::default().fg(DIM),
+                            ),
+                        ]));
+                    }
+                }
+
+                // diff lines
                 if let Some(ref diff) = entry.diff {
                     lines.extend(build_diff_lines(diff));
                 }
