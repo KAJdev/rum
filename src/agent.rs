@@ -349,9 +349,11 @@ impl Agent {
 
                             in_tool = false;
                         } else if in_text {
-                            response_blocks.push(ContentBlock::Text {
-                                text: current_text.clone(),
-                            });
+                            if !current_text.trim().is_empty() {
+                                response_blocks.push(ContentBlock::Text {
+                                    text: current_text.clone(),
+                                });
+                            }
                             in_text = false;
                         }
                     }
@@ -573,7 +575,7 @@ fn clean_thinking_blocks(messages: Vec<Message>) -> Vec<Message> {
                         .collect();
                     if filtered.is_empty() {
                         MessageContent::Blocks(vec![ContentBlock::Text {
-                            text: " ".to_string(),
+                            text: "...".to_string(),
                         }])
                     } else {
                         MessageContent::Blocks(filtered)
