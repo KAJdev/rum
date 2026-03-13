@@ -399,6 +399,10 @@ impl App {
                         ToolResult::Error(e) => {
                             entry.status = ToolStatus::Error(e.clone());
                         }
+                        ToolResult::Image { text, .. } => {
+                            entry.output = Some(text.clone());
+                            entry.status = ToolStatus::Complete { exit_code: None };
+                        }
                     }
                 }
             }

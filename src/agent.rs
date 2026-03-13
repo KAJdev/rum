@@ -418,10 +418,7 @@ impl Agent {
                         let mut result_blocks = Vec::new();
                         for id in &tool_use_ids {
                             if let Some(result) = tool_results.remove(id.as_str()) {
-                                let (content, is_error) = match result {
-                                    ToolResult::Success { output, .. } => (output, None),
-                                    ToolResult::Error(e) => (e, Some(true)),
-                                };
+                                let (content, is_error) = tool_result_content(result);
                                 result_blocks.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content,
@@ -430,7 +427,7 @@ impl Agent {
                             } else {
                                 result_blocks.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
-                                    content: "cancelled by user".to_string(),
+                                    content: serde_json::Value::String("cancelled by user".to_string()),
                                     is_error: Some(true),
                                 });
                             }
@@ -514,9 +511,8 @@ impl Agent {
                 if let ContentBlock::ToolUse { id, .. } = block {
                     let cached = tool_results.remove(id.as_str());
                     let (content, is_error) = match cached {
-                        Some(ToolResult::Success { output, .. }) => (output, None),
-                        Some(ToolResult::Error(e)) => (e, Some(true)),
-                        None => ("tool result missing".to_string(), Some(true)),
+                        Some(r) => tool_result_content(r),
+                        None => (serde_json::Value::String("tool result missing".to_string()), Some(true)),
                     };
                     result_blocks.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
@@ -545,6 +541,7 @@ fn to_cc_name(name: &str) -> &str {
         "edit" => "Edit",
         "bash" => "Bash",
         "web_search" => "WebSearch",
+        "view_file" => "ViewFile",
         _ => name,
     }
 }
@@ -556,6 +553,7 @@ fn from_cc_name(name: &str) -> &str {
         "Edit" => "edit",
         "Bash" => "bash",
         "WebSearch" => "web_search",
+        "ViewFile" => "view_file",
         _ => name,
     }
 }
@@ -588,6 +586,27 @@ fn clean_thinking_blocks(messages: Vec<Message>) -> Vec<Message> {
             Message { role: m.role, content }
         })
         .collect()
+}
+
+// convert a ToolResult into the (content, is_error) pair used in ContentBlock::ToolResult.
+// plain text goes in as a JSON string; image results build a [text, image] content array
+// matching the anthropic api's multi-block tool_result format.
+fn tool_result_content(result: tools::ToolResult) -> (serde_json::Value, Option<bool>) {
+    match result {
+        tools::ToolResult::Success { output, .. } => {
+            (serde_json::Value::String(output), None)
+        }
+        tools::ToolResult::Error(e) => {
+            (serde_json::Value::String(e), Some(true))
+        }
+        tools::ToolResult::Image { text, data, media_type } => {
+            let content = serde_json::json!([
+                {"type": "text", "text": text},
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+            ]);
+            (content, None)
+        }
+    }
 }
 
 fn is_retryable_error(e: &str) -> bool {

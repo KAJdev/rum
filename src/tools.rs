@@ -29,6 +29,12 @@ pub enum ToolResult {
         output: String,
         diff: Option<DiffInfo>,
     },
+    // image file read result — base64-encoded data sent to the model as a content block
+    Image {
+        text: String,
+        data: String,
+        media_type: String,
+    },
     Error(String),
 }
 
@@ -158,6 +164,20 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "view_file".to_string(),
+            description: "View an image file and return its visual contents. Supports JPEG, PNG, GIF, and WebP. Use this to inspect screenshots, diagrams, UI mockups, or any image the user references.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the image file"
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDef {
             name: "explore".to_string(),
             description: "Spawn a focused sub-agent that uses read-only tools (read, bash, web_search) to thoroughly investigate a topic, then returns a detailed structured writeup. Use this when a task requires substantial exploration before you can act — inspecting an unfamiliar codebase section, tracing how something works across many files, or researching a problem space.".to_string(),
             input_schema: serde_json::json!({
@@ -197,6 +217,7 @@ pub fn execute_tool<'a>(
             "edit" => exec_edit(input, cwd).await,
             "write" => exec_write(input, cwd).await,
             "web_search" => exec_web_search(input).await,
+            "view_file" => exec_view_file(input, cwd).await,
             "explore" => match api_ctx {
                 Some(ctx) => exec_explore(input, cwd, stream_tx, ctx).await,
                 None => ToolResult::Error("explore is not available in this context".to_string()),
@@ -425,6 +446,79 @@ async fn exec_bash(
     ToolResult::Success { output, diff: None }
 }
 
+async fn exec_view_file(input: &serde_json::Value, cwd: &Path) -> ToolResult {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let path_str = match input.get("path").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return ToolResult::Error("missing 'path' parameter".to_string()),
+    };
+
+    let path = resolve_path(path_str, cwd);
+
+    let media_type = match detect_image_media_type(&path) {
+        Some(t) => t,
+        None => {
+            let ext = path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("unknown");
+            return ToolResult::Error(format!(
+                "'{}' is not a supported image type (jpeg, png, gif, webp) — got extension '{}'",
+                path_str, ext
+            ));
+        }
+    };
+
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => return ToolResult::Error(format!("failed to read '{}': {}", path_str, e)),
+    };
+
+    // 5 MB limit — matches the anthropic api's per-image size cap
+    const MAX_BYTES: usize = 5 * 1024 * 1024;
+    if bytes.len() > MAX_BYTES {
+        return ToolResult::Error(format!(
+            "'{}' is {:.1} MB — images must be under 5 MB",
+            path_str,
+            bytes.len() as f64 / 1_048_576.0
+        ));
+    }
+
+    let data = STANDARD.encode(&bytes);
+    let kb = bytes.len() as f64 / 1024.0;
+    let text = format!("{} [{}, {:.1} KB]", path.display(), media_type, kb);
+
+    ToolResult::Image { text, data, media_type: media_type.to_string() }
+}
+
+// detect an image's mime type from magic bytes first, then file extension
+fn detect_image_media_type(path: &Path) -> Option<&'static str> {
+    // try magic bytes from the first 12 bytes of the file
+    if let Ok(bytes) = std::fs::read(path) {
+        if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return Some("image/png");
+        }
+        if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return Some("image/jpeg");
+        }
+        if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            return Some("image/gif");
+        }
+        if bytes.len() >= 12 && &bytes[8..12] == b"WEBP" {
+            return Some("image/webp");
+        }
+    }
+
+    // fall back to extension
+    match path.extension()?.to_str()?.to_lowercase().as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
 async fn exec_edit(input: &serde_json::Value, cwd: &Path) -> ToolResult {
     let path = match input.get("path").and_then(|v| v.as_str()) {
         Some(p) => resolve_path(p, cwd),
@@ -583,6 +677,7 @@ Available tools:
 - read: read a file's contents
 - bash: run read-only shell commands (ls, find, grep, cat, rg, etc.)
 - web_search: search the web
+- view_file: view an image file (jpg, png, gif, webp)
 
 Process:
 1. Use tools to gather all relevant information about the prompt
@@ -599,7 +694,7 @@ Report guidelines:
 
 // tool definitions sent to the explore sub-agent (read-only subset, with oauth name casing if needed)
 fn explore_tools_json(is_oauth: bool) -> Vec<serde_json::Value> {
-    let allowed = ["read", "bash", "web_search"];
+    let allowed = ["read", "bash", "web_search", "view_file"];
     tool_definitions()
         .into_iter()
         .filter(|t| allowed.contains(&t.name.as_str()))
@@ -642,6 +737,7 @@ fn explore_arg_preview(name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("?")
             .to_string(),
+        "view_file" => explore_view_file_preview(input),
         "bash" => {
             let cmd = input
                 .get("command")
@@ -666,6 +762,15 @@ fn explore_arg_preview(name: &str, input: &serde_json::Value) -> String {
         }
         _ => String::new(),
     }
+}
+
+// short preview of a view_file path arg
+fn explore_view_file_preview(input: &serde_json::Value) -> String {
+    input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string()
 }
 
 async fn exec_explore(
@@ -905,8 +1010,19 @@ async fn exec_explore(
                     execute_tool(local, input, cwd, None, None).await;
 
                 let (content, is_error) = match result {
-                    ToolResult::Success { output, .. } => (output, None),
-                    ToolResult::Error(e) => (e, Some(true)),
+                    ToolResult::Success { output, .. } => {
+                        (serde_json::Value::String(output), None)
+                    }
+                    ToolResult::Error(e) => {
+                        (serde_json::Value::String(e), Some(true))
+                    }
+                    ToolResult::Image { text, data, media_type } => {
+                        let val = serde_json::json!([
+                            {"type": "text", "text": text},
+                            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
+                        ]);
+                        (val, None)
+                    }
                 };
 
                 result_blocks.push(ContentBlock::ToolResult {

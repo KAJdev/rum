@@ -136,12 +136,14 @@ Available tools:
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
 - web_search: Search the web using DuckDuckGo
+- view_file: View an image file (JPEG, PNG, GIF, WebP) and analyze its visual contents
 
 Guidelines:
 - Use bash for file operations like ls, rg, find
 - Use read to examine files before editing
 - Use edit for precise changes (old text must match exactly)
 - Use write only for new files or complete rewrites
+- Use view_file when the user references an image or screenshot
 - Be concise in your responses
 - Show file paths clearly when working with files"#
         .to_string()

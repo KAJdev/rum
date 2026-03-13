@@ -468,6 +468,10 @@ impl PrintMode {
                         let short = truncate(e, 120);
                         eprintln!("  {RED}\u{2717} {name} - {short}{RESET}");
                     }
+                    ToolResult::Image { text, .. } => {
+                        eprint!("\r\x1b[2K");
+                        eprintln!("  {DIM}\u{2713} {name} - {text}{RESET}");
+                    }
                 }
             }
             AgentEvent::TokenUsage {

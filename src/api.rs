@@ -99,7 +99,9 @@ pub enum ContentBlock {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: String,
+        // string for plain text results; array of {type,text}/{type,image} blocks
+        // for results that include image content
+        content: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
