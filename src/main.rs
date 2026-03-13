@@ -317,10 +317,11 @@ async fn run_tui_mode(
         }
 
         if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                match tui::handle_key_event(key, &mut app) {
-                    tui::InputAction::Submit(msg) => {
-                        if let Some(verifier) = login_pending.take() {
+            match event::read()? {
+                Event::Key(key) => {
+                    match tui::handle_key_event(key, &mut app) {
+                        tui::InputAction::Submit(msg) => {
+                            if let Some(verifier) = login_pending.take() {
                             // the user pasted the auth code from the browser
                             handle_login_code(&msg, verifier, &mut app, login_tx.clone());
                         } else if let Some(cmd) = parse_slash_command(&msg) {
@@ -365,6 +366,11 @@ async fn run_tui_mode(
                     }
                     tui::InputAction::None => {}
                 }
+                }
+                Event::Paste(text) => {
+                    app.insert_paste(text);
+                }
+                _ => {}
             }
         }
 

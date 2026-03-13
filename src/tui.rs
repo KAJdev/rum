@@ -2,6 +2,7 @@ use crossterm::{
     event::{
         KeyCode, KeyEvent, KeyModifiers,
         KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        EnableBracketedPaste, DisableBracketedPaste,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -220,6 +221,9 @@ pub struct App {
     // set after TurnComplete so the next text/thinking block always starts fresh
     // rather than appending to the last item from the previous turn
     new_turn: bool,
+    // multi-line or long pastes are stored here; the input string holds a single
+    // placeholder char (private use area \u{E000}+index) per chunk
+    paste_chunks: Vec<String>,
     model_name: String,
     thinking_level: String,
     cwd: String,
@@ -261,6 +265,7 @@ impl App {
             auto_scroll: true,
             diffs_expanded: true,
             new_turn: false,
+            paste_chunks: Vec::new(),
             model_name: model_name.to_string(),
             thinking_level: thinking_level.to_string(),
             cwd: cwd.to_string(),
@@ -430,9 +435,10 @@ impl App {
     // appears in the activity feed immediately as pending.
     pub fn queue_message(&mut self) {
         if !self.input.is_empty() {
-            self.queued_messages.push(self.input.clone());
+            self.queued_messages.push(self.expand_input());
             self.input.clear();
             self.cursor_pos = 0;
+            self.paste_chunks.clear();
         }
     }
 
@@ -549,6 +555,7 @@ impl App {
         self.scroll_offset = 0;
         self.auto_scroll = true;
         self.new_turn = false;
+        self.paste_chunks.clear();
     }
 
     pub fn model_name(&self) -> &str {
@@ -592,6 +599,51 @@ impl App {
             .unwrap_or(self.input.len())
     }
 
+    // insert pasted text. multi-line or long pastes are collapsed to a single
+    // placeholder char in the input string; the real content lives in paste_chunks.
+    // on submit, expand_input() restores the full text.
+    pub fn insert_paste(&mut self, text: String) {
+        let multiline = text.contains('\n');
+        let long = text.len() > 80;
+        if !multiline && !long {
+            let bp = self.cursor_byte_pos();
+            self.input.insert_str(bp, &text);
+            self.cursor_pos += text.chars().count();
+            return;
+        }
+
+        let idx = self.paste_chunks.len();
+        if idx > 15 {
+            // too many chunks, insert inline as a fallback
+            let bp = self.cursor_byte_pos();
+            self.input.insert_str(bp, &text);
+            self.cursor_pos += text.chars().count();
+            return;
+        }
+
+        self.paste_chunks.push(text);
+        let placeholder = char::from_u32(0xE000 + idx as u32).unwrap();
+        let bp = self.cursor_byte_pos();
+        self.input.insert(bp, placeholder);
+        self.cursor_pos += 1;
+    }
+
+    // replace all paste placeholders with their real content
+    pub fn expand_input(&self) -> String {
+        let mut out = String::new();
+        for c in self.input.chars() {
+            if is_paste_placeholder(c) {
+                let idx = paste_placeholder_index(c);
+                if idx < self.paste_chunks.len() {
+                    out.push_str(&self.paste_chunks[idx]);
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     fn char_count(&self) -> usize {
         self.input.chars().count()
     }
@@ -615,8 +667,9 @@ impl App {
     fn input_visual_line_count(&self) -> usize {
         let content_width = (self.term_width as usize).saturating_sub(2); // prefix width
         if content_width == 0 { return 1; }
+        let display = make_display_input(&self.input, &self.paste_chunks);
         let mut count = 0;
-        for line in self.input.split('\n') {
+        for line in display.split('\n') {
             let w = UnicodeWidthStr::width(line);
             if w == 0 {
                 count += 1;
@@ -627,8 +680,7 @@ impl App {
         count.max(1)
     }
 
-    fn delete_to_line_start(&mut self) {
-        let (_, col) = self.cursor_line_col();
+    fn delete_to_line_start(&mut self) {        let (_, col) = self.cursor_line_col();
         if col == 0 {
             if self.cursor_pos > 0 {
                 let bp = self.cursor_byte_pos();
@@ -732,6 +784,59 @@ impl App {
 }
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// paste placeholder helpers — private use area \u{E000}..\u{E00F}
+fn is_paste_placeholder(c: char) -> bool {
+    (c as u32) >= 0xE000 && (c as u32) <= 0xE00F
+}
+
+fn paste_placeholder_index(c: char) -> usize {
+    ((c as u32) - 0xE000) as usize
+}
+
+fn paste_display_str(chunk: &str) -> String {
+    let lines = chunk.lines().count().max(1);
+    if lines > 1 {
+        format!("[{lines} lines]")
+    } else {
+        format!("[{} chars]", chunk.chars().count())
+    }
+}
+
+// expand paste placeholders to their display summaries (e.g. "[3 lines]")
+fn make_display_input(input: &str, paste_chunks: &[String]) -> String {
+    let mut out = String::new();
+    for c in input.chars() {
+        if is_paste_placeholder(c) {
+            let idx = paste_placeholder_index(c);
+            if idx < paste_chunks.len() {
+                out.push_str(&paste_display_str(&paste_chunks[idx]));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+// map a char-index in the real input to the equivalent char-index in the display string
+fn remap_cursor(input: &str, paste_chunks: &[String], real_pos: usize) -> usize {
+    let mut display_pos = 0;
+    for (i, c) in input.chars().enumerate() {
+        if i == real_pos {
+            return display_pos;
+        }
+        if is_paste_placeholder(c) {
+            let idx = paste_placeholder_index(c);
+            if idx < paste_chunks.len() {
+                display_pos += paste_display_str(&paste_chunks[idx]).chars().count();
+            }
+        } else {
+            display_pos += 1;
+        }
+    }
+    display_pos
+}
 
 // ~60fps ticks, slow down to ~8 transitions/sec
 fn spinner_char(frame: u64) -> &'static str {
@@ -1292,7 +1397,9 @@ fn render_message_area(frame: &mut Frame, app: &App, area: Rect, suggestions: &[
 }
 
 fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
-    let (input_lines, cursor_pos) = wrap_input_text(&app.input, area.width, Some(app.cursor_pos), FG);
+    let display = make_display_input(&app.input, &app.paste_chunks);
+    let display_cursor = remap_cursor(&app.input, &app.paste_chunks, app.cursor_pos);
+    let (input_lines, cursor_pos) = wrap_input_text(&display, area.width, Some(display_cursor), FG);
 
     let visible = area.height;
     let cursor_row = cursor_pos.map(|(r, _)| r).unwrap_or(0);
@@ -1713,6 +1820,7 @@ impl Tui {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnableBracketedPaste)?;
         // enable kitty keyboard protocol so terminals report modifier
         // keys on Enter (needed for shift+enter newline detection)
         let _ = execute!(
@@ -1728,6 +1836,7 @@ impl Tui {
 
     pub fn restore(&mut self) -> Result<(), io::Error> {
         let _ = execute!(self.terminal.backend_mut(), PopKeyboardEnhancementFlags);
+        let _ = execute!(self.terminal.backend_mut(), DisableBracketedPaste);
         disable_raw_mode()?;
         execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
         Ok(())
@@ -1771,6 +1880,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         }
         app.input.clear();
         app.cursor_pos = 0;
+        app.paste_chunks.clear();
         app.reset_slash_completion();
         return InputAction::None;
     }
@@ -1808,9 +1918,10 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                     app.queue_message();
                 } else {
                     app.reset_slash_completion();
-                    let msg = app.input.clone();
+                    let msg = app.expand_input();
                     app.input.clear();
                     app.cursor_pos = 0;
+                    app.paste_chunks.clear();
                     return InputAction::Submit(msg);
                 }
             }
