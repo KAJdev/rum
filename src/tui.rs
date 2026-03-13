@@ -407,7 +407,7 @@ impl App {
                     let buf = entry.output.get_or_insert_with(String::new);
                     // cap the display buffer to keep re-renders cheap
                     if buf.len() < 10_000 {
-                        buf.push_str(&text);
+                        buf.push_str(&strip_ansi(&text));
                     }
                 }
             }
@@ -438,10 +438,11 @@ impl App {
                             let trimmed = output.trim();
                             let keep_streamed = name == "bash" && entry.output.is_some();
                             if !keep_streamed && entry.diff.is_none() && !trimmed.is_empty() && trimmed != "(no output)" {
-                                let display_output = if trimmed.len() > 2000 {
-                                    format!("{}...", &trimmed[..2000])
+                                let clean = strip_ansi(trimmed);
+                                let display_output = if clean.len() > 2000 {
+                                    format!("{}...", &clean[..2000])
                                 } else {
-                                    trimmed.to_string()
+                                    clean
                                 };
                                 entry.output = Some(display_output);
                             }
@@ -1297,6 +1298,61 @@ fn last_paragraph(text: &str) -> &str {
     } else {
         trimmed
     }
+}
+
+// remove ansi escape sequences and other terminal control codes from tool output.
+// covers CSI sequences (\x1b[...X), OSC sequences (\x1b]...ST), and bare \x1b.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    // consume until final byte (letter or @-~)
+                    while let Some(&ch) = chars.peek() {
+                        chars.next();
+                        if ch.is_ascii_alphabetic() || ch == '~' || ch == '@' {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    // OSC: consume until ST (\x1b\\) or BEL (\x07)
+                    while let Some(&ch) = chars.peek() {
+                        if ch == '\x07' {
+                            chars.next();
+                            break;
+                        }
+                        if ch == '\x1b' {
+                            chars.next();
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                        chars.next();
+                    }
+                }
+                _ => {
+                    // bare escape or two-char sequence, skip next char
+                    chars.next();
+                }
+            }
+        } else if c == '\r' {
+            // carriage return: overwrite the current line
+            if let Some(pos) = out.rfind('\n') {
+                out.truncate(pos + 1);
+            } else {
+                out.clear();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 // strip the "[exit code: N]\n" prefix from bash output for display
