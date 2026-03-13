@@ -454,12 +454,6 @@ impl Agent {
                 if retries < 3 && !has_non_retryable && (has_retryable || silent_failure) {
                     retries += 1;
                     let delay = 1u64 << retries.min(4);
-                    let msg = stream_errors.first()
-                        .map(|e| e.chars().take(80).collect::<String>())
-                        .unwrap_or_else(|| "no response".to_string());
-                    let _ = event_tx.send(AgentEvent::Status(
-                        format!("retrying in {delay}s ({retries}/3): {msg}"),
-                    ));
                     tokio::time::sleep(Duration::from_secs(delay)).await;
                     continue;
                 }

@@ -720,6 +720,17 @@ fn explore_tools_json(is_oauth: bool) -> Vec<serde_json::Value> {
 }
 
 // map oauth-cased tool names back to local names for execute_tool dispatch
+fn explore_is_retryable(e: &str) -> bool {
+    e.contains("429")
+        || e.contains("rate_limit")
+        || e.contains("overloaded")
+        || e.contains("529")
+        || e.contains("stream error")
+        || e.contains("stream read error")
+        || e.contains("connection")
+        || e.contains("timed out")
+}
+
 fn explore_local_name(name: &str) -> &str {
     match name {
         "Read" => "read",
@@ -803,6 +814,7 @@ async fn exec_explore(
         content: MessageContent::Text(prompt),
     }];
 
+    let mut retries = 0u32;
     loop {
         // build request headers
         let mut headers = reqwest::header::HeaderMap::new();
@@ -872,13 +884,23 @@ async fn exec_explore(
         {
             Ok(r) => r,
             Err(e) => {
-                return ToolResult::Error(format!("explore: request failed: {}", e))
+                if retries < 3 {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_secs(1u64 << retries.min(4))).await;
+                    continue;
+                }
+                return ToolResult::Error(format!("explore: request failed: {}", e));
             }
         };
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
+            if retries < 3 && matches!(status.as_u16(), 429 | 500 | 502 | 503 | 529) {
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_secs(1u64 << retries.min(4))).await;
+                continue;
+            }
             return ToolResult::Error(format!(
                 "explore: api error ({}): {}",
                 status, body_text
@@ -897,12 +919,14 @@ async fn exec_explore(
         let mut stop_reason: Option<String> = None;
         let mut in_tool = false;
         let mut in_text = false;
+        let mut stream_errors: Vec<String> = Vec::new();
 
         loop {
             let chunk = match byte_stream.next().await {
                 Some(Ok(c)) => c,
                 Some(Err(e)) => {
-                    return ToolResult::Error(format!("explore: stream read error: {}", e))
+                    stream_errors.push(format!("stream read error: {}", e));
+                    break;
                 }
                 None => break,
             };
@@ -959,12 +983,28 @@ async fn exec_explore(
                         stop_reason = sr;
                     }
                     StreamEvent::Error(e) => {
-                        return ToolResult::Error(format!("explore: {}", e));
+                        stream_errors.push(e);
                     }
                     _ => {}
                 }
             }
         }
+
+        // retry on empty response (same logic as the top-level agent)
+        if response_blocks.is_empty() && stop_reason.is_none() {
+            let has_retryable = stream_errors.iter().any(|e| explore_is_retryable(e));
+            let has_non_retryable = stream_errors.iter().any(|e| !explore_is_retryable(e));
+            let silent = stream_errors.is_empty();
+            if retries < 3 && !has_non_retryable && (has_retryable || silent) {
+                retries += 1;
+                tokio::time::sleep(std::time::Duration::from_secs(1u64 << retries.min(4))).await;
+                continue;
+            }
+            let err = stream_errors.first().cloned()
+                .unwrap_or_else(|| "stream ended without a response".to_string());
+            return ToolResult::Error(format!("explore: {}", err));
+        }
+        retries = 0;
 
         // push assistant turn
         if !response_blocks.is_empty() {
