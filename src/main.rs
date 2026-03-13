@@ -374,9 +374,13 @@ async fn run_tui_mode(
                 }
                 }
                 Event::Paste(text) => {
-                    if paste_looks_like_binary(&text) {
+                    // empty or binary-looking paste means the terminal forwarded Cmd+V
+                    // but the clipboard only had image data (no text representation)
+                    if text.is_empty() || paste_looks_like_binary(&text) {
                         if let Some(img_path) = try_read_clipboard_image() {
                             app.insert_text(img_path);
+                        } else if !text.is_empty() {
+                            app.insert_paste(text);
                         }
                     } else if let Some(path) = resolve_pasted_path(&text, &cwd) {
                         app.insert_text(path);
@@ -759,7 +763,7 @@ fn try_read_clipboard_image() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn read_clipboard_image_to_path(path: &str) -> bool {
-    // try pngpaste first (fast, no script overhead)
+    // try pngpaste first (handles PNG, TIFF, JPEG, etc. automatically)
     if let Ok(status) = std::process::Command::new("pngpaste")
         .arg(path)
         .stderr(std::process::Stdio::null())
@@ -770,21 +774,52 @@ fn read_clipboard_image_to_path(path: &str) -> bool {
         }
     }
 
-    // fall back to osascript
+    // try PNG directly via osascript
     let script = format!(
         "set d to the clipboard as «class PNGf»\n\
          set f to open for access POSIX file \"{path}\" with write permission\n\
          write d to f\n\
          close access f"
     );
-    matches!(
+    if matches!(
         std::process::Command::new("osascript")
             .arg("-e")
             .arg(&script)
             .stderr(std::process::Stdio::null())
             .status(),
         Ok(s) if s.success()
-    )
+    ) {
+        return true;
+    }
+
+    // screenshots are stored as TIFF on the clipboard; write TIFF then convert with sips
+    let tiff_path = format!("{path}.tiff");
+    let script = format!(
+        "set d to the clipboard as «class TIFF»\n\
+         set f to open for access POSIX file \"{tiff_path}\" with write permission\n\
+         write d to f\n\
+         close access f"
+    );
+    if matches!(
+        std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .stderr(std::process::Stdio::null())
+            .status(),
+        Ok(s) if s.success()
+    ) {
+        let converted = std::process::Command::new("sips")
+            .args(["-s", "format", "png", &tiff_path, "--out", path])
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        let _ = std::fs::remove_file(&tiff_path);
+        return converted;
+    }
+
+    false
 }
 
 #[cfg(target_os = "linux")]
