@@ -1,19 +1,19 @@
 # rum
 
-a fast, diff-centric coding agent for the terminal. built in rust.
+a fast coding agent for the terminal. built in rust.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ rum  ~/dev/project  (main)  claude-sonnet-4    ▂▃▅▂ 120 tok/s  $0.04 │
+│ rum  ~/dev/project  (main)  claude-sonnet-4    ▂▃▅▂ 120 tok/s  $0.04   │
 ├────────────────────────────────────────────────────────────────────────┤
-│ › refactor the auth module to use jose                                │
-│                                                                       │
-│   Read src/auth/jwt.ts                                                │
-│   Read src/auth/middleware.ts                                         │
-│   Edit src/auth/jwt.ts          +84 -67                               │
-│   Edit src/auth/middleware.ts   +12 -18                               │
-│ ◌ editing src/auth/refresh.ts...                                      │
-│                                                                       │
+│ › refactor the auth module to use jose                                 │
+│                                                                        │
+│   Read src/auth/jwt.ts                                                 │
+│   Read src/auth/middleware.ts                                          │
+│   Edit src/auth/jwt.ts          +84 -67                                │
+│   Edit src/auth/middleware.ts   +12 -18                                │
+│ ◌ editing src/auth/refresh.ts...                                       │
+│                                                                        │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
