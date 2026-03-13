@@ -1018,11 +1018,7 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
     {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => {
-            let _ = tx.send(tui::JobEvent::Complete {
-                id: job_id,
-                status: tui::JobStatus::Failed("could not get commit sha".to_string()),
-                summary: "CI: could not determine commit".to_string(),
-            });
+            let _ = tx.send(tui::JobEvent::Dismiss { id: job_id });
             return;
         }
     };
@@ -1041,11 +1037,6 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
     } else {
         branch.clone()
     };
-
-    let _ = tx.send(tui::JobEvent::Update {
-        id: job_id,
-        detail: format!("waiting for runs on {}", branch_label),
-    });
 
     // wait for runs to appear (github can take a few seconds)
     let mut runs_found = false;
@@ -1068,12 +1059,8 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
             Ok(o) if o.status.success() => o,
             Ok(_) | Err(_) => {
                 if attempt == 0 {
-                    // gh not available or not authed
-                    let _ = tx.send(tui::JobEvent::Complete {
-                        id: job_id,
-                        status: tui::JobStatus::Failed("gh cli unavailable".to_string()),
-                        summary: "CI: gh cli not available".to_string(),
-                    });
+                    // gh not available or not authed, silently bail
+                    let _ = tx.send(tui::JobEvent::Dismiss { id: job_id });
                     return;
                 }
                 continue;
@@ -1090,16 +1077,16 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                 // keep waiting for runs to appear in the first ~60s
                 continue;
             }
-            // no runs after waiting
-            let _ = tx.send(tui::JobEvent::Complete {
-                id: job_id,
-                status: tui::JobStatus::Passed,
-                summary: format!("CI: no runs detected on {}", branch_label),
-            });
+            // no runs after waiting, silently dismiss
+            let _ = tx.send(tui::JobEvent::Dismiss { id: job_id });
             return;
         }
 
-        runs_found = true;
+        // runs detected, make the job visible
+        if !runs_found {
+            runs_found = true;
+            let _ = tx.send(tui::JobEvent::Show { id: job_id });
+        }
 
         let total = runs.len();
         let completed = runs.iter().filter(|r| {
@@ -1115,7 +1102,6 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
         });
 
         if completed == total {
-            // all done
             if failed == 0 {
                 let _ = tx.send(tui::JobEvent::Complete {
                     id: job_id,
@@ -1140,11 +1126,7 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
     }
 
     if !runs_found {
-        let _ = tx.send(tui::JobEvent::Complete {
-            id: job_id,
-            status: tui::JobStatus::Passed,
-            summary: format!("CI: no runs detected on {}", branch_label),
-        });
+        let _ = tx.send(tui::JobEvent::Dismiss { id: job_id });
     } else {
         let _ = tx.send(tui::JobEvent::Complete {
             id: job_id,

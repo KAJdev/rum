@@ -201,6 +201,8 @@ pub struct BackgroundJob {
     pub detail: String,
     pub status: JobStatus,
     pub started_at: Instant,
+    // hidden until there's something meaningful to show
+    pub visible: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -214,8 +216,11 @@ pub enum JobStatus {
 // event sent from background job tasks to update the UI
 #[derive(Debug)]
 pub enum JobEvent {
+    Show { id: u64 },
     Update { id: u64, detail: String },
     Complete { id: u64, status: JobStatus, summary: String },
+    // silently remove a job without inserting a message
+    Dismiss { id: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -711,12 +716,18 @@ impl App {
             detail,
             status: JobStatus::Running,
             started_at: Instant::now(),
+            visible: false,
         });
         id
     }
 
     pub fn handle_job_event(&mut self, event: JobEvent) {
         match event {
+            JobEvent::Show { id } => {
+                if let Some(job) = self.background_jobs.iter_mut().find(|j| j.id == id) {
+                    job.visible = true;
+                }
+            }
             JobEvent::Update { id, detail } => {
                 if let Some(job) = self.background_jobs.iter_mut().find(|j| j.id == id) {
                     job.detail = detail;
@@ -734,6 +745,9 @@ impl App {
                 };
                 self.activity.push(ActivityItem::System(kind, summary));
                 self.auto_scroll = true;
+            }
+            JobEvent::Dismiss { id } => {
+                self.background_jobs.retain(|j| j.id != id);
             }
         }
     }
@@ -1607,7 +1621,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let msg_h = message_height.min(combined);
     let input_h = combined - msg_h;
 
-    let jobs_h: u16 = if app.background_jobs.is_empty() { 0 } else { 1 };
+    let visible_jobs = app.background_jobs.iter().any(|j| j.visible);
+    let jobs_h: u16 = if visible_jobs { 1 } else { 0 };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1618,6 +1633,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Constraint::Length(1),       // buffer after input
             Constraint::Min(4),         // activity feed
             Constraint::Length(jobs_h), // background jobs bar
+            Constraint::Length(1),       // bottom buffer
         ])
         .split(size);
 
@@ -1636,32 +1652,31 @@ fn render_jobs_bar(frame: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 { return; }
 
     let mut spans: Vec<Span> = Vec::new();
-    for (i, job) in app.background_jobs.iter().enumerate() {
+    let visible: Vec<&BackgroundJob> = app.background_jobs.iter().filter(|j| j.visible).collect();
+    for (i, job) in visible.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled("  │  ", Style::default().fg(DIM)));
         }
         let (icon, icon_color) = match &job.status {
-            JobStatus::Running => {
-                let frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-                let f = frames[(app.spin_frame as usize / 2) % frames.len()];
-                (f.to_string(), YELLOW)
-            }
-            JobStatus::Passed => ("✓".to_string(), GREEN),
-            JobStatus::Failed(_) => ("✗".to_string(), RED),
+            JobStatus::Running => ("◌", YELLOW),
+            JobStatus::Passed => ("✓", GREEN),
+            JobStatus::Failed(_) => ("✗", RED),
         };
         spans.push(Span::styled(format!("{} ", icon), Style::default().fg(icon_color)));
-        spans.push(Span::styled(format!("{}", job.label), Style::default().fg(FG)));
+        spans.push(Span::styled(job.label.clone(), Style::default().fg(MUTED)));
         if !job.detail.is_empty() {
-            spans.push(Span::styled(format!(" {}", job.detail), Style::default().fg(MUTED)));
+            spans.push(Span::styled(format!(" {}", job.detail), Style::default().fg(DIM)));
         }
         if matches!(job.status, JobStatus::Running) {
             let secs = job.started_at.elapsed().as_secs();
-            let timer = if secs >= 60 {
-                format!(" {}m{}s", secs / 60, secs % 60)
-            } else {
-                format!(" {}s", secs)
-            };
-            spans.push(Span::styled(timer, Style::default().fg(DIM)));
+            if secs >= 5 {
+                let timer = if secs >= 60 {
+                    format!(" {}m{}s", secs / 60, secs % 60)
+                } else {
+                    format!(" {}s", secs)
+                };
+                spans.push(Span::styled(timer, Style::default().fg(DIM)));
+            }
         }
     }
 
