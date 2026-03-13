@@ -1345,17 +1345,10 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     // compute total line count including inter-item spacing
     let mut total: usize = 0;
     for idx in 0..n {
-        let is_tt = matches!(
-            &app.activity[idx],
-            ActivityItem::Thinking(_) | ActivityItem::Text(_) | ActivityItem::System(_, _)
-        );
-        if is_tt && idx > 0 {
+        if idx > 0 {
             total += 1;
         }
         total += app.activity_render_cache[idx].lines.len();
-        if is_tt && idx + 1 < n {
-            total += 1;
-        }
     }
 
     let show_waiting = app.is_running && total == 0;
@@ -1398,13 +1391,8 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
                 break;
             }
 
-            let is_tt = matches!(
-                &app.activity[idx],
-                ActivityItem::Thinking(_) | ActivityItem::Text(_) | ActivityItem::System(_, _)
-            );
-
-            // pre-spacing
-            if is_tt && idx > 0 {
+            // 1 blank line between every pair of items
+            if idx > 0 {
                 if cursor >= vp_start {
                     lines.push(Line::from(""));
                 }
@@ -1420,14 +1408,6 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
                 if cursor >= vp_end {
                     break;
                 }
-            }
-
-            // post-spacing
-            if is_tt && idx + 1 < n {
-                if cursor >= vp_start && cursor < vp_end {
-                    lines.push(Line::from(""));
-                }
-                cursor += 1;
             }
         }
     }
@@ -1487,7 +1467,6 @@ fn render_system_msg(kind: &SystemKind, text: &str) -> Vec<Line<'static>> {
 
 fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16) {
     let label = capitalize_tool(&entry.name);
-    let has_output = entry.output.is_some() || entry.diff.is_some();
 
     match &entry.status {
         ToolStatus::Running => {
@@ -1577,11 +1556,6 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                 if let Some(ref diff) = entry.diff {
                     lines.extend(build_diff_lines(diff));
                 }
-            }
-
-            // blank line after tools that produced output
-            if has_output {
-                lines.push(Line::from(""));
             }
         }
         ToolStatus::Error(e) => {
