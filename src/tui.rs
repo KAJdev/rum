@@ -202,6 +202,7 @@ struct ToolEntry {
     diff: Option<DiffInfo>,
     output: Option<String>,
     expanded: bool,
+    started_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -384,6 +385,7 @@ impl App {
                     diff: None,
                     output: None,
                     expanded: self.diffs_expanded,
+                    started_at: Instant::now(),
                 }));
             }
             AgentEvent::ToolInputDelta(json) => {
@@ -743,6 +745,7 @@ impl App {
                                     diff: None,
                                     output: None,
                                     expanded: self.diffs_expanded,
+                                    started_at: Instant::now(),
                                 }));
                                 tool_map.insert(id.clone(), idx);
                             }
@@ -1933,6 +1936,8 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
                 let len = e.arg.len()
                     + e.output.as_ref().map_or(0, |o| o.len())
                     + match &e.status {
+                        // include elapsed seconds so the timer re-renders
+                        ToolStatus::Running => e.started_at.elapsed().as_secs() as usize,
                         ToolStatus::Error(s) => s.len(),
                         _ => 0,
                     };
@@ -2199,10 +2204,21 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
 
     match &entry.status {
         ToolStatus::Running => {
+            let elapsed = entry.started_at.elapsed();
+            let secs = elapsed.as_secs();
+
             let mut spans = vec![
                 Span::styled("\u{25cc} ", Style::default().fg(YELLOW)),
                 Span::styled(label.to_string(), Style::default().fg(YELLOW)),
             ];
+            if secs >= 5 {
+                let timer = if secs >= 60 {
+                    format!("{}m{}s", secs / 60, secs % 60)
+                } else {
+                    format!("{}s", secs)
+                };
+                spans.push(Span::styled(format!(" {}", timer), Style::default().fg(DIM)));
+            }
             if !display_arg.is_empty() {
                 spans.push(Span::styled(
                     format!(" {}", display_arg),
