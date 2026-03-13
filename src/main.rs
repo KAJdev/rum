@@ -319,7 +319,18 @@ async fn run_tui_mode(
             } else {
                 None
             };
-            app.handle_job_event(evt);
+            // skip the system message insert if we're about to send it as an agent turn
+            if trigger_msg.is_some() {
+                // just update the job status without pushing to activity feed
+                if let tui::JobEvent::Complete { id, status, summary, .. } = &evt {
+                    if let Some(job) = app.background_jobs.iter_mut().find(|j| j.id == *id) {
+                        job.status = status.clone();
+                        job.detail = summary.clone();
+                    }
+                }
+            } else {
+                app.handle_job_event(evt);
+            }
             if let Some(msg) = trigger_msg {
                 if !app.is_running {
                     cancel.reset();
