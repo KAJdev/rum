@@ -428,7 +428,7 @@ fn handle_slash_command(
         }
         SlashCommand::Compact => {
             if app.is_running {
-                app.push_system_message("/compact queued — will run after the current turn".to_string());
+                app.queue_command("/compact");
             }
             app.is_running = true;
             let _ = control_tx.send(agent::ControlMessage::Compact);

@@ -172,6 +172,14 @@ pub enum SystemKind {
 }
 
 #[derive(Debug, Clone)]
+enum QueuedItem {
+    // a regular follow-up message waiting to be sent
+    Message(String),
+    // a slash command already dispatched but not yet running (e.g. /compact)
+    Command(String),
+}
+
+#[derive(Debug, Clone)]
 struct ToolEntry {
     name: String,
     // argument portion (path, command, etc.) shown after the tool label
@@ -210,7 +218,7 @@ pub struct App {
     // wipe login messages on success so only the result remains
     login_activity_start: Option<usize>,
     current_message: Option<String>,
-    queued_messages: Vec<String>,
+    queued_messages: Vec<QueuedItem>,
     // summed across all api calls (for cost calculation)
     total_input: u32,
     total_output: u32,
@@ -486,15 +494,27 @@ impl App {
     // appears in the activity feed immediately as pending.
     pub fn queue_message(&mut self) {
         if !self.input.is_empty() {
-            self.queued_messages.push(self.expand_input());
+            self.queued_messages.push(QueuedItem::Message(self.expand_input()));
             self.input.clear();
             self.cursor_pos = 0;
             self.paste_chunks.clear();
         }
     }
 
+    // queue a slash command for display while the agent is running.
+    // the command is already dispatched — this is purely for visibility.
+    pub fn queue_command(&mut self, cmd: &str) {
+        self.queued_messages.push(QueuedItem::Command(cmd.to_string()));
+    }
+
     pub fn flush_queued_messages(&mut self) -> String {
-        let msgs: Vec<String> = self.queued_messages.drain(..).collect();
+        let msgs: Vec<String> = self.queued_messages
+            .drain(..)
+            .filter_map(|item| match item {
+                QueuedItem::Message(s) => Some(s),
+                QueuedItem::Command(_) => None,
+            })
+            .collect();
         let combined = msgs.join("\n\n");
         self.current_message = Some(combined.clone());
         self.is_running = true;
@@ -504,7 +524,7 @@ impl App {
     }
 
     pub fn has_queued_messages(&self) -> bool {
-        !self.queued_messages.is_empty()
+        self.queued_messages.iter().any(|i| matches!(i, QueuedItem::Message(_)))
     }
 
     pub fn clear_queue(&mut self) {
@@ -518,13 +538,16 @@ impl App {
 
     // pop the last queued message back into the input for editing
     pub fn pop_queued_message(&mut self) -> bool {
-        if let Some(msg) = self.queued_messages.pop() {
-            self.input = msg;
-            self.cursor_pos = self.char_count();
-            true
-        } else {
-            false
+        // find the last Message item (skip over any queued commands)
+        let pos = self.queued_messages.iter().rposition(|i| matches!(i, QueuedItem::Message(_)));
+        if let Some(idx) = pos {
+            if let QueuedItem::Message(msg) = self.queued_messages.remove(idx) {
+                self.input = msg;
+                self.cursor_pos = self.char_count();
+                return true;
+            }
         }
+        false
     }
 
     pub fn toggle_diff(&mut self) {
@@ -1248,7 +1271,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             total += visual_line_count(msg, size.width, 2) as u16;
         }
         for qm in &app.queued_messages {
-            total += visual_line_count(qm, size.width, 2) as u16;
+            let text = match qm {
+                QueuedItem::Message(s) | QueuedItem::Command(s) => s.as_str(),
+            };
+            total += visual_line_count(text, size.width, 2) as u16;
         }
         total
     } else {
@@ -1553,7 +1579,17 @@ fn render_message_area(frame: &mut Frame, app: &App, area: Rect, suggestions: &[
             lines.extend(wrap_message_lines(msg, area.width, Style::default().fg(ACCENT), Some(spin)));
         }
         for qm in &app.queued_messages {
-            lines.extend(wrap_message_lines(qm, area.width, Style::default().fg(MUTED), None));
+            match qm {
+                QueuedItem::Message(s) => {
+                    lines.extend(wrap_message_lines(s, area.width, Style::default().fg(MUTED), None));
+                }
+                QueuedItem::Command(s) => {
+                    lines.push(Line::from(vec![
+                        Span::styled("  › ", Style::default().fg(DIM)),
+                        Span::styled(s.clone(), Style::default().fg(DIM)),
+                    ]));
+                }
+            }
         }
     } else if !suggestions.is_empty() {
         for (i, s) in suggestions.iter().enumerate() {
