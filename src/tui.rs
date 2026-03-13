@@ -1883,8 +1883,14 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
     frame.set_cursor_position((cx, cy));
 }
 
-fn is_collapsed_tool(item: &ActivityItem) -> bool {
-    matches!(item, ActivityItem::Tool(e) if !e.expanded && !matches!(e.status, ToolStatus::Running))
+fn is_compact_tool(item: &ActivityItem) -> bool {
+    match item {
+        ActivityItem::Tool(e) => match &e.status {
+            ToolStatus::Running => e.output.is_none(),
+            _ => !e.expanded,
+        },
+        _ => false,
+    }
 }
 
 fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1948,8 +1954,8 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     for idx in 0..n {
         if idx > 0 {
             let both_collapsed_tools =
-                is_collapsed_tool(&app.activity[idx - 1])
-                && is_collapsed_tool(&app.activity[idx]);
+                is_compact_tool(&app.activity[idx - 1])
+                && is_compact_tool(&app.activity[idx]);
             if !both_collapsed_tools {
                 total += 1;
             }
@@ -2000,8 +2006,8 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
             // blank line between items, except between consecutive collapsed tools
             if idx > 0 {
                 let both_collapsed_tools =
-                    is_collapsed_tool(&app.activity[idx - 1])
-                    && is_collapsed_tool(&app.activity[idx]);
+                    is_compact_tool(&app.activity[idx - 1])
+                    && is_compact_tool(&app.activity[idx]);
                 if !both_collapsed_tools {
                     if cursor >= vp_start {
                         lines.push(Line::from(""));
