@@ -523,6 +523,24 @@ impl App {
         }
     }
 
+    // immediately reflect cancellation in the UI without waiting for TurnComplete
+    pub fn cancel_running(&mut self) {
+        self.is_running = false;
+        self.current_message = None;
+        for item in self.activity.iter_mut().rev() {
+            match item {
+                ActivityItem::Compact(CompactStatus::Running) => {
+                    *item = ActivityItem::Compact(CompactStatus::Cancelled);
+                    break;
+                }
+                ActivityItem::Tool(ref mut e) if matches!(e.status, ToolStatus::Running) => {
+                    e.status = ToolStatus::Error("cancelled".to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
     // queue a followup message while the agent is running.
     // appears in the activity feed immediately as pending.
     pub fn queue_message(&mut self) {

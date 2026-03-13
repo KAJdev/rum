@@ -375,6 +375,7 @@ async fn run_tui_mode(
                     }
                     tui::InputAction::Cancel => {
                         cancel.cancel();
+                        app.cancel_running();
                         // restore the last queued message to input, then drop the rest
                         app.pop_queued_message();
                         app.clear_queue();
