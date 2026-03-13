@@ -2,7 +2,7 @@
 name = "rum"
 version = "0.5.2"
 edition = "2021"
-description = "a diff-centric coding agent TUI"
+description = "a fast coding agent for the terminal"
 license = "MIT"
 repository = "https://github.com/KAJdev/rum"
 readme = "README.md"
