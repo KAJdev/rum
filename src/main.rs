@@ -245,8 +245,9 @@ async fn run_tui_mode(
         app.push_system_message(format!("loaded: {}", sources.join(", ")));
     }
     if history_len > 0 {
+        app.hydrate_from_history(agent.messages());
         app.push_system_message(format!(
-            "resumed previous session ({history_len} messages in context)  /new to start fresh"
+            "resumed session ({history_len} messages in context)  /new to start fresh"
         ));
     }
 

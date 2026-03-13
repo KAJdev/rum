@@ -20,6 +20,7 @@ use std::io::{self, Stdout};
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 use crate::agent::AgentEvent;
+use crate::api::{ContentBlock, Message, MessageContent};
 use crate::tools::{DiffInfo, DiffLineTag, ToolResult};
 
 const BG: Color = Color::Rgb(11, 14, 20);
@@ -144,6 +145,8 @@ enum ActivityItem {
     Thinking(String),
     // text output from the model, rendered as markdown with bar prefix
     Text(String),
+    // user-submitted message, shown with accent color
+    UserMessage(String),
     // tool call entry
     Tool(ToolEntry),
     // system/slash-command output
@@ -491,6 +494,7 @@ impl App {
     }
 
     pub fn start_new_message(&mut self, message: &str) {
+        self.activity.push(ActivityItem::UserMessage(message.to_string()));
         self.current_message = Some(message.to_string());
         self.is_running = true;
         self.auto_scroll = true;
@@ -612,6 +616,106 @@ impl App {
     pub fn push_update_notice(&mut self, msg: String) {
         self.activity.push(ActivityItem::System(SystemKind::Update, msg));
         self.auto_scroll = true;
+    }
+
+    // reconstruct the activity feed and input history from persisted messages
+    pub fn hydrate_from_history(&mut self, messages: &[Message]) {
+        use std::collections::HashMap;
+        // tool_use_id -> index in self.activity for matching results
+        let mut tool_map: HashMap<String, usize> = HashMap::new();
+
+        for msg in messages {
+            match (&msg.role.as_str(), &msg.content) {
+                (&"user", MessageContent::Text(s)) => {
+                    if !s.trim().is_empty() {
+                        self.activity.push(ActivityItem::UserMessage(s.clone()));
+                        self.push_history(s);
+                    }
+                }
+                (&"user", MessageContent::Blocks(blocks)) => {
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                if !text.trim().is_empty() {
+                                    self.activity.push(ActivityItem::UserMessage(text.clone()));
+                                    self.push_history(text);
+                                }
+                            }
+                            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                                if let Some(&idx) = tool_map.get(tool_use_id) {
+                                    if let ActivityItem::Tool(ref mut entry) = self.activity[idx] {
+                                        let output = tool_result_display_text(content);
+                                        if is_error == &Some(true) {
+                                            entry.status = ToolStatus::Error(output);
+                                        } else {
+                                            let exit_code = if entry.name == "bash" {
+                                                parse_exit_code(&output)
+                                            } else {
+                                                None
+                                            };
+                                            let trimmed = output.trim();
+                                            if !trimmed.is_empty()
+                                                && trimmed != "(no output)"
+                                                && entry.diff.is_none()
+                                            {
+                                                let display = if trimmed.len() > 2000 {
+                                                    format!("{}...", &trimmed[..2000])
+                                                } else {
+                                                    trimmed.to_string()
+                                                };
+                                                entry.output = Some(display);
+                                            }
+                                            entry.status = ToolStatus::Complete { exit_code };
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                (&"assistant", MessageContent::Text(s)) => {
+                    if !s.trim().is_empty() {
+                        self.activity.push(ActivityItem::Text(s.clone()));
+                    }
+                }
+                (&"assistant", MessageContent::Blocks(blocks)) => {
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Thinking { thinking, .. } => {
+                                if !thinking.trim().is_empty() {
+                                    self.activity.push(ActivityItem::Thinking(thinking.clone()));
+                                }
+                            }
+                            ContentBlock::Text { text } => {
+                                if !text.trim().is_empty() {
+                                    self.activity.push(ActivityItem::Text(text.clone()));
+                                }
+                            }
+                            ContentBlock::ToolUse { id, name, input } => {
+                                let display_name = crate::agent::from_cc_name(name).to_string();
+                                let arg = extract_tool_arg(&display_name, input);
+                                let idx = self.activity.len();
+                                self.activity.push(ActivityItem::Tool(ToolEntry {
+                                    name: display_name,
+                                    arg,
+                                    status: ToolStatus::Complete { exit_code: None },
+                                    diff: None,
+                                    output: None,
+                                    expanded: false,
+                                }));
+                                tool_map.insert(id.clone(), idx);
+                            }
+                            ContentBlock::Compaction { .. } => {
+                                // server-side compaction markers are internal
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     // call just before showing login instructions; records the current
@@ -1131,6 +1235,27 @@ fn parse_exit_code(output: &str) -> Option<i32> {
             .and_then(|s| s.parse::<i32>().ok())
     } else {
         Some(0)
+    }
+}
+
+// extract displayable text from a tool result content value.
+// content is either a plain string or an array of {type, text} blocks.
+fn tool_result_display_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => {
+            arr.iter()
+                .filter_map(|item| {
+                    if item.get("type")?.as_str()? == "text" {
+                        item.get("text")?.as_str().map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        _ => String::new(),
     }
 }
 
@@ -1686,6 +1811,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         let (content_len, expanded, status_tag) = match &app.activity[idx] {
             ActivityItem::Thinking(t) => (t.len(), false, 0u8),
             ActivityItem::Text(t) => (t.len(), false, 0u8),
+            ActivityItem::UserMessage(t) => (t.len(), false, 0u8),
             ActivityItem::System(_, t) => (t.len(), false, 0u8),
             ActivityItem::Compact(CompactStatus::Running) => (app.spin_frame as usize, false, 0u8),
             ActivityItem::Compact(CompactStatus::Done(_)) => (0, false, 1u8),
@@ -1812,6 +1938,7 @@ fn render_activity_item(item: &ActivityItem, w: u16, spin_frame: u64) -> Vec<Lin
             let md_lines = md.render_lines(text);
             wrap_md_lines_with_bar(md_lines, w)
         }
+        ActivityItem::UserMessage(text) => render_user_message(text, w),
         ActivityItem::Tool(entry) => {
             let mut lines = Vec::new();
             render_tool_entry(&mut lines, entry, w);
@@ -1820,6 +1947,44 @@ fn render_activity_item(item: &ActivityItem, w: u16, spin_frame: u64) -> Vec<Lin
         ActivityItem::System(kind, text) => render_system_msg(kind, text),
         ActivityItem::Compact(status) => render_compact_item(status, spin_frame),
     }
+}
+
+fn render_user_message(text: &str, w: u16) -> Vec<Line<'static>> {
+    let content_width = w.saturating_sub(2) as usize;
+    if content_width == 0 {
+        return vec![];
+    }
+    let style = Style::default().fg(FG);
+    let prefix_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for logical_line in text.split('\n') {
+        if logical_line.is_empty() {
+            let pfx = if lines.is_empty() { "\u{203a} " } else { "  " };
+            lines.push(Line::from(Span::styled(pfx.to_string(), prefix_style)));
+            continue;
+        }
+        let chars: Vec<char> = logical_line.chars().collect();
+        let mut start = 0;
+        while start < chars.len() {
+            let pfx = if lines.is_empty() { "\u{203a} " } else { "  " };
+            let mut w_used = 0usize;
+            let mut end = start;
+            while end < chars.len() {
+                let cw = unicode_width::UnicodeWidthChar::width(chars[end]).unwrap_or(0);
+                if w_used + cw > content_width { break; }
+                w_used += cw;
+                end += 1;
+            }
+            if end == start { end = start + 1; }
+            let chunk: String = chars[start..end].iter().collect();
+            lines.push(Line::from(vec![
+                Span::styled(pfx.to_string(), prefix_style),
+                Span::styled(chunk, style),
+            ]));
+            start = end;
+        }
+    }
+    lines
 }
 
 fn render_system_msg(kind: &SystemKind, text: &str) -> Vec<Line<'static>> {

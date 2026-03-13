@@ -119,6 +119,10 @@ impl Agent {
         self.messages.len()
     }
 
+    pub fn messages(&self) -> &[crate::api::Message] {
+        &self.messages
+    }
+
     pub fn set_model(&mut self, model: &str) {
         self.client.set_model(model);
     }
@@ -661,7 +665,7 @@ fn to_cc_name(name: &str) -> &str {
     }
 }
 
-fn from_cc_name(name: &str) -> &str {
+pub fn from_cc_name(name: &str) -> &str {
     match name {
         "Read" => "read",
         "Write" => "write",
