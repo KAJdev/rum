@@ -69,6 +69,8 @@ pub enum ControlMessage {
     ChangeThinking(String),
     UpdateAuth(String),
     ClearHistory,
+    ChangeDir(std::path::PathBuf),
+    Compact,
 }
 
 pub struct Agent {
@@ -125,6 +127,105 @@ impl Agent {
     pub fn clear_history(&mut self) {
         self.messages.clear();
         let _ = crate::persistence::clear_history(&self.cwd);
+    }
+
+    pub fn set_cwd(&mut self, cwd: std::path::PathBuf) {
+        self.cwd = cwd;
+    }
+
+    pub async fn compact_context(
+        &mut self,
+        event_tx: mpsc::UnboundedSender<AgentEvent>,
+    ) -> Result<()> {
+        if self.messages.is_empty() {
+            let _ = event_tx.send(AgentEvent::Status("nothing to compact".to_string()));
+            let _ = event_tx.send(AgentEvent::TurnComplete);
+            return Ok(());
+        }
+
+        let prev_count = self.messages.len();
+        let _ = event_tx.send(AgentEvent::Status("compacting context...".to_string()));
+
+        let mut summary_messages = self.messages.clone();
+        summary_messages.push(Message {
+            role: "user".to_string(),
+            content: MessageContent::Text(
+                "Write a concise summary of our conversation. Include: the main task or goal, \
+                 all files created or modified (with their paths), commands run and their outcomes, \
+                 key decisions made, and the current state of the work. \
+                 Be thorough but compact — this will replace the full conversation history."
+                    .to_string(),
+            ),
+        });
+
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<StreamEvent>();
+        let client_model = self.client.model_clone();
+        let client_auth = self.client.auth_clone();
+        let client_base_url = self.client.base_url_clone();
+
+        let stream_handle = tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            if let Err(e) = stream_request(
+                &client,
+                &client_auth,
+                &client_base_url,
+                &client_model,
+                &summary_messages,
+                "You are a helpful assistant.",
+                "off",
+                &[],
+                stream_tx.clone(),
+            )
+            .await
+            {
+                let _ = stream_tx.send(StreamEvent::Error(format!("stream error: {}", e)));
+            }
+        });
+
+        let mut summary = String::new();
+        while let Some(evt) = stream_rx.recv().await {
+            match evt {
+                StreamEvent::Text(t) => summary.push_str(&t),
+                StreamEvent::Error(e) => {
+                    stream_handle.abort();
+                    let _ = event_tx.send(AgentEvent::Error(format!("compact: {}", e)));
+                    let _ = event_tx.send(AgentEvent::TurnComplete);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        let _ = stream_handle.await;
+
+        let summary = summary.trim().to_string();
+        if summary.is_empty() {
+            let _ = event_tx.send(AgentEvent::Error("compact: received empty summary".to_string()));
+            let _ = event_tx.send(AgentEvent::TurnComplete);
+            return Ok(());
+        }
+
+        self.messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: MessageContent::Text(format!(
+                    "Summary of our previous conversation:\n\n{}",
+                    summary
+                )),
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: MessageContent::Text(
+                    "Understood — I have the context from our previous work and can continue from where we left off.".to_string(),
+                ),
+            },
+        ];
+
+        let _ = crate::persistence::save_history(&self.cwd, &self.messages);
+        let _ = event_tx.send(AgentEvent::Status(format!(
+            "context compacted ({prev_count} → 2 messages)"
+        )));
+        let _ = event_tx.send(AgentEvent::TurnComplete);
+        Ok(())
     }
 
     pub async fn send_message(

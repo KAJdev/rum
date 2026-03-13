@@ -21,6 +21,8 @@ enum SlashCommand {
     Model(Option<String>),
     Thinking(Option<String>),
     New,
+    Compact,
+    Cd(String),
     Login,
     Logout,
     Help,
@@ -41,6 +43,8 @@ fn parse_slash_command(text: &str) -> Option<SlashCommand> {
         "/model" => Some(SlashCommand::Model(arg)),
         "/thinking" => Some(SlashCommand::Thinking(arg)),
         "/new" => Some(SlashCommand::New),
+        "/compact" => Some(SlashCommand::Compact),
+        "/cd" => Some(SlashCommand::Cd(arg.unwrap_or_default())),
         "/login" => Some(SlashCommand::Login),
         "/logout" => Some(SlashCommand::Logout),
         "/help" => Some(SlashCommand::Help),
@@ -339,6 +343,7 @@ async fn run_tui_mode(
                             }
                         } else {
                             cancel.reset();
+                            app.push_history(&msg);
                             app.start_new_message(&msg);
                             let _ = user_tx.send(msg);
                         }
@@ -421,6 +426,33 @@ fn handle_slash_command(
             let _ = control_tx.send(agent::ControlMessage::ClearHistory);
             app.push_success("conversation cleared".to_string());
         }
+        SlashCommand::Compact => {
+            app.is_running = true;
+            let _ = control_tx.send(agent::ControlMessage::Compact);
+        }
+        SlashCommand::Cd(path) => {
+            if path.is_empty() {
+                app.push_error_msg("usage: /cd <path>".to_string());
+            } else {
+                let base = std::path::Path::new(app.cwd());
+                let target = if std::path::Path::new(&path).is_absolute() {
+                    std::path::PathBuf::from(&path)
+                } else {
+                    base.join(&path)
+                };
+                match std::fs::canonicalize(&target) {
+                    Ok(resolved) => {
+                        let resolved_str = resolved.to_string_lossy().to_string();
+                        app.update_cwd(&resolved_str);
+                        let _ = control_tx.send(agent::ControlMessage::ChangeDir(resolved));
+                        app.push_success(format!("changed directory to {}", resolved_str));
+                    }
+                    Err(e) => {
+                        app.push_error_msg(format!("cd: {}: {}", path, e));
+                    }
+                }
+            }
+        }
         SlashCommand::Login => {
             let (url, verifier) = auth::build_auth_url();
             auth::open_browser(&url);
@@ -445,6 +477,8 @@ available commands:\n\
   /model [name]       switch model (opus, sonnet, haiku, opus-4.5, ...)\n\
   /thinking [level]   set thinking level (off, minimal, low, medium, high, xhigh)\n\
   /new                start a new conversation\n\
+  /compact            summarize conversation history to free up context\n\
+  /cd <path>          change working directory\n\
   /login              log in with anthropic oauth\n\
   /logout             log out\n\
   /help               show this help\n\
@@ -893,6 +927,16 @@ async fn agent_loop(
                     }
                     Some(agent::ControlMessage::ClearHistory) => {
                         agent.clear_history();
+                    }
+                    Some(agent::ControlMessage::ChangeDir(path)) => {
+                        agent.set_cwd(path);
+                    }
+                    Some(agent::ControlMessage::Compact) => {
+                        let result = agent.compact_context(event_tx.clone()).await;
+                        if let Err(e) = result {
+                            let _ = event_tx.send(AgentEvent::Error(e.to_string()));
+                            let _ = event_tx.send(AgentEvent::TurnComplete);
+                        }
                     }
                     None => break,
                 }

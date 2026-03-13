@@ -48,6 +48,8 @@ const SLASH_COMMANDS: &[SlashDef] = &[
     SlashDef { name: "/model", args: "[name]", description: "Switch model" },
     SlashDef { name: "/thinking", args: "[level]", description: "Set thinking level" },
     SlashDef { name: "/new", args: "", description: "Start new conversation" },
+    SlashDef { name: "/compact", args: "", description: "Summarize context to free up space" },
+    SlashDef { name: "/cd", args: "<path>", description: "Change working directory" },
     SlashDef { name: "/login", args: "", description: "Log in with Anthropic OAuth" },
     SlashDef { name: "/logout", args: "", description: "Log out" },
     SlashDef { name: "/help", args: "", description: "Show available commands" },
@@ -242,6 +244,10 @@ pub struct App {
     // slash command tab-completion state
     slash_prefix: Option<String>,
     slash_selected: Option<usize>,
+    // input history: previously sent messages, navigated with up/down
+    input_history: Vec<String>,
+    input_history_pos: Option<usize>,
+    input_draft: String,
     // set when PasteFromClipboard already handled an image this tick,
     // so the subsequent Event::Paste("") doesn't duplicate it
     pub paste_handled: bool,
@@ -286,6 +292,9 @@ impl App {
             activity_render_cache: Vec::new(),
             slash_prefix: None,
             slash_selected: None,
+            input_history: Vec::new(),
+            input_history_pos: None,
+            input_draft: String::new(),
             paste_handled: false,
         }
     }
@@ -563,6 +572,75 @@ impl App {
         self.thinking_level = level.to_string();
     }
 
+    pub fn update_cwd(&mut self, cwd: &str) {
+        self.cwd = cwd.to_string();
+        self.git_branch = detect_git_branch(cwd);
+    }
+
+    // push a submitted message into the input history, avoiding adjacent duplicates.
+    // resets history navigation state.
+    pub fn push_history(&mut self, msg: &str) {
+        if !msg.trim().is_empty() {
+            if self.input_history.last().map(|s| s.as_str()) != Some(msg) {
+                self.input_history.push(msg.to_string());
+                if self.input_history.len() > 1000 {
+                    self.input_history.remove(0);
+                }
+            }
+        }
+        self.input_history_pos = None;
+        self.input_draft = String::new();
+    }
+
+    // navigate to the previous (older) history entry. returns true if handled
+    // (so the caller knows not to fall through to scroll).
+    pub fn navigate_history_up(&mut self) -> bool {
+        if self.input_history.is_empty() {
+            return false;
+        }
+        match self.input_history_pos {
+            None => {
+                self.input_draft = self.expand_input();
+                let pos = self.input_history.len() - 1;
+                self.input_history_pos = Some(pos);
+                self.input = self.input_history[pos].clone();
+                self.paste_chunks.clear();
+                self.cursor_pos = self.char_count();
+                true
+            }
+            Some(0) => true, // already at oldest entry, absorb the keypress
+            Some(p) => {
+                let new_pos = p - 1;
+                self.input_history_pos = Some(new_pos);
+                self.input = self.input_history[new_pos].clone();
+                self.cursor_pos = self.char_count();
+                true
+            }
+        }
+    }
+
+    // navigate to the next (newer) history entry, or back to the saved draft.
+    // returns false when not in history mode so the caller can scroll instead.
+    pub fn navigate_history_down(&mut self) -> bool {
+        match self.input_history_pos {
+            None => false,
+            Some(p) if p + 1 >= self.input_history.len() => {
+                self.input = self.input_draft.clone();
+                self.paste_chunks.clear();
+                self.cursor_pos = self.char_count();
+                self.input_history_pos = None;
+                true
+            }
+            Some(p) => {
+                let new_pos = p + 1;
+                self.input_history_pos = Some(new_pos);
+                self.input = self.input_history[new_pos].clone();
+                self.cursor_pos = self.char_count();
+                true
+            }
+        }
+    }
+
     pub fn reset_session(&mut self) {
         self.activity.clear();
         self.activity_render_cache.clear();
@@ -589,6 +667,10 @@ impl App {
 
     pub fn thinking_level(&self) -> &str {
         &self.thinking_level
+    }
+
+    pub fn cwd(&self) -> &str {
+        &self.cwd
     }
 
     fn context_used(&self) -> u32 {
@@ -2101,6 +2183,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 // moved within multi-line input
             } else if app.input.is_empty() && app.pop_queued_message() {
                 // popped last queued message into input
+            } else if app.navigate_history_up() {
+                // navigated to an older history entry
             } else {
                 return InputAction::ScrollUp;
             }
@@ -2108,6 +2192,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         KeyCode::Down => {
             if app.input_line_count() > 1 && app.move_cursor_down() {
                 // moved within multi-line input
+            } else if app.navigate_history_down() {
+                // navigated to a newer history entry or back to draft
             } else {
                 return InputAction::ScrollDown;
             }
