@@ -170,6 +170,12 @@ impl Agent {
             let client_base_url = self.client.base_url_clone();
             let tools_json = self.client.build_tools_json();
 
+            let api_ctx = tools::ApiContext {
+                is_oauth: matches!(&client_auth, crate::api::AuthMethod::Bearer(_)),
+                auth: client_auth.clone(),
+                base_url: client_base_url.clone(),
+            };
+
             let stream_handle = tokio::spawn(async move {
                 let client = reqwest::Client::new();
                 if let Err(e) = stream_request(
@@ -303,6 +309,7 @@ impl Agent {
                                 &input,
                                 &self.cwd,
                                 Some(stream_tx),
+                                Some(&api_ctx),
                             )
                             .await;
 

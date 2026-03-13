@@ -738,6 +738,7 @@ fn capitalize_tool(name: &str) -> &str {
         "write" => "Write",
         "bash" => "Bash",
         "web_search" => "Search",
+        "explore" => "Explore",
         _ => name,
     }
 }
@@ -762,6 +763,14 @@ fn extract_tool_arg(name: &str, input: &serde_json::Value) -> String {
                 format!("{}...", &q[..77])
             } else {
                 q.to_string()
+            }
+        }
+        "explore" => {
+            let p = input.get("prompt").and_then(|v| v.as_str()).unwrap_or("...");
+            if p.len() > 80 {
+                format!("{}...", &p[..77])
+            } else {
+                p.to_string()
             }
         }
         _ => "...".to_string(),
