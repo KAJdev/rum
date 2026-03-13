@@ -34,6 +34,7 @@ const BAR_COLOR: Color = Color::Rgb(60, 65, 75);
 const THINKING_COLOR: Color = Color::Rgb(180, 140, 255);
 const TOOL_COLOR: Color = Color::Rgb(100, 200, 220);
 const INPUT_BG: Color = Color::Rgb(16, 20, 28);
+const BRANCH_COLOR: Color = Color::Rgb(120, 190, 148);
 
 const DEFAULT_CONTEXT: u32 = 200_000;
 
@@ -229,6 +230,7 @@ pub struct App {
     model_name: String,
     thinking_level: String,
     cwd: String,
+    git_branch: Option<String>,
     current_tool_input: String,
     start_time: Option<Instant>,
     // cached terminal width for manual line wrapping
@@ -276,6 +278,7 @@ impl App {
             model_name: model_name.to_string(),
             thinking_level: thinking_level.to_string(),
             cwd: cwd.to_string(),
+            git_branch: detect_git_branch(cwd),
             current_tool_input: String::new(),
             start_time: None,
             term_width,
@@ -298,9 +301,12 @@ impl App {
                 self.rate_samples.remove(0);
             }
         }
-        // refresh terminal width periodically
+        // refresh terminal width and git branch periodically
         if let Ok((w, _)) = crossterm::terminal::size() {
             self.term_width = w;
+        }
+        if self.spin_frame % 60 == 0 {
+            self.git_branch = detect_git_branch(&self.cwd);
         }
     }
 
@@ -899,6 +905,19 @@ fn spinner_char(frame: u64) -> &'static str {
     SPINNER_FRAMES[idx]
 }
 
+fn detect_git_branch(cwd: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", cwd, "symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if out.status.success() {
+        let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if branch.is_empty() { None } else { Some(branch) }
+    } else {
+        None
+    }
+}
+
 fn guess_context_limit(model: &str) -> u32 {
     if let Some(def) = crate::config::ANTHROPIC_MODELS.iter().find(|m| m.id == model) {
         return def.context_window;
@@ -1173,11 +1192,22 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![
         Span::styled("rum", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {}  ", app.cwd), Style::default().fg(FG)),
-        Span::styled(&app.model_name, Style::default().fg(MUTED)),
-        Span::styled(thinking_suffix.clone(), Style::default().fg(MUTED)),
     ];
 
-    let left_len = 4 + app.cwd.len() + 4 + app.model_name.len() + thinking_suffix.len();
+    // branch indicator: only shown when inside a git repo
+    let branch_extra_len = if let Some(b) = app.git_branch.as_deref() {
+        spans.push(Span::styled("(", Style::default().fg(DIM)));
+        spans.push(Span::styled(b.to_string(), Style::default().fg(BRANCH_COLOR)));
+        spans.push(Span::styled(")  ", Style::default().fg(DIM)));
+        b.len() + 4 // "(" + branch + ")  "
+    } else {
+        0
+    };
+
+    spans.push(Span::styled(app.model_name.clone(), Style::default().fg(MUTED)));
+    spans.push(Span::styled(thinking_suffix.clone(), Style::default().fg(MUTED)));
+
+    let left_len = 4 + app.cwd.len() + 4 + branch_extra_len + app.model_name.len() + thinking_suffix.len();
 
     // build right-side metrics
     let rate = app.avg_rate();
