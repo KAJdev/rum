@@ -175,8 +175,17 @@ pub enum SystemKind {
 enum QueuedItem {
     // a regular follow-up message waiting to be sent
     Message(String),
-    // a slash command already dispatched but not yet running (e.g. /compact)
+    // a slash command waiting to be dispatched when the current turn finishes
     Command(String),
+}
+
+// action returned by drain_next_queued() to tell the caller what to dispatch
+#[derive(Debug)]
+pub enum QueuedAction {
+    // one or more messages combined, ready to send as a user turn
+    SendMessage(String),
+    // a slash command name to dispatch (e.g. "/compact")
+    RunCommand(String),
 }
 
 #[derive(Debug, Clone)]
@@ -501,30 +510,48 @@ impl App {
         }
     }
 
-    // queue a slash command for display while the agent is running.
-    // the command is already dispatched — this is purely for visibility.
+    // queue a slash command to be dispatched when the current turn finishes
     pub fn queue_command(&mut self, cmd: &str) {
         self.queued_messages.push(QueuedItem::Command(cmd.to_string()));
     }
 
-    pub fn flush_queued_messages(&mut self) -> String {
-        let msgs: Vec<String> = self.queued_messages
-            .drain(..)
-            .filter_map(|item| match item {
-                QueuedItem::Message(s) => Some(s),
-                QueuedItem::Command(_) => None,
-            })
-            .collect();
-        let combined = msgs.join("\n\n");
-        self.current_message = Some(combined.clone());
-        self.is_running = true;
-        self.auto_scroll = true;
-        self.current_tool_input.clear();
-        combined
+    // pop the next queued item for dispatch. commands are returned individually;
+    // consecutive messages are combined into a single send.
+    pub fn drain_next_queued(&mut self) -> Option<QueuedAction> {
+        if self.queued_messages.is_empty() {
+            return None;
+        }
+        match &self.queued_messages[0] {
+            QueuedItem::Command(_) => {
+                if let QueuedItem::Command(cmd) = self.queued_messages.remove(0) {
+                    Some(QueuedAction::RunCommand(cmd))
+                } else {
+                    None
+                }
+            }
+            QueuedItem::Message(_) => {
+                let mut msgs = Vec::new();
+                while !self.queued_messages.is_empty() {
+                    if matches!(&self.queued_messages[0], QueuedItem::Message(_)) {
+                        if let QueuedItem::Message(m) = self.queued_messages.remove(0) {
+                            msgs.push(m);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                let combined = msgs.join("\n\n");
+                self.current_message = Some(combined.clone());
+                self.is_running = true;
+                self.auto_scroll = true;
+                self.current_tool_input.clear();
+                Some(QueuedAction::SendMessage(combined))
+            }
+        }
     }
 
-    pub fn has_queued_messages(&self) -> bool {
-        self.queued_messages.iter().any(|i| matches!(i, QueuedItem::Message(_)))
+    pub fn has_queued_items(&self) -> bool {
+        !self.queued_messages.is_empty()
     }
 
     pub fn clear_queue(&mut self) {

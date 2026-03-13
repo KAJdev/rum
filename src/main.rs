@@ -313,11 +313,25 @@ async fn run_tui_mode(
             ));
         }
 
-        // send queued follow-up messages when the current turn finishes
-        if !app.is_running && app.has_queued_messages() {
-            cancel.reset();
-            let combined = app.flush_queued_messages();
-            let _ = user_tx.send(combined);
+        // process queued items when the current turn finishes
+        if !app.is_running && app.has_queued_items() {
+            match app.drain_next_queued() {
+                Some(tui::QueuedAction::SendMessage(combined)) => {
+                    cancel.reset();
+                    let _ = user_tx.send(combined);
+                }
+                Some(tui::QueuedAction::RunCommand(cmd)) => {
+                    match cmd.as_str() {
+                        "/compact" => {
+                            cancel.reset();
+                            app.is_running = true;
+                            let _ = control_tx.send(agent::ControlMessage::Compact);
+                        }
+                        _ => {}
+                    }
+                }
+                None => {}
+            }
         }
 
         if event::poll(Duration::from_millis(16))? {
@@ -350,7 +364,8 @@ async fn run_tui_mode(
                     }
                     tui::InputAction::Cancel => {
                         cancel.cancel();
-                        app.is_running = false;
+                        // restore the last queued message to input, then drop the rest
+                        app.pop_queued_message();
                         app.clear_queue();
                     }
                     tui::InputAction::Quit => break,
@@ -429,9 +444,10 @@ fn handle_slash_command(
         SlashCommand::Compact => {
             if app.is_running {
                 app.queue_command("/compact");
+            } else {
+                app.is_running = true;
+                let _ = control_tx.send(agent::ControlMessage::Compact);
             }
-            app.is_running = true;
-            let _ = control_tx.send(agent::ControlMessage::Compact);
         }
         SlashCommand::Cd(path) => {
             if path.is_empty() {

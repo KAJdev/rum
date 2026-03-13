@@ -144,6 +144,11 @@ impl Agent {
         &mut self,
         event_tx: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<()> {
+        if self.cancel.is_cancelled() {
+            let _ = event_tx.send(AgentEvent::TurnComplete);
+            return Ok(());
+        }
+
         if self.messages.is_empty() {
             let _ = event_tx.send(AgentEvent::Status("nothing to compact".to_string()));
             let _ = event_tx.send(AgentEvent::TurnComplete);
@@ -191,6 +196,11 @@ impl Agent {
 
         let mut summary = String::new();
         while let Some(evt) = stream_rx.recv().await {
+            if self.cancel.is_cancelled() {
+                stream_handle.abort();
+                let _ = event_tx.send(AgentEvent::TurnComplete);
+                return Ok(());
+            }
             match evt {
                 StreamEvent::Text(t) => summary.push_str(&t),
                 StreamEvent::Error(e) => {
