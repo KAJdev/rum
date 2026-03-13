@@ -606,6 +606,11 @@ impl App {
         self.queued_messages.push(QueuedItem::Command(cmd.to_string()));
     }
 
+    // queue an explicit message string (used by background jobs like CI watch)
+    pub fn queue_message_str(&mut self, msg: String) {
+        self.queued_messages.push(QueuedItem::Message(msg));
+    }
+
     // pop the next queued item for dispatch. commands are returned individually;
     // consecutive messages are combined into a single send.
     pub fn drain_next_queued(&mut self) -> Option<QueuedAction> {

@@ -304,7 +304,31 @@ async fn run_tui_mode(
 
         // drain background job events
         while let Ok(evt) = job_rx.try_recv() {
+            // when CI fails with logs, send the failure to the agent as a new turn
+            let should_trigger = matches!(
+                &evt,
+                tui::JobEvent::Complete { status: tui::JobStatus::Failed(_), summary, .. }
+                if summary.contains("---")
+            );
+            let trigger_msg = if should_trigger {
+                if let tui::JobEvent::Complete { ref summary, .. } = evt {
+                    Some(summary.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             app.handle_job_event(evt);
+            if let Some(msg) = trigger_msg {
+                if !app.is_running {
+                    cancel.reset();
+                    app.start_new_message("[CI failed]");
+                    let _ = user_tx.send(msg);
+                } else {
+                    app.queue_message_str(msg);
+                }
+            }
         }
         app.gc_background_jobs(std::time::Duration::from_secs(15));
 
