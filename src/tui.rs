@@ -193,6 +193,31 @@ pub enum QueuedAction {
     RunCommand(String),
 }
 
+// background job shown in the bottom status bar
+#[derive(Debug, Clone)]
+pub struct BackgroundJob {
+    pub id: u64,
+    pub label: String,
+    pub detail: String,
+    pub status: JobStatus,
+    pub started_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum JobStatus {
+    Running,
+    Passed,
+    Failed(String),
+}
+
+// event sent from background job tasks to update the UI
+#[derive(Debug)]
+pub enum JobEvent {
+    Update { id: u64, detail: String },
+    Complete { id: u64, status: JobStatus, summary: String },
+}
+
 #[derive(Debug, Clone)]
 struct ToolEntry {
     name: String,
@@ -282,6 +307,11 @@ pub struct App {
     // set when PasteFromClipboard already handled an image this tick,
     // so the subsequent Event::Paste("") doesn't duplicate it
     pub paste_handled: bool,
+    // background jobs shown in the bottom status bar
+    pub background_jobs: Vec<BackgroundJob>,
+    next_job_id: u64,
+    // set when a git push is detected; main.rs reads and clears this to spawn CI watch
+    pub pending_ci_watch: Option<String>,
 }
 
 impl App {
@@ -327,6 +357,9 @@ impl App {
             input_history_pos: None,
             input_draft: String::new(),
             paste_handled: false,
+            background_jobs: Vec::new(),
+            next_job_id: 0,
+            pending_ci_watch: None,
         }
     }
 
@@ -448,6 +481,14 @@ impl App {
                             }
 
                             entry.status = ToolStatus::Complete { exit_code };
+
+                            // detect git push to trigger CI watch
+                            if name == "bash" && exit_code == Some(0) {
+                                let cmd = entry.arg.to_lowercase();
+                                if cmd.contains("git push") {
+                                    self.pending_ci_watch = Some(self.cwd.clone());
+                                }
+                            }
                         }
                         ToolResult::Error(e) => {
                             entry.status = ToolStatus::Error(e.clone());
@@ -659,6 +700,49 @@ impl App {
     pub fn push_update_notice(&mut self, msg: String) {
         self.activity.push(ActivityItem::System(SystemKind::Update, msg));
         self.auto_scroll = true;
+    }
+
+    pub fn start_background_job(&mut self, label: String, detail: String) -> u64 {
+        let id = self.next_job_id;
+        self.next_job_id += 1;
+        self.background_jobs.push(BackgroundJob {
+            id,
+            label,
+            detail,
+            status: JobStatus::Running,
+            started_at: Instant::now(),
+        });
+        id
+    }
+
+    pub fn handle_job_event(&mut self, event: JobEvent) {
+        match event {
+            JobEvent::Update { id, detail } => {
+                if let Some(job) = self.background_jobs.iter_mut().find(|j| j.id == id) {
+                    job.detail = detail;
+                }
+            }
+            JobEvent::Complete { id, status, summary } => {
+                if let Some(job) = self.background_jobs.iter_mut().find(|j| j.id == id) {
+                    job.status = status.clone();
+                    job.detail = summary.clone();
+                }
+                let kind = match &status {
+                    JobStatus::Passed => SystemKind::Success,
+                    JobStatus::Failed(_) => SystemKind::Error,
+                    JobStatus::Running => SystemKind::Info,
+                };
+                self.activity.push(ActivityItem::System(kind, summary));
+                self.auto_scroll = true;
+            }
+        }
+    }
+
+    // remove completed background jobs older than the given duration
+    pub fn gc_background_jobs(&mut self, max_age: std::time::Duration) {
+        self.background_jobs.retain(|j| {
+            matches!(j.status, JobStatus::Running) || j.started_at.elapsed() < max_age
+        });
     }
 
     // reconstruct the activity feed and input history from persisted messages
@@ -1523,6 +1607,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let msg_h = message_height.min(combined);
     let input_h = combined - msg_h;
 
+    let jobs_h: u16 = if app.background_jobs.is_empty() { 0 } else { 1 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1531,7 +1617,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Constraint::Length(input_h), // input field
             Constraint::Length(1),       // buffer after input
             Constraint::Min(4),         // activity feed
-            Constraint::Length(1),       // buffer before bottom edge
+            Constraint::Length(jobs_h), // background jobs bar
         ])
         .split(size);
 
@@ -1541,7 +1627,46 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // chunks[3] is the buffer after input
     render_activity(frame, app, chunks[4]);
-    // chunks[5] is the buffer at the bottom
+    if jobs_h > 0 {
+        render_jobs_bar(frame, app, chunks[5]);
+    }
+}
+
+fn render_jobs_bar(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 { return; }
+
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, job) in app.background_jobs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  │  ", Style::default().fg(DIM)));
+        }
+        let (icon, icon_color) = match &job.status {
+            JobStatus::Running => {
+                let frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+                let f = frames[(app.spin_frame as usize / 2) % frames.len()];
+                (f.to_string(), YELLOW)
+            }
+            JobStatus::Passed => ("✓".to_string(), GREEN),
+            JobStatus::Failed(_) => ("✗".to_string(), RED),
+        };
+        spans.push(Span::styled(format!("{} ", icon), Style::default().fg(icon_color)));
+        spans.push(Span::styled(format!("{}", job.label), Style::default().fg(FG)));
+        if !job.detail.is_empty() {
+            spans.push(Span::styled(format!(" {}", job.detail), Style::default().fg(MUTED)));
+        }
+        if matches!(job.status, JobStatus::Running) {
+            let secs = job.started_at.elapsed().as_secs();
+            let timer = if secs >= 60 {
+                format!(" {}m{}s", secs / 60, secs % 60)
+            } else {
+                format!(" {}s", secs)
+            };
+            spans.push(Span::styled(timer, Style::default().fg(DIM)));
+        }
+    }
+
+    let line = Line::from(spans);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {

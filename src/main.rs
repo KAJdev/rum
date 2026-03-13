@@ -217,6 +217,7 @@ async fn run_tui_mode(
     let (control_tx, control_rx) = mpsc::unbounded_channel::<agent::ControlMessage>();
     let (login_tx, mut login_rx) = mpsc::unbounded_channel::<Result<(), String>>();
     let (update_tx, mut update_rx) = mpsc::unbounded_channel::<String>();
+    let (job_tx, mut job_rx) = mpsc::unbounded_channel::<tui::JobEvent>();
 
     // holds the pkce verifier while waiting for the user to paste the auth code
     let mut login_pending: Option<String> = None;
@@ -291,6 +292,21 @@ async fn run_tui_mode(
                 }
             }
         }
+
+        // spawn CI watch when a git push is detected
+        if let Some(cwd) = app.pending_ci_watch.take() {
+            let tx = job_tx.clone();
+            let job_id = app.start_background_job("CI".to_string(), "waiting for runs…".to_string());
+            tokio::spawn(async move {
+                ci_watch(job_id, &cwd, tx).await;
+            });
+        }
+
+        // drain background job events
+        while let Ok(evt) = job_rx.try_recv() {
+            app.handle_job_event(evt);
+        }
+        app.gc_background_jobs(std::time::Duration::from_secs(15));
 
         // drain completed login attempts
         while let Ok(result) = login_rx.try_recv() {
@@ -989,5 +1005,151 @@ async fn agent_loop(
                 }
             }
         }
+    }
+}
+
+async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEvent>) {
+    // get the current commit sha and branch
+    let sha = match tokio::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => {
+            let _ = tx.send(tui::JobEvent::Complete {
+                id: job_id,
+                status: tui::JobStatus::Failed("could not get commit sha".to_string()),
+                summary: "CI: could not determine commit".to_string(),
+            });
+            return;
+        }
+    };
+
+    let branch = tokio::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let branch_label = if branch.is_empty() {
+        sha[..7].to_string()
+    } else {
+        branch.clone()
+    };
+
+    let _ = tx.send(tui::JobEvent::Update {
+        id: job_id,
+        detail: format!("waiting for runs on {}", branch_label),
+    });
+
+    // wait for runs to appear (github can take a few seconds)
+    let mut runs_found = false;
+    for attempt in 0..18 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
+
+        let output = match tokio::process::Command::new("gh")
+            .args([
+                "run", "list",
+                "--commit", &sha,
+                "--json", "status,conclusion,name,url",
+                "--limit", "20",
+            ])
+            .current_dir(cwd)
+            .output()
+            .await
+        {
+            Ok(o) if o.status.success() => o,
+            Ok(_) | Err(_) => {
+                if attempt == 0 {
+                    // gh not available or not authed
+                    let _ = tx.send(tui::JobEvent::Complete {
+                        id: job_id,
+                        status: tui::JobStatus::Failed("gh cli unavailable".to_string()),
+                        summary: "CI: gh cli not available".to_string(),
+                    });
+                    return;
+                }
+                continue;
+            }
+        };
+
+        let runs: Vec<serde_json::Value> = match serde_json::from_slice(&output.stdout) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if runs.is_empty() {
+            if attempt < 6 {
+                // keep waiting for runs to appear in the first ~60s
+                continue;
+            }
+            // no runs after waiting
+            let _ = tx.send(tui::JobEvent::Complete {
+                id: job_id,
+                status: tui::JobStatus::Passed,
+                summary: format!("CI: no runs detected on {}", branch_label),
+            });
+            return;
+        }
+
+        runs_found = true;
+
+        let total = runs.len();
+        let completed = runs.iter().filter(|r| {
+            r.get("status").and_then(|s| s.as_str()) == Some("completed")
+        }).count();
+        let failed = runs.iter().filter(|r| {
+            r.get("conclusion").and_then(|s| s.as_str()).map_or(false, |c| c == "failure" || c == "cancelled" || c == "timed_out")
+        }).count();
+
+        let _ = tx.send(tui::JobEvent::Update {
+            id: job_id,
+            detail: format!("{}/{} on {}", completed, total, branch_label),
+        });
+
+        if completed == total {
+            // all done
+            if failed == 0 {
+                let _ = tx.send(tui::JobEvent::Complete {
+                    id: job_id,
+                    status: tui::JobStatus::Passed,
+                    summary: format!("CI: {} checks passed on {}", total, branch_label),
+                });
+            } else {
+                let failed_names: Vec<String> = runs.iter()
+                    .filter(|r| {
+                        r.get("conclusion").and_then(|s| s.as_str()).map_or(false, |c| c == "failure" || c == "cancelled" || c == "timed_out")
+                    })
+                    .filter_map(|r| r.get("name").and_then(|n| n.as_str()).map(String::from))
+                    .collect();
+                let _ = tx.send(tui::JobEvent::Complete {
+                    id: job_id,
+                    status: tui::JobStatus::Failed(format!("{} failed", failed)),
+                    summary: format!("CI: {}/{} failed on {} ({})", failed, total, branch_label, failed_names.join(", ")),
+                });
+            }
+            return;
+        }
+    }
+
+    if !runs_found {
+        let _ = tx.send(tui::JobEvent::Complete {
+            id: job_id,
+            status: tui::JobStatus::Passed,
+            summary: format!("CI: no runs detected on {}", branch_label),
+        });
+    } else {
+        let _ = tx.send(tui::JobEvent::Complete {
+            id: job_id,
+            status: tui::JobStatus::Failed("timed out".to_string()),
+            summary: format!("CI: timed out waiting on {}", branch_label),
+        });
     }
 }
