@@ -1155,7 +1155,7 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                         {
                             if o.status.success() {
                                 let logs = String::from_utf8_lossy(&o.stdout);
-                                let cleaned: Vec<&str> = logs.lines()
+                                let cleaned: Vec<String> = logs.lines()
                                     .filter_map(|line| {
                                         // each line is: "job\tstep\ttimestamp content"
                                         // extract just the content after the timestamp
@@ -1176,13 +1176,19 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                                         }
                                         // strip ##[error] prefix but keep the message
                                         let content = content.strip_prefix("##[error]").unwrap_or(content);
-                                        Some(content)
+                                        let clean = tui::strip_ansi(content);
+                                        if clean.is_empty() { return None; }
+                                        Some(clean)
                                     })
                                     .collect();
                                 let tail: String = cleaned.iter()
                                     .rev().take(30).collect::<Vec<_>>()
-                                    .into_iter().rev().copied()
+                                    .into_iter().rev()
+                                    .map(|s| s.as_str())
                                     .collect::<Vec<_>>().join("\n");
+                                if !tail.is_empty() {
+                                    log_output.push_str(&format!("\n--- {} ---\n{}", name, tail));
+                                }
                                 if !tail.is_empty() {
                                     log_output.push_str(&format!("\n--- {} ---\n{}", name, tail));
                                 }

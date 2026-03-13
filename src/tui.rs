@@ -1405,7 +1405,7 @@ fn last_paragraph(text: &str) -> &str {
 
 // remove ansi escape sequences and other terminal control codes from tool output.
 // covers CSI sequences (\x1b[...X), OSC sequences (\x1b]...ST), and bare \x1b.
-fn strip_ansi(s: &str) -> String {
+pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
