@@ -157,6 +157,7 @@ async fn run_print_mode(
                 oauth: None,
                 system_prompt: cfg_system,
                 context_files: cfg_context,
+                loaded_sources: vec![],
             };
             let cancel = agent::CancelToken::new();
             let mut agent = agent::Agent::new(&rebuilt_cfg, api_client, cwd, cancel);
@@ -222,6 +223,23 @@ async fn run_tui_mode(
     // construct the agent before spawning so we can read the loaded history length
     let agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
     let history_len = agent.loaded_history_len();
+
+    // show startup info: loaded config files and session state
+    if !cfg.loaded_sources.is_empty() {
+        let home = dirs::home_dir().unwrap_or_default();
+        let sources: Vec<String> = cfg
+            .loaded_sources
+            .iter()
+            .map(|s| {
+                // shorten home dir to ~ for readability
+                match s.strip_prefix(&home.to_string_lossy().as_ref()) {
+                    Some(rest) => format!("~{rest}"),
+                    None => s.clone(),
+                }
+            })
+            .collect();
+        app.push_system_message(format!("loaded: {}", sources.join(", ")));
+    }
     if history_len > 0 {
         app.push_system_message(format!(
             "resumed previous session ({history_len} messages in context)  /new to start fresh"

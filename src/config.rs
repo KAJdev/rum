@@ -11,10 +11,22 @@ pub struct Config {
     pub oauth: Option<OAuthCredentials>,
     pub system_prompt: String,
     pub context_files: Vec<String>,
+    /// human-readable list of config sources that were loaded, shown on startup
+    pub loaded_sources: Vec<String>,
 }
 
 fn rum_config_dir() -> PathBuf {
     crate::persistence::rum_config_dir()
+}
+
+fn pi_agent_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
+        return PathBuf::from(dir);
+    }
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".pi")
+        .join("agent")
 }
 
 fn load_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
@@ -22,15 +34,36 @@ fn load_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_str(&content).ok()
 }
 
+/// settings shape shared by pi and rum config files
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct RumConfigFile {
+struct SettingsFile {
     default_model: Option<String>,
     default_thinking_level: Option<String>,
+    #[allow(dead_code)]
+    default_provider: Option<String>,
 }
 
-fn collect_context_files(cwd: &Path) -> Vec<String> {
+/// collect AGENTS.md / CLAUDE.md from ancestor directories, and from
+/// the global config dirs for pi (~/.pi/agent) and claude (~/.claude)
+fn collect_context_files(cwd: &Path, sources: &mut Vec<String>) -> Vec<String> {
     let mut files = Vec::new();
+
+    // global context files from ~/.config/rum, ~/.pi/agent, ~/.claude
+    let global_dirs = [
+        rum_config_dir(),
+        pi_agent_dir(),
+        dirs::home_dir().unwrap_or_default().join(".claude"),
+    ];
+    for dir in &global_dirs {
+        for name in &["AGENTS.md", "CLAUDE.md"] {
+            let p = dir.join(name);
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                files.push(content);
+                sources.push(format!("{}", p.display()));
+            }
+        }
+    }
 
     // walk from root to cwd collecting AGENTS.md / CLAUDE.md
     let mut ancestors: Vec<&Path> = cwd.ancestors().collect();
@@ -40,6 +73,7 @@ fn collect_context_files(cwd: &Path) -> Vec<String> {
             let p = dir.join(name);
             if let Ok(content) = std::fs::read_to_string(&p) {
                 files.push(content);
+                sources.push(format!("{}", p.display()));
             }
         }
     }
@@ -47,28 +81,46 @@ fn collect_context_files(cwd: &Path) -> Vec<String> {
     files
 }
 
-fn load_system_prompt(cwd: &Path) -> String {
-    let config_dir = rum_config_dir();
+/// load system prompt, checking project and global dirs across rum, pi, and claude
+fn load_system_prompt(cwd: &Path, sources: &mut Vec<String>) -> String {
+    let rum_dir = rum_config_dir();
+    let pi_dir = pi_agent_dir();
 
-    let project_system = cwd.join(".rum").join("SYSTEM.md");
-    let global_system = config_dir.join("SYSTEM.md");
+    // priority order for base system prompt: project .rum > project .pi >
+    // project .claude > global rum > global pi > built-in default
+    let system_candidates = [
+        cwd.join(".rum").join("SYSTEM.md"),
+        cwd.join(".pi").join("SYSTEM.md"),
+        cwd.join(".claude").join("SYSTEM.md"),
+        rum_dir.join("SYSTEM.md"),
+        pi_dir.join("SYSTEM.md"),
+    ];
 
-    let base = if project_system.exists() {
-        std::fs::read_to_string(&project_system).unwrap_or_default()
-    } else if global_system.exists() {
-        std::fs::read_to_string(&global_system).unwrap_or_default()
-    } else {
-        default_system_prompt()
-    };
+    let base = system_candidates
+        .iter()
+        .find_map(|p| {
+            std::fs::read_to_string(p).ok().map(|c| {
+                sources.push(format!("{}", p.display()));
+                c
+            })
+        })
+        .unwrap_or_else(default_system_prompt);
+
+    // append files from global then project (both rum and pi dirs)
+    let append_candidates = [
+        rum_dir.join("APPEND_SYSTEM.md"),
+        pi_dir.join("APPEND_SYSTEM.md"),
+        cwd.join(".rum").join("APPEND_SYSTEM.md"),
+        cwd.join(".pi").join("APPEND_SYSTEM.md"),
+        cwd.join(".claude").join("APPEND_SYSTEM.md"),
+    ];
 
     let mut append = String::new();
-    let project_append = cwd.join(".rum").join("APPEND_SYSTEM.md");
-    let global_append = config_dir.join("APPEND_SYSTEM.md");
-
-    for path in &[global_append, project_append] {
+    for path in &append_candidates {
         if let Ok(content) = std::fs::read_to_string(path) {
             append.push_str("\n\n");
             append.push_str(&content);
+            sources.push(format!("{}", path.display()));
         }
     }
 
@@ -96,23 +148,29 @@ Guidelines:
 }
 
 pub fn load_config(cwd: &Path) -> Result<Config> {
-    let config_dir = rum_config_dir();
-    let cfg: RumConfigFile =
-        load_json_file(&config_dir.join("config.json")).unwrap_or_default();
+    let mut loaded_sources: Vec<String> = Vec::new();
 
-    let model = cfg
+    // merge settings: rum > pi (first found for each field wins)
+    let rum_cfg: SettingsFile =
+        load_json_file(&rum_config_dir().join("config.json")).unwrap_or_default();
+    let pi_cfg: SettingsFile =
+        load_json_file(&pi_agent_dir().join("settings.json")).unwrap_or_default();
+
+    let model = rum_cfg
         .default_model
+        .or(pi_cfg.default_model)
         .unwrap_or_else(|| "claude-sonnet-4-0".to_string());
 
-    let thinking_level = cfg
+    let thinking_level = rum_cfg
         .default_thinking_level
+        .or(pi_cfg.default_thinking_level)
         .unwrap_or_else(|| "off".to_string());
 
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
     let oauth = crate::auth::load_auth();
 
-    let system_prompt = load_system_prompt(cwd);
-    let context_files = collect_context_files(cwd);
+    let system_prompt = load_system_prompt(cwd, &mut loaded_sources);
+    let context_files = collect_context_files(cwd, &mut loaded_sources);
 
     Ok(Config {
         provider: "anthropic".to_string(),
@@ -122,6 +180,7 @@ pub fn load_config(cwd: &Path) -> Result<Config> {
         oauth,
         system_prompt,
         context_files,
+        loaded_sources,
     })
 }
 

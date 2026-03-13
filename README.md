@@ -98,9 +98,22 @@ edits and writes show inline diffs. bash output is shown inline too.
 
 ## context files
 
-rum loads `AGENTS.md` and `CLAUDE.md` files from every directory between the filesystem root and your cwd. use these to give the agent project-specific instructions.
+rum loads `AGENTS.md` and `CLAUDE.md` files from every directory between the filesystem root and your cwd, as well as from the global config dirs (`~/.config/rum/`, `~/.pi/agent/`, `~/.claude/`). use these to give the agent project-specific instructions.
 
-custom system prompts go in `~/.config/rum/SYSTEM.md` (global) or `.rum/SYSTEM.md` (project). `APPEND_SYSTEM.md` in either location is appended to the default prompt.
+custom system prompts are checked in priority order:
+
+1. `.rum/SYSTEM.md` in the project
+2. `.pi/SYSTEM.md` in the project
+3. `.claude/SYSTEM.md` in the project
+4. `~/.config/rum/SYSTEM.md`
+5. `~/.pi/agent/SYSTEM.md`
+6. built-in default
+
+`APPEND_SYSTEM.md` files from all locations (`~/.config/rum/`, `~/.pi/agent/`, `.rum/`, `.pi/`, `.claude/`) are appended.
+
+settings (default model, thinking level) are merged from `~/.config/rum/config.json` and `~/.pi/agent/settings.json`, with rum's config taking priority.
+
+on startup rum shows which config files it loaded so you know exactly what's in context.
 
 ## print mode
 
