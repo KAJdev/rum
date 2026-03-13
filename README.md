@@ -1,8 +1,6 @@
 # rum
 
-a diff-centric coding agent TUI built in rust.
-
-rum takes a different approach from chat-style agent interfaces. the user prompt sits at the top, with a live activity feed and inline diffs below it, and token/cost metrics in the header bar.
+a fast, diff-centric coding agent for the terminal. built in rust.
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -19,139 +17,91 @@ rum takes a different approach from chat-style agent interfaces. the user prompt
 └──────────────────────────────────────────────┘
 ```
 
-the header bar shows a colored sparkline of token throughput, tokens/sec, cost, and a context window usage bar.
+## install
 
-## setup
+```bash
+# homebrew
+brew install KAJdev/rum/rum
 
-rum reads configuration from pi's config directory (`~/.pi/agent/`), or from `PI_CODING_AGENT_DIR` if set.
+# cargo binstall (pre-built binary)
+cargo binstall rum
 
-**auth**: authenticate via one of:
-- set `ANTHROPIC_API_KEY` in your environment
-- run `pi` then `/login` to store oauth credentials in `~/.pi/agent/auth.json`
-
-**settings**: reads `~/.pi/agent/settings.json` for default provider, model, and thinking level. per-project overrides can be placed in `.pi/settings.json` within the project directory. supported fields:
-
-```json
-{
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-sonnet-4-20250514",
-  "defaultThinkingLevel": "high"
-}
+# cargo from source
+cargo install --path .
 ```
 
-**context files**: loads `AGENTS.md` / `CLAUDE.md` from the global config dir, all ancestor directories from root to cwd, and cwd itself.
+## getting started
 
-**system prompt**: uses `SYSTEM.md` / `APPEND_SYSTEM.md` from `~/.pi/agent/` or `.pi/` within the project directory. project-level `SYSTEM.md` takes precedence over the global one. `APPEND_SYSTEM.md` files from both locations are appended. if no custom system prompt is found, a built-in default is used.
+run `rum` in any project directory. if you don't have credentials, it will open your browser to log in with your Anthropic account automatically — paste the code back and you're in.
+
+you can also set `ANTHROPIC_API_KEY` in your environment if you prefer API key auth.
 
 ## usage
 
 ```bash
-cargo install --path .
-
-# interactive TUI mode
+# start the TUI
 rum
 
-# with initial message
-rum "list all the files in src/"
+# start with a message
+rum "add error handling to the api routes"
 
-# override model
-rum --model claude-sonnet-4-20250514
+# print mode — no TUI, streams to stdout
+rum -p "explain this codebase"
 
-# override provider
-rum --provider anthropic
-
-# set thinking level (off, minimal, low, medium, high, xhigh)
-rum --thinking high "solve this complex problem"
+# override model or thinking level
+rum --model opus --thinking high "refactor the auth module"
 
 # different working directory
 rum -C /path/to/project
-
-# print mode: stream output to stdout without the TUI
-rum -p "explain this codebase"
 ```
 
-### print mode
+### slash commands
 
-`rum -p` runs without the TUI, streaming markdown-rendered output directly to stdout. tool calls, diffs, and thinking are shown on stderr. prints a summary line with token count, cost, tool count, throughput, and elapsed time when done. exits with code 1 if any errors occurred.
+type these in the input box:
 
-### message queuing
+| command | description |
+|---------|-------------|
+| `/model [name]` | switch model (opus, sonnet, haiku, etc.) |
+| `/thinking [level]` | set thinking (off, minimal, low, medium, high, xhigh) |
+| `/new` | clear conversation and start fresh |
+| `/login` | log in with anthropic oauth |
+| `/logout` | log out |
+| `/help` | show all commands |
+| `/quit` | exit |
 
-you can type and submit messages while the agent is running. queued messages are sent automatically when the current turn finishes.
-
-## keybindings
-
-### general
-
-| key | action |
-|-----|--------|
-| Enter | submit message (or queue if agent is running) |
-| Shift+Enter / Alt+Enter / Ctrl+Enter | insert newline |
-| Ctrl+J | insert newline |
-| Ctrl+C | clear input / cancel running / quit (in that priority) |
-| Escape | cancel running / quit |
-| Ctrl+O | toggle diff expansion |
-
-### navigation
+### keybindings
 
 | key | action |
 |-----|--------|
-| Up/Down | move cursor in multi-line input, or scroll activity feed |
-| PageUp/PageDown | scroll activity feed by page |
-| Left/Right | move cursor |
-| Alt+Left / Alt+Right | move cursor by word |
-| Cmd+Left / Cmd+Right | jump to line start/end |
-| Home/End | jump to line start/end |
-| Ctrl+A / Ctrl+E | jump to line start/end |
-
-### editing
-
-| key | action |
-|-----|--------|
-| Ctrl+U | delete to line start |
-| Ctrl+K | delete to line end |
-| Ctrl+W / Alt+Backspace | delete word backward |
-| Alt+D | delete word forward |
-| Cmd+Backspace | delete to line start |
-
-scrolling up disables auto-scroll. scrolling back to the bottom re-engages it.
+| **Enter** | send message (queues if agent is running) |
+| **Shift+Enter** | newline |
+| **Ctrl+C** | clear input → cancel agent → quit |
+| **Escape** | cancel agent / quit |
+| **Ctrl+O** | toggle diff expansion |
+| **Tab** | autocomplete slash commands |
+| **Up/Down** | cursor / scroll |
+| **PageUp/PageDown** | scroll by page |
 
 ## tools
 
-rum provides five tools to the model:
+the agent has five tools:
 
-- **read**: read file contents with optional line offset/limit (defaults to 2000 lines, truncates at ~50KB)
-- **bash**: execute shell commands with configurable timeout (default 120s)
-- **edit**: surgical find-and-replace edits (requires a unique exact match of `oldText`)
-- **write**: create or overwrite files, creating parent directories as needed
-- **web_search**: search the web via DuckDuckGo, returning titles, URLs, and snippets
+| tool | what it does |
+|------|-------------|
+| **read** | read file contents (with optional line offset/limit) |
+| **write** | create or overwrite files |
+| **edit** | surgical find-and-replace (exact match of old text) |
+| **bash** | run shell commands |
+| **web_search** | search the web via DuckDuckGo |
 
-tool results are displayed inline in the activity feed. edit and write tools show inline diffs with addition/deletion counts. bash output is shown truncated to the first 8 lines.
+edits and writes show inline diffs. bash output is shown inline too.
 
-## thinking
+## context files
 
-thinking level controls extended thinking budget. for most models, this sets a token budget:
+rum loads `AGENTS.md` and `CLAUDE.md` files from every directory between the filesystem root and your cwd. use these to give the agent project-specific instructions.
 
-| level | budget |
-|-------|--------|
-| off | disabled |
-| minimal | 1,024 tokens |
-| low | 4,096 tokens |
-| medium | 10,240 tokens |
-| high | 32,768 tokens |
-| xhigh | 65,536 tokens |
+custom system prompts go in `~/.config/rum/SYSTEM.md` (global) or `.rum/SYSTEM.md` (project). `APPEND_SYSTEM.md` in either location is appended to the default prompt.
 
-for opus 4.6+ models, thinking uses adaptive mode with an effort parameter instead of a fixed budget.
+## print mode
 
-## architecture
-
-```
-src/
-├── main.rs       - cli parsing, event loop, TUI/print mode dispatch
-├── config.rs     - auth, settings, system prompts, context file resolution
-├── api.rs        - anthropic messages api client, request types, SSE parsing
-├── agent.rs      - agentic loop: streaming, tool execution, multi-turn management
-├── tools.rs      - tool definitions (read, bash, edit, write) and diff computation
-├── tui.rs        - ratatui-based layout, input handling, sparkline, diff rendering
-├── markdown.rs   - markdown-to-styled-text rendering (ansi for print, ratatui spans for TUI)
-└── print.rs      - non-interactive streaming mode with incremental json field tracking
-```
+`rum -p` streams output to stdout without the TUI. tool calls and thinking go to stderr. prints a summary with tokens, cost, and timing when done. useful for scripting or piping into other tools.
