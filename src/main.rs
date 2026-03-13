@@ -367,6 +367,7 @@ async fn run_tui_mode(
                     tui::InputAction::PasteFromClipboard => {
                         if let Some(img_path) = try_read_clipboard_image() {
                             app.insert_text(img_path);
+                            app.paste_handled = true;
                         }
                         // if no image is on clipboard, bracketed paste will fire separately
                     }
@@ -374,9 +375,10 @@ async fn run_tui_mode(
                 }
                 }
                 Event::Paste(text) => {
-                    // empty or binary-looking paste means the terminal forwarded Cmd+V
-                    // but the clipboard only had image data (no text representation)
-                    if text.is_empty() || paste_looks_like_binary(&text) {
+                    if app.paste_handled {
+                        app.paste_handled = false;
+                        // skip: PasteFromClipboard already processed this
+                    } else if text.is_empty() || paste_looks_like_binary(&text) {
                         if let Some(img_path) = try_read_clipboard_image() {
                             app.insert_text(img_path);
                         } else if !text.is_empty() {

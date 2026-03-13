@@ -571,11 +571,9 @@ fn clean_thinking_blocks(messages: Vec<Message>) -> Vec<Message> {
                             _ => true,
                         })
                         .collect();
-                    // if all blocks were unsigned thinking, keep an empty text block
-                    // so the message content array is not empty
                     if filtered.is_empty() {
                         MessageContent::Blocks(vec![ContentBlock::Text {
-                            text: String::new(),
+                            text: " ".to_string(),
                         }])
                     } else {
                         MessageContent::Blocks(filtered)

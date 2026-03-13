@@ -240,6 +240,9 @@ pub struct App {
     // slash command tab-completion state
     slash_prefix: Option<String>,
     slash_selected: Option<usize>,
+    // set when PasteFromClipboard already handled an image this tick,
+    // so the subsequent Event::Paste("") doesn't duplicate it
+    pub paste_handled: bool,
 }
 
 impl App {
@@ -280,6 +283,7 @@ impl App {
             activity_render_cache: Vec::new(),
             slash_prefix: None,
             slash_selected: None,
+            paste_handled: false,
         }
     }
 
