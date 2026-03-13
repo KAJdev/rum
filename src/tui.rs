@@ -217,6 +217,9 @@ pub struct App {
     // when true, viewport follows new content to the bottom
     pub auto_scroll: bool,
     pub diffs_expanded: bool,
+    // set after TurnComplete so the next text/thinking block always starts fresh
+    // rather than appending to the last item from the previous turn
+    new_turn: bool,
     model_name: String,
     thinking_level: String,
     cwd: String,
@@ -257,6 +260,7 @@ impl App {
             scroll_offset: 0,
             auto_scroll: true,
             diffs_expanded: true,
+            new_turn: false,
             model_name: model_name.to_string(),
             thinking_level: thinking_level.to_string(),
             cwd: cwd.to_string(),
@@ -292,20 +296,26 @@ impl App {
             AgentEvent::Thinking(t) => {
                 let approx = (t.len() as u32 / 4).max(1);
                 self.rate_bucket.thinking += approx;
-                if let Some(ActivityItem::Thinking(ref mut s)) = self.activity.last_mut() {
-                    s.push_str(&t);
-                } else {
-                    self.activity.push(ActivityItem::Thinking(t));
+                if !self.new_turn {
+                    if let Some(ActivityItem::Thinking(ref mut s)) = self.activity.last_mut() {
+                        s.push_str(&t);
+                        return;
+                    }
                 }
+                self.new_turn = false;
+                self.activity.push(ActivityItem::Thinking(t));
             }
             AgentEvent::Text(t) => {
                 let approx = (t.len() as u32 / 4).max(1);
                 self.rate_bucket.text += approx;
-                if let Some(ActivityItem::Text(ref mut s)) = self.activity.last_mut() {
-                    s.push_str(&t);
-                } else {
-                    self.activity.push(ActivityItem::Text(t));
+                if !self.new_turn {
+                    if let Some(ActivityItem::Text(ref mut s)) = self.activity.last_mut() {
+                        s.push_str(&t);
+                        return;
+                    }
                 }
+                self.new_turn = false;
+                self.activity.push(ActivityItem::Text(t));
             }
             AgentEvent::ToolStart { id: _, name } => {
                 self.current_tool_input.clear();
@@ -394,6 +404,7 @@ impl App {
             }
             AgentEvent::TurnComplete => {
                 self.is_running = false;
+                self.new_turn = true;
             }
             AgentEvent::Status(msg) => {
                 self.activity.push(ActivityItem::System(SystemKind::Info, msg));
@@ -537,6 +548,7 @@ impl App {
         self.start_time = None;
         self.scroll_offset = 0;
         self.auto_scroll = true;
+        self.new_turn = false;
     }
 
     pub fn model_name(&self) -> &str {
