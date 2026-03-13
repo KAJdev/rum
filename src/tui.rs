@@ -1885,10 +1885,7 @@ fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
 
 fn is_compact_tool(item: &ActivityItem) -> bool {
     match item {
-        ActivityItem::Tool(e) => match &e.status {
-            ToolStatus::Running => e.output.is_none(),
-            _ => !e.expanded,
-        },
+        ActivityItem::Tool(e) => !e.expanded,
         _ => false,
     }
 }
