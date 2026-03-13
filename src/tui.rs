@@ -141,8 +141,22 @@ enum ActivityItem {
     Text(String),
     // tool call entry
     Tool(ToolEntry),
-    // system/slash-command output, shown without bar prefix
-    System(String),
+    // system/slash-command output
+    System(SystemKind, String),
+}
+
+#[derive(Debug, Clone)]
+pub enum SystemKind {
+    // muted, informational (default)
+    Info,
+    // green — positive outcome
+    Success,
+    // yellow — caution / non-fatal problem
+    Warning,
+    // red — something went wrong
+    Error,
+    // accent+bold — new version available, prominent announcements
+    Update,
 }
 
 #[derive(Debug, Clone)]
@@ -363,7 +377,7 @@ impl App {
                 self.is_running = false;
             }
             AgentEvent::Status(msg) => {
-                self.activity.push(ActivityItem::System(msg));
+                self.activity.push(ActivityItem::System(SystemKind::Info, msg));
             }
             AgentEvent::Error(e) => {
                 self.is_running = false;
@@ -438,7 +452,27 @@ impl App {
     }
 
     pub fn push_system_message(&mut self, msg: String) {
-        self.activity.push(ActivityItem::System(msg));
+        self.activity.push(ActivityItem::System(SystemKind::Info, msg));
+        self.auto_scroll = true;
+    }
+
+    pub fn push_success(&mut self, msg: String) {
+        self.activity.push(ActivityItem::System(SystemKind::Success, msg));
+        self.auto_scroll = true;
+    }
+
+    pub fn push_warning(&mut self, msg: String) {
+        self.activity.push(ActivityItem::System(SystemKind::Warning, msg));
+        self.auto_scroll = true;
+    }
+
+    pub fn push_error_msg(&mut self, msg: String) {
+        self.activity.push(ActivityItem::System(SystemKind::Error, msg));
+        self.auto_scroll = true;
+    }
+
+    pub fn push_update_notice(&mut self, msg: String) {
+        self.activity.push(ActivityItem::System(SystemKind::Update, msg));
         self.auto_scroll = true;
     }
 
@@ -1236,7 +1270,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         let (content_len, expanded, status_tag) = match &app.activity[idx] {
             ActivityItem::Thinking(t) => (t.len(), false, 0u8),
             ActivityItem::Text(t) => (t.len(), false, 0u8),
-            ActivityItem::System(t) => (t.len(), false, 0u8),
+            ActivityItem::System(_, t) => (t.len(), false, 0u8),
             ActivityItem::Tool(e) => {
                 let st = match &e.status {
                     ToolStatus::Running => 0,
@@ -1278,7 +1312,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     for idx in 0..n {
         let is_tt = matches!(
             &app.activity[idx],
-            ActivityItem::Thinking(_) | ActivityItem::Text(_) | ActivityItem::System(_)
+            ActivityItem::Thinking(_) | ActivityItem::Text(_) | ActivityItem::System(_, _)
         );
         if is_tt && idx > 0 {
             total += 1;
@@ -1331,7 +1365,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let is_tt = matches!(
                 &app.activity[idx],
-                ActivityItem::Thinking(_) | ActivityItem::Text(_) | ActivityItem::System(_)
+                ActivityItem::Thinking(_) | ActivityItem::Text(_) | ActivityItem::System(_, _)
             );
 
             // pre-spacing
@@ -1385,20 +1419,35 @@ fn render_activity_item(item: &ActivityItem, w: u16) -> Vec<Line<'static>> {
             render_tool_entry(&mut lines, entry, w);
             lines
         }
-        ActivityItem::System(text) => {
-            let mut lines = Vec::new();
-            for line in text.lines() {
-                lines.push(Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(line.to_string(), Style::default().fg(MUTED)),
-                ]));
-            }
-            if lines.is_empty() {
-                lines.push(Line::from(""));
-            }
-            lines
-        }
+        ActivityItem::System(kind, text) => render_system_msg(kind, text),
     }
+}
+
+fn render_system_msg(kind: &SystemKind, text: &str) -> Vec<Line<'static>> {
+    let (icon, color, bold) = match kind {
+        SystemKind::Info    => ("  ",     MUTED,   false),
+        SystemKind::Success => ("  ✓ ",   GREEN,   false),
+        SystemKind::Warning => ("  ⚠ ",   YELLOW,  false),
+        SystemKind::Error   => ("  ✗ ",   RED,     false),
+        SystemKind::Update  => ("  ↑ ",   ACCENT,  true),
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let prefix = if i == 0 { icon } else { "    " };
+        let mut style = Style::default().fg(color);
+        if bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(line.to_string(), style),
+        ]));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines
 }
 
 fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16) {

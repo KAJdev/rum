@@ -210,8 +210,8 @@ async fn run_tui_mode(
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let (control_tx, control_rx) = mpsc::unbounded_channel::<agent::ControlMessage>();
-    // one-shot results from async login attempts
     let (login_tx, mut login_rx) = mpsc::unbounded_channel::<Result<(), String>>();
+    let (update_tx, mut update_rx) = mpsc::unbounded_channel::<String>();
 
     // holds the pkce verifier while waiting for the user to paste the auth code
     let mut login_pending: Option<String> = None;
@@ -230,6 +230,12 @@ async fn run_tui_mode(
 
     tokio::spawn(async move {
         agent_loop(agent, user_rx, control_rx, agent_tx).await;
+    });
+
+    tokio::spawn(async move {
+        if let Some(tag) = check_for_update().await {
+            let _ = update_tx.send(tag);
+        }
     });
 
     if no_credentials {
@@ -266,14 +272,22 @@ async fn run_tui_mode(
         while let Ok(result) = login_rx.try_recv() {
             match result {
                 Ok(()) => {
-                    app.push_system_message("logged in! start chatting below.".to_string());
-                    // hot-patch the running agent with the fresh token
+                    app.push_success("logged in! start chatting below.".to_string());
                     if let Some(creds) = auth::load_auth() {
                         let _ = control_tx.send(agent::ControlMessage::UpdateAuth(creds.access));
                     }
                 }
-                Err(e) => app.push_system_message(format!("login failed: {e}")),
+                Err(e) => app.push_error_msg(format!("login failed: {e}")),
             }
+        }
+
+        // check for available updates
+        while let Ok(tag) = update_rx.try_recv() {
+            app.push_update_notice(format!(
+                "rum {} is available  (you have {})  cargo binstall rum",
+                tag,
+                env!("CARGO_PKG_VERSION"),
+            ));
         }
 
         // send queued follow-up messages when the current turn finishes
@@ -360,7 +374,7 @@ fn handle_slash_command(
         SlashCommand::New => {
             app.reset_session();
             let _ = control_tx.send(agent::ControlMessage::ClearHistory);
-            app.push_system_message("conversation cleared".to_string());
+            app.push_success("conversation cleared".to_string());
         }
         SlashCommand::Login => {
             let (url, verifier) = auth::build_auth_url();
@@ -372,10 +386,10 @@ fn handle_slash_command(
         }
         SlashCommand::Logout => {
             match auth::delete_auth() {
-                Ok(()) => app.push_system_message(
-                    "logged out. set ANTHROPIC_API_KEY or run /login to authenticate.".to_string(),
+                Ok(()) => app.push_warning(
+                    "logged out. set ANTHROPIC_API_KEY or run /login to re-authenticate.".to_string(),
                 ),
-                Err(e) => app.push_system_message(format!("logout failed: {e}")),
+                Err(e) => app.push_error_msg(format!("logout failed: {e}")),
             }
         }
         SlashCommand::Help => {
@@ -424,16 +438,13 @@ fn handle_model_command(
                 let _ = control_tx.send(agent::ControlMessage::ChangeModel(
                     model_def.id.to_string(),
                 ));
-                app.push_system_message(format!(
-                    "switched to {} ({})",
-                    model_def.id, model_def.name
-                ));
+                app.push_success(format!("switched to {} ({})", model_def.id, model_def.name));
             } else {
                 let mut msg = format!("no model matching \"{pat}\"");
                 msg.push_str("\navailable: ");
                 let names: Vec<&str> = config::ANTHROPIC_MODELS.iter().map(|m| m.id).collect();
                 msg.push_str(&names.join(", "));
-                app.push_system_message(msg);
+                app.push_warning(msg);
             }
         }
     }
@@ -459,9 +470,9 @@ fn handle_thinking_command(
                     lvl_lower.clone(),
                 ));
                 app.update_thinking(&lvl_lower);
-                app.push_system_message(format!("thinking level set to {lvl_lower}"));
+                app.push_success(format!("thinking level set to {lvl_lower}"));
             } else {
-                app.push_system_message(format!(
+                app.push_warning(format!(
                     "unknown thinking level \"{}\"\navailable: {}",
                     lvl,
                     config::THINKING_LEVELS.join(", ")
@@ -480,7 +491,7 @@ fn handle_login_code(
 ) {
     match auth::parse_auth_response(input) {
         Some((code, state)) => {
-            app.push_system_message("authenticating...".to_string());
+            app.push_system_message("authenticating...".to_string()); // info/spinner feel
             tokio::spawn(async move {
                 let result = auth::exchange_code(&code, &state, &verifier)
                     .await
@@ -490,8 +501,8 @@ fn handle_login_code(
             });
         }
         None => {
-            app.push_system_message(
-                "could not parse auth code. expected CODE#STATE or the full redirect URL. try /login again".to_string(),
+            app.push_warning(
+                "could not parse auth code — expected CODE#STATE or the full redirect URL. try /login again".to_string(),
             );
         }
     }
@@ -539,6 +550,40 @@ fn run_logout_command() -> Result<()> {
     auth::delete_auth()?;
     println!("logged out");
     Ok(())
+}
+
+async fn check_for_update() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("rum/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .get("https://api.github.com/repos/KAJdev/rum/releases/latest")
+        .send()
+        .await
+        .ok()?;
+
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let tag = json.get("tag_name")?.as_str()?;
+    let latest = tag.trim_start_matches('v');
+    let current = env!("CARGO_PKG_VERSION");
+
+    if parse_semver(latest) > parse_semver(current) {
+        Some(tag.to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_semver(v: &str) -> (u32, u32, u32) {
+    let parts: Vec<u32> = v.split('.').filter_map(|p| p.parse().ok()).collect();
+    (
+        parts.first().copied().unwrap_or(0),
+        parts.get(1).copied().unwrap_or(0),
+        parts.get(2).copied().unwrap_or(0),
+    )
 }
 
 async fn agent_loop(
