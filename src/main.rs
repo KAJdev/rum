@@ -364,11 +364,21 @@ async fn run_tui_mode(
                             diffs_expanded: Some(app.diffs_expanded),
                         });
                     }
+                    tui::InputAction::PasteFromClipboard => {
+                        if let Some(img_path) = try_read_clipboard_image() {
+                            app.insert_text(img_path);
+                        }
+                        // if no image is on clipboard, bracketed paste will fire separately
+                    }
                     tui::InputAction::None => {}
                 }
                 }
                 Event::Paste(text) => {
-                    if let Some(path) = resolve_pasted_path(&text, &cwd) {
+                    if paste_looks_like_binary(&text) {
+                        if let Some(img_path) = try_read_clipboard_image() {
+                            app.insert_text(img_path);
+                        }
+                    } else if let Some(path) = resolve_pasted_path(&text, &cwd) {
                         app.insert_text(path);
                     } else {
                         app.insert_paste(text);
@@ -717,6 +727,100 @@ fn unescape_backslashes(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+// returns true if the text appears to be binary data passed through a lossy UTF-8 decode.
+// terminals that forward raw clipboard bytes produce replacement chars for non-UTF-8 sequences.
+fn paste_looks_like_binary(text: &str) -> bool {
+    let sample: Vec<char> = text.chars().take(200).collect();
+    if sample.len() < 4 {
+        return false;
+    }
+    let replacement_count = sample.iter().filter(|&&c| c == '\u{FFFD}').count();
+    replacement_count * 4 > sample.len()
+}
+
+// tries to save clipboard image data to a temp file and returns the path.
+// on macOS uses pngpaste (if available) then osascript.
+// on linux uses wl-paste (wayland) then xclip (x11).
+fn try_read_clipboard_image() -> Option<String> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = format!("/tmp/rum_img_{ts}.png");
+
+    if read_clipboard_image_to_path(&path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_clipboard_image_to_path(path: &str) -> bool {
+    // try pngpaste first (fast, no script overhead)
+    if let Ok(status) = std::process::Command::new("pngpaste")
+        .arg(path)
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        if status.success() {
+            return true;
+        }
+    }
+
+    // fall back to osascript
+    let script = format!(
+        "set d to the clipboard as «class PNGf»\n\
+         set f to open for access POSIX file \"{path}\" with write permission\n\
+         write d to f\n\
+         close access f"
+    );
+    matches!(
+        std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .stderr(std::process::Stdio::null())
+            .status(),
+        Ok(s) if s.success()
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn read_clipboard_image_to_path(path: &str) -> bool {
+    // try wl-paste (wayland)
+    if let Ok(out) = std::process::Command::new("wl-paste")
+        .args(["--type", "image/png", "--no-newline"])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if out.status.success() && !out.stdout.is_empty() {
+            if std::fs::write(path, &out.stdout).is_ok() {
+                return true;
+            }
+        }
+    }
+
+    // fall back to xclip (x11)
+    if let Ok(out) = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", "image/png", "-o"])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if out.status.success() && !out.stdout.is_empty() {
+            if std::fs::write(path, &out.stdout).is_ok() {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_clipboard_image_to_path(_path: &str) -> bool {
+    false
 }
 
 async fn agent_loop(

@@ -1912,6 +1912,7 @@ pub enum InputAction {
     ScrollUp,
     ScrollDown,
     ToggleDiff,
+    PasteFromClipboard,
     None,
 }
 
@@ -1934,6 +1935,13 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         app.paste_chunks.clear();
         app.reset_slash_completion();
         return InputAction::None;
+    }
+
+    // super+v (Cmd+V on macOS) or ctrl+shift+v: explicit clipboard paste for images
+    if (super_key && key.code == KeyCode::Char('v'))
+        || (ctrl && shift && key.code == KeyCode::Char('v'))
+    {
+        return InputAction::PasteFromClipboard;
     }
 
     // escape: cancel if running, quit if idle
