@@ -1240,28 +1240,13 @@ fn extract_tool_arg(name: &str, input: &serde_json::Value) -> String {
             input.get("path").and_then(|v| v.as_str()).unwrap_or("...").to_string()
         }
         "bash" => {
-            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("...");
-            if cmd.len() > 80 {
-                format!("{}...", &cmd[..77])
-            } else {
-                cmd.to_string()
-            }
+            input.get("command").and_then(|v| v.as_str()).unwrap_or("...").to_string()
         }
         "web_search" => {
-            let q = input.get("query").and_then(|v| v.as_str()).unwrap_or("...");
-            if q.len() > 80 {
-                format!("{}...", &q[..77])
-            } else {
-                q.to_string()
-            }
+            input.get("query").and_then(|v| v.as_str()).unwrap_or("...").to_string()
         }
         "explore" => {
-            let p = input.get("prompt").and_then(|v| v.as_str()).unwrap_or("...");
-            if p.len() > 80 {
-                format!("{}...", &p[..77])
-            } else {
-                p.to_string()
-            }
+            input.get("prompt").and_then(|v| v.as_str()).unwrap_or("...").to_string()
         }
         _ => "...".to_string(),
     }
@@ -2204,6 +2189,13 @@ fn render_compact_item(status: &CompactStatus, spin: u64) -> Vec<Line<'static>> 
 
 fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16) {
     let label = capitalize_tool(&entry.name);
+    let display_arg = if entry.expanded {
+        entry.arg.clone()
+    } else if entry.arg.len() > 80 {
+        format!("{}…", &entry.arg[..79])
+    } else {
+        entry.arg.clone()
+    };
 
     match &entry.status {
         ToolStatus::Running => {
@@ -2211,9 +2203,9 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                 Span::styled("\u{25cc} ", Style::default().fg(YELLOW)),
                 Span::styled(label.to_string(), Style::default().fg(YELLOW)),
             ];
-            if !entry.arg.is_empty() {
+            if !display_arg.is_empty() {
                 spans.push(Span::styled(
-                    format!(" {}", entry.arg),
+                    format!(" {}", display_arg),
                     Style::default().fg(MUTED),
                 ));
             }
@@ -2258,9 +2250,9 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                 label.to_string(),
                 Style::default().fg(ACCENT),
             ));
-            if !entry.arg.is_empty() {
+            if !display_arg.is_empty() {
                 spans.push(Span::styled(
-                    format!(" {}", entry.arg),
+                    format!(" {}", display_arg),
                     Style::default().fg(MUTED),
                 ));
             }
