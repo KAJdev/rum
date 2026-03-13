@@ -330,6 +330,17 @@ impl App {
                     }
                 }
             }
+            AgentEvent::ToolOutputDelta { id: _, text } => {
+                if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.iter_mut().rev()
+                    .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
+                {
+                    let buf = entry.output.get_or_insert_with(String::new);
+                    // cap the display buffer to keep re-renders cheap
+                    if buf.len() < 10_000 {
+                        buf.push_str(&text);
+                    }
+                }
+            }
             AgentEvent::ToolComplete { id: _, name, result } => {
                 if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.iter_mut().rev()
                     .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
@@ -350,8 +361,9 @@ impl App {
 
                             // store output for display (bash output, truncated).
                             // skip when a diff is present since the header already shows the path and stats.
+                            // also skip when streaming already built entry.output via ToolOutputDelta.
                             let trimmed = output.trim();
-                            if entry.diff.is_none() && !trimmed.is_empty() && trimmed != "(no output)" {
+                            if entry.output.is_none() && entry.diff.is_none() && !trimmed.is_empty() && trimmed != "(no output)" {
                                 let display_output = if trimmed.len() > 2000 {
                                     format!("{}...", &trimmed[..2000])
                                 } else {

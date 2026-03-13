@@ -165,10 +165,11 @@ pub async fn execute_tool(
     name: &str,
     input: &serde_json::Value,
     cwd: &Path,
+    stream_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> ToolResult {
     match name {
         "read" => exec_read(input, cwd).await,
-        "bash" => exec_bash(input, cwd).await,
+        "bash" => exec_bash(input, cwd, stream_tx).await,
         "edit" => exec_edit(input, cwd).await,
         "write" => exec_write(input, cwd).await,
         "web_search" => exec_web_search(input).await,
@@ -219,7 +220,64 @@ async fn exec_read(input: &serde_json::Value, cwd: &Path) -> ToolResult {
     }
 }
 
-async fn exec_bash(input: &serde_json::Value, cwd: &Path) -> ToolResult {
+// strip ANSI escape sequences and normalize carriage returns.
+// handles CSI (cursor movement, colors, erase), OSC (window title), and
+// other two-character sequences produced by terminal-aware programs.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\x1b' => {
+                match chars.peek() {
+                    Some(&'[') => {
+                        // CSI: ESC [ <params> <final>  where final is 0x40-0x7E
+                        chars.next();
+                        for c in chars.by_ref() {
+                            if c as u32 >= 0x40 && c as u32 <= 0x7E {
+                                break;
+                            }
+                        }
+                    }
+                    Some(&']') | Some(&'P') | Some(&'X') | Some(&'^') | Some(&'_') => {
+                        // OSC and other string sequences terminated by BEL or ST (ESC \)
+                        chars.next();
+                        let mut prev = '\0';
+                        for c in chars.by_ref() {
+                            if c == '\x07' {
+                                break;
+                            }
+                            if prev == '\x1b' && c == '\\' {
+                                break;
+                            }
+                            prev = c;
+                        }
+                    }
+                    Some(_) => {
+                        // two-character sequence (e.g. ESC M reverse index)
+                        chars.next();
+                    }
+                    None => {}
+                }
+            }
+            '\r' => {
+                // \r\n -> keep as \n (consumed on the next iteration)
+                // bare \r -> newline so overwritten content stays readable
+                if chars.peek() != Some(&'\n') {
+                    out.push('\n');
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+async fn exec_bash(
+    input: &serde_json::Value,
+    cwd: &Path,
+    stream_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+) -> ToolResult {
     let command = match input.get("command").and_then(|v| v.as_str()) {
         Some(c) => c,
         None => return ToolResult::Error("missing 'command' parameter".to_string()),
@@ -230,52 +288,112 @@ async fn exec_bash(input: &serde_json::Value, cwd: &Path) -> ToolResult {
         .and_then(|v| v.as_u64())
         .unwrap_or(120);
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        tokio::process::Command::new("bash")
-            .arg("-c")
-            .arg(command)
-            .current_dir(cwd)
-            .output(),
-    )
-    .await;
+    use tokio::io::AsyncReadExt;
 
-    match result {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let mut text = String::new();
-            if !stdout.is_empty() {
-                text.push_str(&stdout);
-            }
-            if !stderr.is_empty() {
-                if !text.is_empty() {
-                    text.push('\n');
+    let mut child = match tokio::process::Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return ToolResult::Error(format!("failed to execute: {}", e)),
+    };
+
+    let stdout = child.stdout.take().expect("stdout should be piped");
+    let stderr = child.stderr.take().expect("stderr should be piped");
+
+    // funnel both stdout and stderr into a single byte channel
+    let (merge_tx, mut merge_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+    let tx1 = merge_tx.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut rdr = stdout;
+        let mut buf = vec![0u8; 4096];
+        loop {
+            match rdr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx1.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
                 }
-                text.push_str(&stderr);
-            }
-            if text.is_empty() {
-                text = "(no output)".to_string();
-            }
-
-            // truncate
-            if text.len() > 50_000 {
-                text = format!("{}...\n[truncated]", &text[..50_000]);
-            }
-
-            let exit = output.status.code().unwrap_or(-1);
-            if exit != 0 {
-                text = format!("[exit code: {}]\n{}", exit, text);
-            }
-
-            ToolResult::Success {
-                output: text,
-                diff: None,
             }
         }
-        Ok(Err(e)) => ToolResult::Error(format!("failed to execute: {}", e)),
-        Err(_) => ToolResult::Error(format!("command timed out after {}s", timeout_secs)),
+    });
+
+    let tx2 = merge_tx.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut rdr = stderr;
+        let mut buf = vec![0u8; 4096];
+        loop {
+            match rdr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx2.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // dropping the original sender so the channel closes when both reader tasks finish
+    drop(merge_tx);
+
+    let mut collected = String::new();
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let mut timed_out = false;
+
+    loop {
+        match tokio::time::timeout_at(deadline, merge_rx.recv()).await {
+            Ok(Some(bytes)) => {
+                let raw = String::from_utf8_lossy(&bytes);
+                let clean = strip_ansi(&raw);
+                if !clean.is_empty() {
+                    if let Some(ref tx) = stream_tx {
+                        let _ = tx.send(clean.clone());
+                    }
+                    collected.push_str(&clean);
+                }
+            }
+            Ok(None) => break,
+            Err(_) => {
+                timed_out = true;
+                break;
+            }
+        }
     }
+
+    stdout_task.abort();
+    stderr_task.abort();
+
+    if timed_out {
+        child.kill().await.ok();
+        return ToolResult::Error(format!("command timed out after {}s", timeout_secs));
+    }
+
+    let exit_status = child.wait().await.ok();
+    let exit_code = exit_status.and_then(|s| s.code()).unwrap_or(-1);
+
+    if collected.is_empty() {
+        collected = "(no output)".to_string();
+    }
+
+    if collected.len() > 50_000 {
+        collected = format!("{}...\n[truncated]", &collected[..50_000]);
+    }
+
+    let output = if exit_code != 0 {
+        format!("[exit code: {}]\n{}", exit_code, collected)
+    } else {
+        collected
+    };
+
+    ToolResult::Success { output, diff: None }
 }
 
 async fn exec_edit(input: &serde_json::Value, cwd: &Path) -> ToolResult {

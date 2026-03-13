@@ -46,6 +46,11 @@ pub enum AgentEvent {
         name: String,
         result: ToolResult,
     },
+    // incremental stdout/stderr from a running bash command
+    ToolOutputDelta {
+        id: String,
+        text: String,
+    },
     TokenUsage {
         input_tokens: u32,
         output_tokens: u32,
@@ -277,12 +282,32 @@ impl Agent {
                                 continue;
                             }
 
+                            // spawn a task that forwards raw bash output chunks to
+                            // ToolOutputDelta events; for non-bash tools this is a
+                            // no-op since stream_tx is never written to.
+                            let (stream_tx, mut stream_rx) =
+                                mpsc::unbounded_channel::<String>();
+                            let event_tx_fwd = event_tx.clone();
+                            let fwd_tool_id = current_tool_id.clone();
+                            let forward_handle = tokio::spawn(async move {
+                                while let Some(text) = stream_rx.recv().await {
+                                    let _ = event_tx_fwd.send(AgentEvent::ToolOutputDelta {
+                                        id: fwd_tool_id.clone(),
+                                        text,
+                                    });
+                                }
+                            });
+
                             let result = tools::execute_tool(
                                 &current_tool_name,
                                 &input,
                                 &self.cwd,
+                                Some(stream_tx),
                             )
                             .await;
+
+                            // wait for all deltas to be forwarded before ToolComplete
+                            forward_handle.await.ok();
 
                             tool_results.insert(current_tool_id.clone(), result.clone());
 

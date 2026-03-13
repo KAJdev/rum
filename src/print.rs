@@ -495,6 +495,9 @@ impl PrintMode {
             AgentEvent::Status(msg) => {
                 eprintln!("{DIM}{msg}{RESET}");
             }
+            AgentEvent::ToolOutputDelta { .. } => {
+                // streaming output is handled by the TUI; no-op in print mode
+            }
             AgentEvent::Error(e) => {
                 self.error_count += 1;
                 if self.in_thinking {
