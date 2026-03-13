@@ -203,6 +203,8 @@ pub struct App {
     // summed across all api calls (for cost calculation)
     total_input: u32,
     total_output: u32,
+    total_cache_read: u32,
+    total_cache_creation: u32,
     // from the most recent api call (for context window display).
     // each call's input_tokens already includes the full conversation
     // history, so these reflect actual context window usage.
@@ -253,6 +255,8 @@ impl App {
             queued_messages: Vec::new(),
             total_input: 0,
             total_output: 0,
+            total_cache_read: 0,
+            total_cache_creation: 0,
             last_input: 0,
             last_output: 0,
             context_limit,
@@ -401,10 +405,15 @@ impl App {
             AgentEvent::TokenUsage {
                 input_tokens,
                 output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
             } => {
                 self.total_input += input_tokens;
                 self.total_output += output_tokens;
-                self.last_input = input_tokens;
+                self.total_cache_read += cache_read_tokens;
+                self.total_cache_creation += cache_creation_tokens;
+                // last_input drives context window display; include all input sources
+                self.last_input = input_tokens + cache_read_tokens + cache_creation_tokens;
                 self.last_output = output_tokens;
             }
             AgentEvent::TurnComplete => {
@@ -545,6 +554,8 @@ impl App {
         self.activity_render_cache.clear();
         self.total_input = 0;
         self.total_output = 0;
+        self.total_cache_read = 0;
+        self.total_cache_creation = 0;
         self.last_input = 0;
         self.last_output = 0;
         self.current_message = None;
@@ -577,7 +588,10 @@ impl App {
 
     fn cost_usd(&self) -> f64 {
         let p = crate::config::model_pricing(&self.model_name);
+        // cache writes cost 1.25x, cache reads cost 0.1x base input price
         self.total_input as f64 * p.input / 1_000_000.0
+            + self.total_cache_creation as f64 * p.input * 1.25 / 1_000_000.0
+            + self.total_cache_read as f64 * p.input * 0.1 / 1_000_000.0
             + self.total_output as f64 * p.output / 1_000_000.0
     }
 

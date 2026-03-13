@@ -13,6 +13,8 @@ pub struct MessagesRequest {
     pub thinking: Option<ThinkingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_config: Option<OutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<serde_json::Value>,
     pub tools: Vec<serde_json::Value>,
     pub messages: Vec<Message>,
     pub stream: bool,
@@ -86,7 +88,11 @@ pub enum StreamEvent {
     ToolUseInput(String),
     ContentBlockStop,
     MessageDelta { stop_reason: Option<String>, output_tokens: u32 },
-    MessageStart { input_tokens: u32 },
+    MessageStart {
+        input_tokens: u32,
+        cache_read_tokens: u32,
+        cache_creation_tokens: u32,
+    },
     MessageDone,
     Error(String),
 }
@@ -186,7 +192,19 @@ pub fn parse_sse_event(text: &str) -> Option<StreamEvent> {
                 .pointer("/message/usage/input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
-            Some(StreamEvent::MessageStart { input_tokens })
+            let cache_read_tokens = json
+                .pointer("/message/usage/cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let cache_creation_tokens = json
+                .pointer("/message/usage/cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            Some(StreamEvent::MessageStart {
+                input_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            })
         }
         "content_block_start" => {
             let block = json.get("content_block")?;

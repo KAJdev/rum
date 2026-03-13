@@ -752,6 +752,7 @@ async fn exec_explore(
             "model": EXPLORE_MODEL,
             "max_tokens": 8192,
             "system": system_value,
+            "cache_control": {"type": "ephemeral"},
             "tools": tools_json,
             "messages": messages_json,
             "stream": true,

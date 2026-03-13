@@ -262,6 +262,8 @@ pub struct PrintMode {
     // summed across all api calls (for cost calculation)
     total_input: u32,
     total_output: u32,
+    total_cache_read: u32,
+    total_cache_creation: u32,
     // from the most recent api call (for context window display)
     last_input: u32,
     last_output: u32,
@@ -287,6 +289,8 @@ impl PrintMode {
             model: model.to_string(),
             total_input: 0,
             total_output: 0,
+            total_cache_read: 0,
+            total_cache_creation: 0,
             last_input: 0,
             last_output: 0,
             tool_count: 0,
@@ -469,9 +473,13 @@ impl PrintMode {
             AgentEvent::TokenUsage {
                 input_tokens,
                 output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
             } => {
                 self.total_input += input_tokens;
                 self.total_output += output_tokens;
+                self.total_cache_read += cache_read_tokens;
+                self.total_cache_creation += cache_creation_tokens;
                 self.last_input = input_tokens;
                 self.last_output = output_tokens;
             }
@@ -609,6 +617,8 @@ impl PrintMode {
         let context = self.last_input + self.last_output;
         let p = crate::config::model_pricing(&self.model);
         let cost = self.total_input as f64 * p.input / 1_000_000.0
+            + self.total_cache_creation as f64 * p.input * 1.25 / 1_000_000.0
+            + self.total_cache_read as f64 * p.input * 0.1 / 1_000_000.0
             + self.total_output as f64 * p.output / 1_000_000.0;
         let rate = if elapsed.as_secs_f64() > 0.0 {
             self.total_output as f64 / elapsed.as_secs_f64()

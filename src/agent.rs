@@ -54,6 +54,8 @@ pub enum AgentEvent {
     TokenUsage {
         input_tokens: u32,
         output_tokens: u32,
+        cache_read_tokens: u32,
+        cache_creation_tokens: u32,
     },
     // status messages (retries, etc.) rendered distinctly from model output
     Status(String),
@@ -206,6 +208,8 @@ impl Agent {
             let mut current_thinking_signature = String::new();
             let mut input_tokens = 0u32;
             let mut output_tokens = 0u32;
+            let mut cache_read_tokens = 0u32;
+            let mut cache_creation_tokens = 0u32;
             let mut stop_reason: Option<String> = None;
             let mut in_thinking = false;
             let mut in_text = false;
@@ -220,8 +224,10 @@ impl Agent {
                     break;
                 }
                 match evt {
-                    StreamEvent::MessageStart { input_tokens: it } => {
+                    StreamEvent::MessageStart { input_tokens: it, cache_read_tokens: crt, cache_creation_tokens: cct } => {
                         input_tokens = it;
+                        cache_read_tokens = crt;
+                        cache_creation_tokens = cct;
                     }
                     StreamEvent::Thinking(t) => {
                         if !in_thinking {
@@ -346,6 +352,8 @@ impl Agent {
             let _ = event_tx.send(AgentEvent::TokenUsage {
                 input_tokens,
                 output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
             });
 
             // bail out if cancelled, preserving any completed work
@@ -690,6 +698,7 @@ async fn stream_request(
         system: system_value,
         thinking,
         output_config,
+        cache_control: Some(serde_json::json!({"type": "ephemeral"})),
         tools,
         messages,
         stream: true,
