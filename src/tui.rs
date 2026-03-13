@@ -593,6 +593,11 @@ impl App {
         }
     }
 
+    pub fn push_user_message(&mut self, msg: &str) {
+        self.activity.push(ActivityItem::UserMessage(msg.to_string()));
+        self.auto_scroll = true;
+    }
+
     pub fn push_system_message(&mut self, msg: String) {
         self.activity.push(ActivityItem::System(SystemKind::Info, msg));
         self.auto_scroll = true;
@@ -1469,27 +1474,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
-    let mut spans = vec![
-        Span::styled("rum", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  {}  ", app.cwd), Style::default().fg(FG)),
-    ];
-
-    // branch indicator: only shown when inside a git repo
-    let branch_extra_len = if let Some(b) = app.git_branch.as_deref() {
-        spans.push(Span::styled("(", Style::default().fg(DIM)));
-        spans.push(Span::styled(b.to_string(), Style::default().fg(BRANCH_COLOR)));
-        spans.push(Span::styled(")  ", Style::default().fg(DIM)));
-        b.len() + 4 // "(" + branch + ")  "
-    } else {
-        0
-    };
-
-    spans.push(Span::styled(app.model_name.clone(), Style::default().fg(MUTED)));
-    spans.push(Span::styled(thinking_suffix.clone(), Style::default().fg(MUTED)));
-
-    let left_len = 4 + app.cwd.len() + 4 + branch_extra_len + app.model_name.len() + thinking_suffix.len();
-
-    // build right-side metrics
+    // build right-side metrics first (fixed width, drives how much space the left side gets)
     let rate = app.avg_rate();
     let pct = app.context_pct();
     let used_k = app.context_used() / 1000;
@@ -1506,9 +1491,84 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let ctx_label = format!("{}k/{}k", used_k, limit_k);
     let ctx_pct = format!("{:.0}%", pct * 100.0);
 
-    // right side width: spark + " " + rate + "  " + cost + "  " + ctx_label + " [" + bar + "] " + pct
     let right_len = spark_width + 1 + rate_str.len() + 2 + cost_str.len() + 2
         + ctx_label.len() + 2 + ctx_bar_width + 2 + ctx_pct.len();
+
+    // fixed-width parts of the left side: "rum  " + "  " + model + thinking
+    let model_part = app.model_name.len() + thinking_suffix.len();
+    let fixed_left = 4 + 2 + model_part; // "rum" + "  " around cwd + model+thinking
+
+    // available width for cwd + branch
+    let budget = w.saturating_sub(fixed_left + right_len + 2); // +2 spacing margin
+
+    let full_branch = app.git_branch.as_deref().unwrap_or("");
+    let has_branch = !full_branch.is_empty();
+    // branch overhead: "(" + branch + ")  " = branch_len + 4
+    let branch_overhead = if has_branch { 4 } else { 0 };
+
+    let full_cwd = &app.cwd;
+    let full_left_content = full_cwd.len() + if has_branch { full_branch.len() + branch_overhead } else { 0 };
+
+    // determine what to show, truncating to fit within budget
+    let (display_cwd, display_branch): (String, Option<String>) = if full_left_content <= budget {
+        // everything fits
+        (full_cwd.clone(), if has_branch { Some(full_branch.to_string()) } else { None })
+    } else if has_branch {
+        // try truncating branch first (min 7 chars)
+        let min_branch = 7usize;
+        let cwd_plus_overhead = full_cwd.len() + branch_overhead;
+        let branch_budget = budget.saturating_sub(cwd_plus_overhead);
+
+        if branch_budget >= min_branch {
+            // truncate branch to fit
+            let trunc: String = full_branch.chars().take(branch_budget).collect();
+            (full_cwd.clone(), Some(trunc))
+        } else {
+            // branch won't fit at min size with full cwd; try truncating cwd too
+            let cwd_budget = budget.saturating_sub(min_branch + branch_overhead);
+            if cwd_budget >= 8 {
+                // truncate cwd from the start: .../tail
+                let trunc_cwd = truncate_path_start(full_cwd, cwd_budget);
+                let trunc_branch: String = full_branch.chars().take(min_branch).collect();
+                (trunc_cwd, Some(trunc_branch))
+            } else {
+                // hide branch entirely, give all space to cwd
+                if full_cwd.len() <= budget {
+                    (full_cwd.clone(), None)
+                } else if budget >= 8 {
+                    (truncate_path_start(full_cwd, budget), None)
+                } else {
+                    (full_cwd.clone(), None)
+                }
+            }
+        }
+    } else {
+        // no branch, just truncate cwd
+        if budget >= 8 {
+            (truncate_path_start(full_cwd, budget), None)
+        } else {
+            (full_cwd.clone(), None)
+        }
+    };
+
+    let mut spans = vec![
+        Span::styled("rum", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  {}  ", display_cwd), Style::default().fg(FG)),
+    ];
+
+    let branch_display_len = if let Some(ref b) = display_branch {
+        spans.push(Span::styled("(", Style::default().fg(DIM)));
+        spans.push(Span::styled(b.clone(), Style::default().fg(BRANCH_COLOR)));
+        spans.push(Span::styled(")  ", Style::default().fg(DIM)));
+        b.len() + 4
+    } else {
+        0
+    };
+
+    spans.push(Span::styled(app.model_name.clone(), Style::default().fg(MUTED)));
+    spans.push(Span::styled(thinking_suffix.clone(), Style::default().fg(MUTED)));
+
+    let left_len = 4 + display_cwd.len() + 4 + branch_display_len + model_part;
 
     let pad = w.saturating_sub(left_len + right_len);
     spans.push(Span::styled(" ".repeat(pad), Style::default()));
@@ -1542,6 +1602,27 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
         area,
     );
+}
+
+// truncate a path from the start, keeping the tail: ".../parent/dir"
+fn truncate_path_start(path: &str, max_len: usize) -> String {
+    if path.len() <= max_len {
+        return path.to_string();
+    }
+    let prefix = ".../";
+    let tail_budget = max_len.saturating_sub(prefix.len());
+    if tail_budget == 0 {
+        return path[path.len().saturating_sub(max_len)..].to_string();
+    }
+    // find a path separator within the tail portion
+    let start = path.len().saturating_sub(tail_budget);
+    if let Some(sep) = path[start..].find('/') {
+        let clean_start = start + sep + 1;
+        if clean_start < path.len() {
+            return format!("{}{}", prefix, &path[clean_start..]);
+        }
+    }
+    format!("{}{}", prefix, &path[start..])
 }
 
 // count visual lines after soft-wrapping text to fit within
@@ -2393,8 +2474,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 app.input.insert(bp, '\n');
                 app.cursor_pos += 1;
             } else if !app.input.is_empty() {
-                // slash commands are dispatched immediately even during a running turn
-                if app.is_running && !app.input.starts_with('/') {
+                // slash commands and ! bash commands are dispatched immediately even during a running turn
+                if app.is_running && !app.input.starts_with('/') && !app.input.starts_with('!') {
                     app.reset_slash_completion();
                     app.queue_message();
                 } else {

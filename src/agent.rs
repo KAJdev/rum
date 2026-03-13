@@ -78,6 +78,8 @@ pub enum ControlMessage {
     ClearHistory,
     ChangeDir(std::path::PathBuf),
     Compact,
+    // user-initiated bash command via `!` prefix; output is injected into context
+    UserBash(String),
 }
 
 pub struct Agent {
@@ -142,6 +144,84 @@ impl Agent {
 
     pub fn set_cwd(&mut self, cwd: std::path::PathBuf) {
         self.cwd = cwd;
+    }
+
+    // execute a bash command on behalf of the user and inject the result into context.
+    // the model sees this as a tool_use + tool_result pair so it knows what happened.
+    pub async fn run_user_bash(
+        &mut self,
+        command: &str,
+        event_tx: mpsc::UnboundedSender<AgentEvent>,
+    ) {
+        let tool_id = format!("user_bash_{}", rand::random::<u32>());
+        let input = serde_json::json!({ "command": command, "timeout": 30 });
+
+        let _ = event_tx.send(AgentEvent::ToolStart {
+            id: tool_id.clone(),
+            name: "bash".to_string(),
+        });
+        let _ = event_tx.send(AgentEvent::ToolInputDelta(
+            serde_json::to_string(&input).unwrap_or_default(),
+        ));
+
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<String>();
+        let event_tx_fwd = event_tx.clone();
+        let fwd_id = tool_id.clone();
+        let forward_handle = tokio::spawn(async move {
+            while let Some(text) = stream_rx.recv().await {
+                let _ = event_tx_fwd.send(AgentEvent::ToolOutputDelta {
+                    id: fwd_id.clone(),
+                    text,
+                });
+            }
+        });
+
+        let cancel_arc = self.cancel.arc();
+        let api_ctx = tools::ApiContext {
+            is_oauth: false,
+            auth: crate::api::AuthMethod::ApiKey(String::new()),
+            base_url: String::new(),
+            cancel: Some(cancel_arc),
+        };
+        let result = tools::execute_tool(
+            "bash",
+            &input,
+            &self.cwd,
+            Some(stream_tx),
+            Some(&api_ctx),
+        )
+        .await;
+
+        forward_handle.await.ok();
+
+        let _ = event_tx.send(AgentEvent::ToolComplete {
+            id: tool_id.clone(),
+            name: "bash".to_string(),
+            result: result.clone(),
+        });
+
+        // inject into message history as an assistant tool_use + user tool_result pair
+        let (content, is_error) = tool_result_content(result);
+
+        self.messages.push(Message {
+            role: "assistant".to_string(),
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: tool_id.clone(),
+                name: "Bash".to_string(),
+                input: input.clone(),
+            }]),
+        });
+        self.messages.push(Message {
+            role: "user".to_string(),
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: tool_id,
+                content,
+                is_error,
+            }]),
+        });
+
+        let _ = crate::persistence::save_history(&self.cwd, &self.messages);
+        let _ = event_tx.send(AgentEvent::TurnComplete);
     }
 
     pub async fn compact_context(
@@ -294,12 +374,10 @@ impl Agent {
             let client_base_url = self.client.base_url_clone();
             let tools_json = self.client.build_tools_json();
 
-            let api_ctx = tools::ApiContext {
-                is_oauth: matches!(&client_auth, crate::api::AuthMethod::Bearer(_)),
-                auth: client_auth.clone(),
-                base_url: client_base_url.clone(),
-                cancel: Some(self.cancel.arc()),
-            };
+            let is_oauth = matches!(&client_auth, crate::api::AuthMethod::Bearer(_));
+            // clones for parallel tool execution (originals are moved into the stream task)
+            let tool_auth = client_auth.clone();
+            let tool_base_url = client_base_url.clone();
 
             let stream_handle = tokio::spawn(async move {
                 let client = reqwest::Client::new();
@@ -330,10 +408,7 @@ impl Agent {
             let mut current_tool_input_json = String::new();
             let mut current_thinking_signature = String::new();
             let mut current_compaction = String::new();
-            let mut input_tokens = 0u32;
             let mut output_tokens = 0u32;
-            let mut cache_read_tokens = 0u32;
-            let mut cache_creation_tokens = 0u32;
             let mut stop_reason: Option<String> = None;
             let mut in_thinking = false;
             let mut in_text = false;
@@ -342,6 +417,8 @@ impl Agent {
 
             // map tool_use_id -> ToolResult for reuse
             let mut tool_results: HashMap<String, ToolResult> = HashMap::new();
+            // tool_use blocks collected during streaming, executed in parallel after
+            let mut pending_tools: Vec<(String, String, serde_json::Value)> = Vec::new();
 
             while let Some(evt) = stream_rx.recv().await {
                 if self.cancel.is_cancelled() {
@@ -350,9 +427,13 @@ impl Agent {
                 }
                 match evt {
                     StreamEvent::MessageStart { input_tokens: it, cache_read_tokens: crt, cache_creation_tokens: cct } => {
-                        input_tokens = it;
-                        cache_read_tokens = crt;
-                        cache_creation_tokens = cct;
+                        // emit input tokens immediately so the TUI can update cost/context
+                        let _ = event_tx.send(AgentEvent::TokenUsage {
+                            input_tokens: it,
+                            output_tokens: 0,
+                            cache_read_tokens: crt,
+                            cache_creation_tokens: cct,
+                        });
                     }
                     StreamEvent::Thinking(t) => {
                         if !in_thinking {
@@ -428,47 +509,12 @@ impl Agent {
                                 input: input.clone(),
                             });
 
-                            // skip tool execution if cancelled
-                            if self.cancel.is_cancelled() {
-                                in_tool = false;
-                                continue;
-                            }
-
-                            // spawn a task that forwards raw bash output chunks to
-                            // ToolOutputDelta events; for non-bash tools this is a
-                            // no-op since stream_tx is never written to.
-                            let (stream_tx, mut stream_rx) =
-                                mpsc::unbounded_channel::<String>();
-                            let event_tx_fwd = event_tx.clone();
-                            let fwd_tool_id = current_tool_id.clone();
-                            let forward_handle = tokio::spawn(async move {
-                                while let Some(text) = stream_rx.recv().await {
-                                    let _ = event_tx_fwd.send(AgentEvent::ToolOutputDelta {
-                                        id: fwd_tool_id.clone(),
-                                        text,
-                                    });
-                                }
-                            });
-
-                            let result = tools::execute_tool(
-                                &current_tool_name,
-                                &input,
-                                &self.cwd,
-                                Some(stream_tx),
-                                Some(&api_ctx),
-                            )
-                            .await;
-
-                            // wait for all deltas to be forwarded before ToolComplete
-                            forward_handle.await.ok();
-
-                            tool_results.insert(current_tool_id.clone(), result.clone());
-
-                            let _ = event_tx.send(AgentEvent::ToolComplete {
-                                id: current_tool_id.clone(),
-                                name: current_tool_name.clone(),
-                                result,
-                            });
+                            // defer execution until all tool blocks have been received
+                            pending_tools.push((
+                                current_tool_id.clone(),
+                                current_tool_name.clone(),
+                                input,
+                            ));
 
                             in_tool = false;
                         } else if in_text {
@@ -492,11 +538,67 @@ impl Agent {
             }
 
             let _ = event_tx.send(AgentEvent::TokenUsage {
-                input_tokens,
+                input_tokens: 0,
                 output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             });
+
+            // execute all pending tools in parallel
+            if !pending_tools.is_empty() && !self.cancel.is_cancelled() {
+                let mut handles: Vec<tokio::task::JoinHandle<(String, String, ToolResult)>> = Vec::new();
+
+                for (tool_id, tool_name, input) in pending_tools.drain(..) {
+                    let cwd = self.cwd.clone();
+                    let ctx = tools::ApiContext {
+                        is_oauth,
+                        auth: tool_auth.clone(),
+                        base_url: tool_base_url.clone(),
+                        cancel: Some(self.cancel.arc()),
+                    };
+
+                    // each tool gets its own output forwarding channel
+                    let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<String>();
+                    let event_tx_fwd = event_tx.clone();
+                    let fwd_id = tool_id.clone();
+                    let forward_handle = tokio::spawn(async move {
+                        while let Some(text) = stream_rx.recv().await {
+                            let _ = event_tx_fwd.send(AgentEvent::ToolOutputDelta {
+                                id: fwd_id.clone(),
+                                text,
+                            });
+                        }
+                    });
+
+                    let id_clone = tool_id.clone();
+                    let name_clone = tool_name.clone();
+                    let handle = tokio::spawn(async move {
+                        let result = tools::execute_tool(
+                            &name_clone,
+                            &input,
+                            &cwd,
+                            Some(stream_tx),
+                            Some(&ctx),
+                        )
+                        .await;
+                        forward_handle.await.ok();
+                        (id_clone, name_clone, result)
+                    });
+
+                    handles.push(handle);
+                }
+
+                for handle in handles {
+                    if let Ok((id, name, result)) = handle.await {
+                        tool_results.insert(id.clone(), result.clone());
+                        let _ = event_tx.send(AgentEvent::ToolComplete {
+                            id,
+                            name,
+                            result,
+                        });
+                    }
+                }
+            }
 
             // bail out if cancelled, preserving any completed work
             if self.cancel.is_cancelled() {

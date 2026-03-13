@@ -356,6 +356,15 @@ async fn run_tui_mode(
                             if app.should_quit {
                                 break;
                             }
+                        } else if msg.starts_with('!') {
+                            let cmd = msg[1..].trim().to_string();
+                            if !cmd.is_empty() {
+                                cancel.reset();
+                                app.push_history(&msg);
+                                app.push_user_message(&msg);
+                                app.is_running = true;
+                                let _ = control_tx.send(agent::ControlMessage::UserBash(cmd));
+                            }
                         } else {
                             cancel.reset();
                             app.push_history(&msg);
@@ -969,6 +978,9 @@ async fn agent_loop(
                             let _ = event_tx.send(AgentEvent::Error(e.to_string()));
                             let _ = event_tx.send(AgentEvent::TurnComplete);
                         }
+                    }
+                    Some(agent::ControlMessage::UserBash(cmd)) => {
+                        agent.run_user_bash(&cmd, event_tx.clone()).await;
                     }
                     None => break,
                 }
