@@ -132,7 +132,7 @@ fn default_system_prompt() -> String {
 
 Available tools:
 - read: Read file contents
-- bash: Execute bash commands (ls, grep, find, etc.)
+- bash: Execute bash commands (ls, grep, find, etc.). Optional timeout in seconds (default 120).
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
 - web_search: Search the web using DuckDuckGo

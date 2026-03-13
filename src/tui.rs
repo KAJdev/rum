@@ -613,9 +613,18 @@ impl App {
             .unwrap_or(self.input.len())
     }
 
+    // insert text directly at the cursor position without any collapsing
+    pub fn insert_text(&mut self, text: String) {
+        let bp = self.cursor_byte_pos();
+        self.input.insert_str(bp, &text);
+        self.cursor_pos += text.chars().count();
+    }
+
     // insert pasted text. multi-line or long pastes are collapsed to a single
     // placeholder char in the input string; the real content lives in paste_chunks.
     // on submit, expand_input() restores the full text.
+    // very large pastes (> 50 lines or > 2000 chars) are written to a temp file
+    // and the path is inserted instead, so the model can read them with the read tool.
     pub fn insert_paste(&mut self, text: String) {
         let multiline = text.contains('\n');
         let long = text.len() > 80;
@@ -624,6 +633,17 @@ impl App {
             self.input.insert_str(bp, &text);
             self.cursor_pos += text.chars().count();
             return;
+        }
+
+        // large pastes go to a tmp file so the model can read them directly
+        let line_count = text.lines().count();
+        if line_count > 50 || text.len() > 2000 {
+            if let Some(path) = save_paste_to_tmp(&text) {
+                let bp = self.cursor_byte_pos();
+                self.input.insert_str(bp, &path);
+                self.cursor_pos += path.chars().count();
+                return;
+            }
         }
 
         let idx = self.paste_chunks.len();
@@ -815,6 +835,19 @@ fn paste_display_str(chunk: &str) -> String {
     } else {
         format!("[{} chars]", chunk.chars().count())
     }
+}
+
+// write paste content to a uniquely named temp file and return its path
+fn save_paste_to_tmp(content: &str) -> Option<String> {
+    use std::io::Write;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = std::env::temp_dir().join(format!("rum_paste_{}.txt", ts));
+    let mut f = std::fs::File::create(&path).ok()?;
+    f.write_all(content.as_bytes()).ok()?;
+    Some(path.to_string_lossy().into_owned())
 }
 
 // expand paste placeholders to their display summaries (e.g. "[3 lines]")
