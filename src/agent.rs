@@ -206,6 +206,7 @@ impl Agent {
             let mut current_tool_name = String::new();
             let mut current_tool_input_json = String::new();
             let mut current_thinking_signature = String::new();
+            let mut current_compaction = String::new();
             let mut input_tokens = 0u32;
             let mut output_tokens = 0u32;
             let mut cache_read_tokens = 0u32;
@@ -214,6 +215,7 @@ impl Agent {
             let mut in_thinking = false;
             let mut in_text = false;
             let mut in_tool = false;
+            let mut in_compaction = false;
 
             // map tool_use_id -> ToolResult for reuse
             let mut tool_results: HashMap<String, ToolResult> = HashMap::new();
@@ -265,8 +267,23 @@ impl Agent {
                         current_tool_input_json.push_str(&json);
                         let _ = event_tx.send(AgentEvent::ToolInputDelta(json));
                     }
+                    StreamEvent::CompactionStart => {
+                        in_compaction = true;
+                        current_compaction.clear();
+                        let _ = event_tx.send(AgentEvent::Status("compacting context...".to_string()));
+                    }
+                    StreamEvent::CompactionDelta(c) => {
+                        if in_compaction {
+                            current_compaction.push_str(&c);
+                        }
+                    }
                     StreamEvent::ContentBlockStop => {
-                        if in_thinking {
+                        if in_compaction {
+                            response_blocks.push(ContentBlock::Compaction {
+                                content: current_compaction.clone(),
+                            });
+                            in_compaction = false;
+                        } else if in_thinking {
                             let sig = if current_thinking_signature.is_empty() {
                                 None
                             } else {
@@ -359,6 +376,11 @@ impl Agent {
             // bail out if cancelled, preserving any completed work
             if self.cancel.is_cancelled() {
                 // finalize any in-progress content blocks from the stream
+                if in_compaction && !current_compaction.is_empty() {
+                    response_blocks.push(ContentBlock::Compaction {
+                        content: current_compaction.clone(),
+                    });
+                }
                 if in_thinking && !current_thinking.is_empty() {
                     let sig = if current_thinking_signature.is_empty() {
                         None
@@ -470,6 +492,12 @@ impl Agent {
                 content: MessageContent::Blocks(response_blocks.clone()),
             });
 
+            // if the api paused for compaction (pause_after_compaction=true), continue
+            // the loop so the next request resumes from the compacted context
+            if stop_reason.as_deref() == Some("compaction") {
+                continue;
+            }
+
             // if the model used tools, add cached results and continue the loop
             let tool_uses: Vec<&ContentBlock> = response_blocks
                 .iter()
@@ -579,6 +607,10 @@ fn is_adaptive_model(model: &str) -> bool {
         || model.contains("haiku-4-5")
 }
 
+fn supports_compaction(model: &str) -> bool {
+    model.contains("opus-4-6") || model.contains("sonnet-4-6")
+}
+
 async fn stream_request(
     client: &reqwest::Client,
     auth: &crate::api::AuthMethod,
@@ -590,7 +622,7 @@ async fn stream_request(
     tools_json: &[serde_json::Value],
     tx: mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
-    use crate::api::{AuthMethod, MessagesRequest, OutputConfig, ThinkingConfig};
+    use crate::api::{AuthMethod, CompactEdit, ContextManagement, MessagesRequest, OutputConfig, ThinkingConfig};
     use futures::StreamExt;
 
     if matches!(auth, AuthMethod::None) {
@@ -692,6 +724,19 @@ async fn stream_request(
     // must be stripped before sending.
     let messages = clean_thinking_blocks(messages);
 
+    let context_management = if supports_compaction(model) {
+        Some(ContextManagement {
+            edits: vec![CompactEdit {
+                edit_type: "compact_20260112".to_string(),
+                trigger: None,
+                pause_after_compaction: None,
+                instructions: None,
+            }],
+        })
+    } else {
+        None
+    };
+
     let request = MessagesRequest {
         model: model.to_string(),
         max_tokens,
@@ -699,6 +744,7 @@ async fn stream_request(
         thinking,
         output_config,
         cache_control: Some(serde_json::json!({"type": "ephemeral"})),
+        context_management,
         tools,
         messages,
         stream: true,
@@ -736,6 +782,9 @@ async fn stream_request(
     }
     if request.thinking.is_some() {
         beta_features.push("interleaved-thinking-2025-05-14");
+    }
+    if request.context_management.is_some() {
+        beta_features.push("compact-2026-01-12");
     }
     if !beta_features.is_empty() {
         headers.insert("anthropic-beta", beta_features.join(",").parse()?);

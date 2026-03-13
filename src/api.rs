@@ -15,9 +15,35 @@ pub struct MessagesRequest {
     pub output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_management: Option<ContextManagement>,
     pub tools: Vec<serde_json::Value>,
     pub messages: Vec<Message>,
     pub stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContextManagement {
+    pub edits: Vec<CompactEdit>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompactEdit {
+    #[serde(rename = "type")]
+    pub edit_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<TriggerConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause_after_compaction: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TriggerConfig {
+    #[serde(rename = "type")]
+    pub trigger_type: String,
+    pub value: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +103,11 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    // summary block produced by server-side context compaction.
+    // must be passed back on subsequent requests so the api can ignore
+    // the messages that preceded it.
+    #[serde(rename = "compaction")]
+    Compaction { content: String },
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +118,8 @@ pub enum StreamEvent {
     ToolUseStart { id: String, name: String },
     ToolUseInput(String),
     ContentBlockStop,
+    CompactionStart,
+    CompactionDelta(String),
     MessageDelta { stop_reason: Option<String>, output_tokens: u32 },
     MessageStart {
         input_tokens: u32,
@@ -217,6 +250,7 @@ pub fn parse_sse_event(text: &str) -> Option<StreamEvent> {
                 }
                 "thinking" => Some(StreamEvent::Thinking(String::new())),
                 "text" => Some(StreamEvent::Text(String::new())),
+                "compaction" => Some(StreamEvent::CompactionStart),
                 _ => None,
             }
         }
@@ -239,6 +273,10 @@ pub fn parse_sse_event(text: &str) -> Option<StreamEvent> {
                 "input_json_delta" => {
                     let partial = delta.get("partial_json")?.as_str()?.to_string();
                     Some(StreamEvent::ToolUseInput(partial))
+                }
+                "compaction_delta" => {
+                    let content = delta.get("content")?.as_str()?.to_string();
+                    Some(StreamEvent::CompactionDelta(content))
                 }
                 _ => None,
             }
