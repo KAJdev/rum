@@ -1155,12 +1155,36 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                         {
                             if o.status.success() {
                                 let logs = String::from_utf8_lossy(&o.stdout);
-                                let trimmed: String = logs.lines()
-                                    .rev().take(50).collect::<Vec<_>>()
-                                    .into_iter().rev()
+                                let cleaned: Vec<&str> = logs.lines()
+                                    .filter_map(|line| {
+                                        // each line is: "job\tstep\ttimestamp content"
+                                        // extract just the content after the timestamp
+                                        let rest = line.splitn(3, '\t').nth(2).unwrap_or(line);
+                                        // strip the timestamp prefix (2026-01-01T00:00:00.0000000Z)
+                                        let content = if rest.len() > 28 && rest.as_bytes().get(4) == Some(&b'-') {
+                                            rest.get(29..).unwrap_or(rest).trim()
+                                        } else {
+                                            rest.trim()
+                                        };
+                                        // skip github actions markers and empty lines
+                                        if content.is_empty()
+                                            || content.starts_with("##[group]")
+                                            || content.starts_with("##[endgroup]")
+                                            || content.starts_with("\u{FEFF}")
+                                        {
+                                            return None;
+                                        }
+                                        // strip ##[error] prefix but keep the message
+                                        let content = content.strip_prefix("##[error]").unwrap_or(content);
+                                        Some(content)
+                                    })
+                                    .collect();
+                                let tail: String = cleaned.iter()
+                                    .rev().take(30).collect::<Vec<_>>()
+                                    .into_iter().rev().copied()
                                     .collect::<Vec<_>>().join("\n");
-                                if !trimmed.is_empty() {
-                                    log_output.push_str(&format!("\n--- {} ---\n{}", name, trimmed));
+                                if !tail.is_empty() {
+                                    log_output.push_str(&format!("\n--- {} ---\n{}", name, tail));
                                 }
                             }
                         }
