@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AuthEntry, Config};
+use crate::config::Config;
 use crate::tools;
 
 #[derive(Debug, Serialize)]
@@ -110,14 +110,11 @@ impl ApiClient {
         let auth = if let Some(ref key) = config.api_key {
             // env var api keys always use x-api-key
             AuthMethod::ApiKey(key.clone())
-        } else if let Some(AuthEntry::OAuth { ref access, .. }) = config.auth_entry {
-            AuthMethod::Bearer(access.clone())
-        } else if let Some(AuthEntry::ApiKey { ref key }) = config.auth_entry {
-            AuthMethod::ApiKey(key.clone())
+        } else if let Some(ref creds) = config.oauth {
+            AuthMethod::Bearer(creds.access.clone())
         } else {
             bail!(
-                "no api key found for provider '{}'. set the appropriate env var or run `pi` and `/login`.",
-                config.provider
+                "no credentials found. set ANTHROPIC_API_KEY or run `rum login`."
             );
         };
 

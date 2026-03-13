@@ -1,53 +1,20 @@
 use anyhow::Result;
-use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
-pub struct PiSettings {
-    pub default_provider: Option<String>,
-    pub default_model: Option<String>,
-    pub default_thinking_level: Option<String>,
-    pub theme: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-#[allow(dead_code)]
-pub enum AuthEntry {
-    #[serde(rename = "api_key")]
-    ApiKey { key: String },
-    #[serde(rename = "oauth")]
-    OAuth {
-        access: String,
-        refresh: String,
-        expires: u64,
-        #[serde(flatten)]
-        extra: serde_json::Value,
-    },
-}
-
-
+use crate::auth::OAuthCredentials;
 
 pub struct Config {
     pub provider: String,
     pub model: String,
     pub thinking_level: String,
     pub api_key: Option<String>,
-    pub auth_entry: Option<AuthEntry>,
+    pub oauth: Option<OAuthCredentials>,
     pub system_prompt: String,
     pub context_files: Vec<String>,
 }
 
-fn pi_agent_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
-        return PathBuf::from(dir);
-    }
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".pi")
-        .join("agent")
+fn rum_config_dir() -> PathBuf {
+    crate::persistence::rum_config_dir()
 }
 
 fn load_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
@@ -55,19 +22,17 @@ fn load_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_str(&content).ok()
 }
 
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RumConfigFile {
+    default_model: Option<String>,
+    default_thinking_level: Option<String>,
+}
+
 fn collect_context_files(cwd: &Path) -> Vec<String> {
     let mut files = Vec::new();
-    let agent_dir = pi_agent_dir();
 
-    // global agents.md
-    for name in &["AGENTS.md", "CLAUDE.md"] {
-        let p = agent_dir.join(name);
-        if let Ok(content) = std::fs::read_to_string(&p) {
-            files.push(content);
-        }
-    }
-
-    // walk from root to cwd collecting context files
+    // walk from root to cwd collecting AGENTS.md / CLAUDE.md
     let mut ancestors: Vec<&Path> = cwd.ancestors().collect();
     ancestors.reverse();
     for dir in ancestors {
@@ -83,11 +48,10 @@ fn collect_context_files(cwd: &Path) -> Vec<String> {
 }
 
 fn load_system_prompt(cwd: &Path) -> String {
-    let agent_dir = pi_agent_dir();
+    let config_dir = rum_config_dir();
 
-    // check for custom system prompt
-    let project_system = cwd.join(".pi").join("SYSTEM.md");
-    let global_system = agent_dir.join("SYSTEM.md");
+    let project_system = cwd.join(".rum").join("SYSTEM.md");
+    let global_system = config_dir.join("SYSTEM.md");
 
     let base = if project_system.exists() {
         std::fs::read_to_string(&project_system).unwrap_or_default()
@@ -97,19 +61,12 @@ fn load_system_prompt(cwd: &Path) -> String {
         default_system_prompt()
     };
 
-    // append system prompt
     let mut append = String::new();
-    let project_append = cwd.join(".pi").join("APPEND_SYSTEM.md");
-    let global_append = agent_dir.join("APPEND_SYSTEM.md");
+    let project_append = cwd.join(".rum").join("APPEND_SYSTEM.md");
+    let global_append = config_dir.join("APPEND_SYSTEM.md");
 
-    if global_append.exists() {
-        if let Ok(content) = std::fs::read_to_string(&global_append) {
-            append.push_str("\n\n");
-            append.push_str(&content);
-        }
-    }
-    if project_append.exists() {
-        if let Ok(content) = std::fs::read_to_string(&project_append) {
+    for path in &[global_append, project_append] {
+        if let Ok(content) = std::fs::read_to_string(path) {
             append.push_str("\n\n");
             append.push_str(&content);
         }
@@ -138,86 +95,31 @@ Guidelines:
         .to_string()
 }
 
-pub fn resolve_api_key(provider: &str) -> Option<String> {
-    // check env vars first
-    let env_key = match provider {
-        "anthropic" => "ANTHROPIC_API_KEY",
-        "openai" => "OPENAI_API_KEY",
-        "google" => "GEMINI_API_KEY",
-        _ => return None,
-    };
-
-    if let Ok(key) = std::env::var(env_key) {
-        return Some(key);
-    }
-
-    None
-}
-
-// checks rum's own auth.json first, then pi's auth.json as a fallback
-fn load_auth_entry(provider: &str) -> Option<AuthEntry> {
-    // rum-native oauth (stored by /login)
-    if let Some(creds) = crate::auth::load_auth() {
-        return Some(AuthEntry::OAuth {
-            access: creds.access,
-            refresh: creds.refresh,
-            expires: creds.expires,
-            extra: serde_json::Value::Null,
-        });
-    }
-
-    // pi auth.json fallback for existing users
-    let pi_auth_path = pi_agent_dir().join("auth.json");
-    if pi_auth_path.exists() {
-        let content = std::fs::read_to_string(&pi_auth_path).ok()?;
-        let map: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(&content).ok()?;
-        return map
-            .get(provider)
-            .and_then(|v| serde_json::from_value::<AuthEntry>(v.clone()).ok());
-    }
-
-    None
-}
-
 pub fn load_config(cwd: &Path) -> Result<Config> {
-    let agent_dir = pi_agent_dir();
-    let global_settings: PiSettings =
-        load_json_file(&agent_dir.join("settings.json")).unwrap_or_default();
+    let config_dir = rum_config_dir();
+    let cfg: RumConfigFile =
+        load_json_file(&config_dir.join("config.json")).unwrap_or_default();
 
-    let project_settings: PiSettings =
-        load_json_file(&cwd.join(".pi").join("settings.json")).unwrap_or_default();
-
-    let provider = project_settings
-        .default_provider
-        .or(global_settings.default_provider)
-        .unwrap_or_else(|| "anthropic".to_string());
-
-    let model = project_settings
+    let model = cfg
         .default_model
-        .or(global_settings.default_model)
         .unwrap_or_else(|| "claude-sonnet-4-0".to_string());
 
-    let thinking_level = project_settings
+    let thinking_level = cfg
         .default_thinking_level
-        .or(global_settings.default_thinking_level)
         .unwrap_or_else(|| "off".to_string());
 
-    // load auth: rum's own auth.json takes priority, pi's is the fallback
-    // for users who authenticated through pi before rum had its own login
-    let auth_entry = load_auth_entry(&provider);
-
-    let api_key = resolve_api_key(&provider);
+    let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+    let oauth = crate::auth::load_auth();
 
     let system_prompt = load_system_prompt(cwd);
     let context_files = collect_context_files(cwd);
 
     Ok(Config {
-        provider,
+        provider: "anthropic".to_string(),
         model,
         thinking_level,
         api_key,
-        auth_entry,
+        oauth,
         system_prompt,
         context_files,
     })
@@ -336,7 +238,6 @@ pub fn model_pricing(model: &str) -> ModelPricing {
             output: def.output_price,
         };
     }
-    // fallback heuristic for unknown model ids
     let m = model.to_lowercase();
     if m.contains("opus") {
         ModelPricing { input: 5.0, output: 25.0 }

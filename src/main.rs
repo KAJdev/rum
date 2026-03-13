@@ -68,10 +68,6 @@ struct Cli {
     #[arg(long)]
     model: Option<String>,
 
-    /// override provider
-    #[arg(long)]
-    provider: Option<String>,
-
     /// thinking level: off, minimal, low, medium, high, xhigh
     #[arg(long)]
     thinking: Option<String>,
@@ -114,9 +110,6 @@ async fn main() -> Result<()> {
     if let Some(model) = cli.model {
         cfg.model = model;
     }
-    if let Some(provider) = cli.provider {
-        cfg.provider = provider;
-    }
     if let Some(thinking) = cli.thinking {
         cfg.thinking_level = thinking;
     }
@@ -141,9 +134,8 @@ async fn run_print_mode(
 
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
-    // build the api client on this thread (before spawn) since
-    // AuthEntry contains non-Send types. the client extracts what
-    // it needs and is itself Send-safe.
+    // build the api client on this thread before spawning; the client
+    // extracts credentials and is Send-safe.
     let api_client = api::ApiClient::new(cfg)?;
 
     tokio::spawn({
@@ -162,7 +154,7 @@ async fn run_print_mode(
                 model: cfg_model,
                 thinking_level: cfg_thinking,
                 api_key: None,
-                auth_entry: None,
+                oauth: None,
                 system_prompt: cfg_system,
                 context_files: cfg_context,
             };
