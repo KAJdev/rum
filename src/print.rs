@@ -518,6 +518,12 @@ impl PrintMode {
                 }
                 eprintln!("{RED}[error]{RESET} {e}");
             }
+            AgentEvent::CompactStart => {
+                eprintln!("compacting context...");
+            }
+            AgentEvent::CompactDone(msg) => {
+                eprintln!("{msg}");
+            }
         }
 
         false

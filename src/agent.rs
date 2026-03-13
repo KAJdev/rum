@@ -61,6 +61,9 @@ pub enum AgentEvent {
     Status(String),
     TurnComplete,
     Error(String),
+    // compact lifecycle events for the dedicated animated feed item
+    CompactStart,
+    CompactDone(String),
 }
 
 // control messages sent from the TUI to the agent between turns
@@ -144,7 +147,7 @@ impl Agent {
         }
 
         let prev_count = self.messages.len();
-        let _ = event_tx.send(AgentEvent::Status("compacting context...".to_string()));
+        let _ = event_tx.send(AgentEvent::CompactStart);
 
         let mut summary_messages = self.messages.clone();
         summary_messages.push(Message {
@@ -221,8 +224,8 @@ impl Agent {
         ];
 
         let _ = crate::persistence::save_history(&self.cwd, &self.messages);
-        let _ = event_tx.send(AgentEvent::Status(format!(
-            "context compacted ({prev_count} → 2 messages)"
+        let _ = event_tx.send(AgentEvent::CompactDone(format!(
+            "context compacted  ({prev_count} → 2 messages)"
         )));
         let _ = event_tx.send(AgentEvent::TurnComplete);
         Ok(())

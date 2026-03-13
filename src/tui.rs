@@ -147,6 +147,14 @@ enum ActivityItem {
     Tool(ToolEntry),
     // system/slash-command output
     System(SystemKind, String),
+    // /compact lifecycle: animated while running, static when done
+    Compact(CompactStatus),
+}
+
+#[derive(Debug, Clone)]
+enum CompactStatus {
+    Running,
+    Done(String),
 }
 
 #[derive(Debug, Clone)]
@@ -449,6 +457,17 @@ impl App {
             AgentEvent::Error(e) => {
                 self.is_running = false;
                 self.activity.push(ActivityItem::Text(format!("[error] {e}")));
+            }
+            AgentEvent::CompactStart => {
+                self.activity.push(ActivityItem::Compact(CompactStatus::Running));
+                self.auto_scroll = true;
+            }
+            AgentEvent::CompactDone(msg) => {
+                if let Some(ActivityItem::Compact(ref mut s)) = self.activity.iter_mut().rev()
+                    .find(|i| matches!(i, ActivityItem::Compact(_)))
+                {
+                    *s = CompactStatus::Done(msg);
+                }
             }
         }
     }
@@ -1604,6 +1623,8 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
             ActivityItem::Thinking(t) => (t.len(), false, 0u8),
             ActivityItem::Text(t) => (t.len(), false, 0u8),
             ActivityItem::System(_, t) => (t.len(), false, 0u8),
+            ActivityItem::Compact(CompactStatus::Running) => (app.spin_frame as usize, false, 0u8),
+            ActivityItem::Compact(CompactStatus::Done(_)) => (0, false, 1u8),
             ActivityItem::Tool(e) => {
                 let st = match &e.status {
                     ToolStatus::Running => 0,
@@ -1629,7 +1650,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         if stale {
-            let item_lines = render_activity_item(&app.activity[idx], w);
+            let item_lines = render_activity_item(&app.activity[idx], w, app.spin_frame);
             app.activity_render_cache[idx] = CachedRender {
                 lines: item_lines,
                 content_len,
@@ -1715,7 +1736,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 // render a single activity item into lines (no inter-item spacing)
-fn render_activity_item(item: &ActivityItem, w: u16) -> Vec<Line<'static>> {
+fn render_activity_item(item: &ActivityItem, w: u16, spin_frame: u64) -> Vec<Line<'static>> {
     match item {
         ActivityItem::Thinking(text) => {
             let para = last_paragraph(text);
@@ -1733,6 +1754,7 @@ fn render_activity_item(item: &ActivityItem, w: u16) -> Vec<Line<'static>> {
             lines
         }
         ActivityItem::System(kind, text) => render_system_msg(kind, text),
+        ActivityItem::Compact(status) => render_compact_item(status, spin_frame),
     }
 }
 
@@ -1761,6 +1783,51 @@ fn render_system_msg(kind: &SystemKind, text: &str) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     }
     lines
+}
+
+// comet scan: a bright head with a gradient tail bouncing across a fixed-width field.
+// returns a fixed 10-char string, colored separately by the caller.
+fn compact_comet_frame(spin: u64) -> String {
+    const FIELD: usize = 10;
+    const PERIOD: usize = (FIELD - 1) * 2; // 18-frame full bounce
+    const TAIL: [char; 3] = ['▓', '▒', '░'];
+
+    let t = (spin / 4) as usize % PERIOD;
+    let going_right = t < FIELD;
+    let pos = if going_right { t } else { PERIOD - t };
+
+    let mut field = [' '; FIELD];
+    field[pos] = '█';
+    for (i, &tc) in TAIL.iter().enumerate() {
+        let trail = if going_right {
+            pos.checked_sub(i + 1)
+        } else {
+            (pos + i + 1 < FIELD).then_some(pos + i + 1)
+        };
+        if let Some(p) = trail {
+            field[p] = tc;
+        }
+    }
+    field.iter().collect()
+}
+
+fn render_compact_item(status: &CompactStatus, spin: u64) -> Vec<Line<'static>> {
+    match status {
+        CompactStatus::Running => {
+            let anim = compact_comet_frame(spin);
+            vec![Line::from(vec![
+                Span::styled("  ◈ ", Style::default().fg(MUTED)),
+                Span::styled("compacting  ", Style::default().fg(MUTED)),
+                Span::styled(anim, Style::default().fg(THINKING_COLOR)),
+            ])]
+        }
+        CompactStatus::Done(msg) => {
+            vec![Line::from(vec![
+                Span::styled("  ✓ ", Style::default().fg(GREEN)),
+                Span::styled(msg.clone(), Style::default().fg(MUTED)),
+            ])]
+        }
+    }
 }
 
 fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16) {
