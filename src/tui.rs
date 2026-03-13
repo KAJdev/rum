@@ -359,11 +359,14 @@ impl App {
                                 entry.expanded = self.diffs_expanded;
                             }
 
-                            // store output for display (bash output, truncated).
-                            // skip when a diff is present since the header already shows the path and stats.
-                            // also skip when streaming already built entry.output via ToolOutputDelta.
+                            // store output for display, truncated.
+                            // skip when a diff is present (path+stats in the header is enough).
+                            // for bash, streaming already built entry.output via ToolOutputDelta so
+                            // we leave it alone. for all other tools (including explore) we always
+                            // overwrite with the final result, replacing any live progress lines.
                             let trimmed = output.trim();
-                            if entry.output.is_none() && entry.diff.is_none() && !trimmed.is_empty() && trimmed != "(no output)" {
+                            let keep_streamed = name == "bash" && entry.output.is_some();
+                            if !keep_streamed && entry.diff.is_none() && !trimmed.is_empty() && trimmed != "(no output)" {
                                 let display_output = if trimmed.len() > 2000 {
                                     format!("{}...", &trimmed[..2000])
                                 } else {
@@ -1507,7 +1510,7 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
         ToolStatus::Complete { exit_code } => {
             let mut spans = vec![];
 
-            // exit status indicator for bash
+            // success/failure indicator — bash shows exit code, others just a checkmark
             if entry.name == "bash" {
                 match exit_code {
                     Some(0) | None => {
@@ -1520,6 +1523,8 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                         ));
                     }
                 }
+            } else {
+                spans.push(Span::styled("\u{2713} ", Style::default().fg(GREEN)));
             }
 
             // tool name in accent, argument in muted
