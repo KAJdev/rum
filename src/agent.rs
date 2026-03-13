@@ -31,6 +31,10 @@ impl CancelToken {
     pub fn reset(&self) {
         self.0.store(false, Ordering::Relaxed);
     }
+
+    pub fn arc(&self) -> Arc<AtomicBool> {
+        self.0.clone()
+    }
 }
 
 // events sent from the agent to the TUI
@@ -280,6 +284,7 @@ impl Agent {
                 is_oauth: matches!(&client_auth, crate::api::AuthMethod::Bearer(_)),
                 auth: client_auth.clone(),
                 base_url: client_base_url.clone(),
+                cancel: Some(self.cancel.arc()),
             };
 
             let stream_handle = tokio::spawn(async move {

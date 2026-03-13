@@ -1816,15 +1816,17 @@ fn render_compact_item(status: &CompactStatus, spin: u64) -> Vec<Line<'static>> 
         CompactStatus::Running => {
             let anim = compact_comet_frame(spin);
             vec![Line::from(vec![
-                Span::styled("  ◈ ", Style::default().fg(MUTED)),
-                Span::styled("compacting  ", Style::default().fg(MUTED)),
+                Span::styled("  ◈  ", Style::default().fg(ACCENT)),
+                Span::styled("compacting context  ", Style::default().fg(FG)),
+                Span::styled("[", Style::default().fg(DIM)),
                 Span::styled(anim, Style::default().fg(THINKING_COLOR)),
+                Span::styled("]", Style::default().fg(DIM)),
             ])]
         }
         CompactStatus::Done(msg) => {
             vec![Line::from(vec![
-                Span::styled("  ✓ ", Style::default().fg(GREEN)),
-                Span::styled(msg.clone(), Style::default().fg(MUTED)),
+                Span::styled("  ✓  ", Style::default().fg(GREEN)),
+                Span::styled(msg.clone(), Style::default().fg(FG)),
             ])]
         }
     }
@@ -2127,12 +2129,18 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         return InputAction::PasteFromClipboard;
     }
 
-    // escape: cancel if running, quit if idle
+    // escape: cancel if running, clear input if non-empty, otherwise no-op
     if key.code == KeyCode::Esc {
         if app.is_running {
             return InputAction::Cancel;
         }
-        return InputAction::Quit;
+        if !app.input.is_empty() {
+            app.input.clear();
+            app.cursor_pos = 0;
+            app.paste_chunks.clear();
+            app.reset_slash_completion();
+        }
+        return InputAction::None;
     }
 
     // page scroll (always available)

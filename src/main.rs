@@ -427,6 +427,9 @@ fn handle_slash_command(
             app.push_success("conversation cleared".to_string());
         }
         SlashCommand::Compact => {
+            if app.is_running {
+                app.push_system_message("/compact queued — will run after the current turn".to_string());
+            }
             app.is_running = true;
             let _ = control_tx.send(agent::ControlMessage::Compact);
         }

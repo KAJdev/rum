@@ -8,6 +8,15 @@ pub struct ApiContext {
     pub auth: AuthMethod,
     pub base_url: String,
     pub is_oauth: bool,
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl ApiContext {
+    fn is_cancelled(&self) -> bool {
+        self.cancel.as_ref()
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,7 +222,7 @@ pub fn execute_tool<'a>(
     Box::pin(async move {
         match name {
             "read" => exec_read(input, cwd).await,
-            "bash" => exec_bash(input, cwd, stream_tx).await,
+            "bash" => exec_bash(input, cwd, stream_tx, api_ctx.and_then(|c| c.cancel.clone())).await,
             "edit" => exec_edit(input, cwd).await,
             "write" => exec_write(input, cwd).await,
             "web_search" => exec_web_search(input).await,
@@ -327,6 +336,7 @@ async fn exec_bash(
     input: &serde_json::Value,
     cwd: &Path,
     stream_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> ToolResult {
     let command = match input.get("command").and_then(|v| v.as_str()) {
         Some(c) => c,
@@ -398,22 +408,44 @@ async fn exec_bash(
         tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     let mut timed_out = false;
 
+    // poll for cancellation every 100 ms alongside the output stream
+    let cancel_poll = async {
+        loop {
+            if cancel.as_ref().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+    tokio::pin!(cancel_poll);
+
     loop {
-        match tokio::time::timeout_at(deadline, merge_rx.recv()).await {
-            Ok(Some(bytes)) => {
-                let raw = String::from_utf8_lossy(&bytes);
-                let clean = strip_ansi(&raw);
-                if !clean.is_empty() {
-                    if let Some(ref tx) = stream_tx {
-                        let _ = tx.send(clean.clone());
+        tokio::select! {
+            biased;
+            chunk = tokio::time::timeout_at(deadline, merge_rx.recv()) => {
+                match chunk {
+                    Ok(Some(bytes)) => {
+                        let raw = String::from_utf8_lossy(&bytes);
+                        let clean = strip_ansi(&raw);
+                        if !clean.is_empty() {
+                            if let Some(ref tx) = stream_tx {
+                                let _ = tx.send(clean.clone());
+                            }
+                            collected.push_str(&clean);
+                        }
                     }
-                    collected.push_str(&clean);
+                    Ok(None) => break,
+                    Err(_) => {
+                        timed_out = true;
+                        break;
+                    }
                 }
             }
-            Ok(None) => break,
-            Err(_) => {
-                timed_out = true;
-                break;
+            _ = &mut cancel_poll => {
+                stdout_task.abort();
+                stderr_task.abort();
+                child.kill().await.ok();
+                return ToolResult::Error("cancelled".to_string());
             }
         }
     }
@@ -816,6 +848,9 @@ async fn exec_explore(
 
     let mut retries = 0u32;
     loop {
+        if api_ctx.is_cancelled() {
+            return ToolResult::Error("cancelled".to_string());
+        }
         // build request headers
         let mut headers = reqwest::header::HeaderMap::new();
         match &api_ctx.auth {
@@ -922,6 +957,9 @@ async fn exec_explore(
         let mut stream_errors: Vec<String> = Vec::new();
 
         loop {
+            if api_ctx.is_cancelled() {
+                return ToolResult::Error("cancelled".to_string());
+            }
             let chunk = match byte_stream.next().await {
                 Some(Ok(c)) => c,
                 Some(Err(e)) => {
