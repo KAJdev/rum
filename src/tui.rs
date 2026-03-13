@@ -230,7 +230,7 @@ pub struct App {
     // index into activity where the current login flow started; used to
     // wipe login messages on success so only the result remains
     login_activity_start: Option<usize>,
-    current_message: Option<String>,
+    pub current_message: Option<String>,
     queued_messages: Vec<QueuedItem>,
     // summed across all api calls (for cost calculation)
     total_input: u32,
@@ -713,7 +713,7 @@ impl App {
                                     status: ToolStatus::Complete { exit_code: None },
                                     diff: None,
                                     output: None,
-                                    expanded: false,
+                                    expanded: self.diffs_expanded,
                                 }));
                                 tool_map.insert(id.clone(), idx);
                             }

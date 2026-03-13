@@ -325,6 +325,7 @@ async fn run_tui_mode(
                     match cmd.as_str() {
                         "/compact" => {
                             cancel.reset();
+                            app.current_message = Some("/compact".to_string());
                             app.is_running = true;
                             let _ = control_tx.send(agent::ControlMessage::Compact);
                         }
@@ -467,6 +468,7 @@ fn handle_slash_command(
             if app.is_running {
                 app.queue_command("/compact");
             } else {
+                app.current_message = Some("/compact".to_string());
                 app.is_running = true;
                 let _ = control_tx.send(agent::ControlMessage::Compact);
             }
