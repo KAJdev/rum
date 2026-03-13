@@ -10,7 +10,7 @@ mod tui;
 
 use anyhow::{bail, Result};
 use clap::Parser;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, MouseEventKind};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -408,6 +408,18 @@ async fn run_tui_mode(
                         app.insert_text(path);
                     } else {
                         app.insert_paste(text);
+                    }
+                }
+                Event::Mouse(mouse) => {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            app.auto_scroll = false;
+                            app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                        }
+                        MouseEventKind::ScrollDown => {
+                            app.scroll_offset = app.scroll_offset.saturating_add(3);
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}

@@ -3,6 +3,7 @@ use crossterm::{
         KeyCode, KeyEvent, KeyModifiers,
         KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
         EnableBracketedPaste, DisableBracketedPaste,
+        EnableMouseCapture, DisableMouseCapture,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -2120,6 +2121,7 @@ impl Tui {
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
         execute!(stdout, EnableBracketedPaste)?;
+        execute!(stdout, EnableMouseCapture)?;
         // enable kitty keyboard protocol so terminals report modifier
         // keys on Enter (needed for shift+enter newline detection)
         let _ = execute!(
@@ -2136,6 +2138,7 @@ impl Tui {
     pub fn restore(&mut self) -> Result<(), io::Error> {
         let _ = execute!(self.terminal.backend_mut(), PopKeyboardEnhancementFlags);
         let _ = execute!(self.terminal.backend_mut(), DisableBracketedPaste);
+        let _ = execute!(self.terminal.backend_mut(), DisableMouseCapture);
         disable_raw_mode()?;
         execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
         Ok(())
@@ -2317,7 +2320,10 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
             }
         }
         KeyCode::Up => {
-            if app.input_line_count() > 1 && app.move_cursor_up() {
+            if shift {
+                app.auto_scroll = false;
+                app.scroll_offset = app.scroll_offset.saturating_sub(1);
+            } else if app.input_line_count() > 1 && app.move_cursor_up() {
                 // moved within multi-line input
             } else if app.input.is_empty() && app.pop_queued_message() {
                 // popped last queued message into input
@@ -2328,7 +2334,9 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
             }
         }
         KeyCode::Down => {
-            if app.input_line_count() > 1 && app.move_cursor_down() {
+            if shift {
+                app.scroll_offset = app.scroll_offset.saturating_add(1);
+            } else if app.input_line_count() > 1 && app.move_cursor_down() {
                 // moved within multi-line input
             } else if app.navigate_history_down() {
                 // navigated to a newer history entry or back to draft
