@@ -1049,7 +1049,7 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
             .args([
                 "run", "list",
                 "--commit", &sha,
-                "--json", "status,conclusion,name,url",
+                "--json", "status,conclusion,name,url,databaseId",
                 "--limit", "20",
             ])
             .current_dir(cwd)
@@ -1109,16 +1109,51 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                     summary: format!("CI: {} checks passed on {}", total, branch_label),
                 });
             } else {
-                let failed_names: Vec<String> = runs.iter()
+                let failed_runs: Vec<(&serde_json::Value, String)> = runs.iter()
                     .filter(|r| {
                         r.get("conclusion").and_then(|s| s.as_str()).map_or(false, |c| c == "failure" || c == "cancelled" || c == "timed_out")
                     })
-                    .filter_map(|r| r.get("name").and_then(|n| n.as_str()).map(String::from))
+                    .map(|r| {
+                        let name = r.get("name").and_then(|n| n.as_str()).unwrap_or("unknown").to_string();
+                        (r, name)
+                    })
                     .collect();
+
+                // fetch logs from failed runs
+                let mut log_output = String::new();
+                for (run, name) in &failed_runs {
+                    if let Some(run_id) = run.get("databaseId").and_then(|v| v.as_u64()) {
+                        if let Ok(o) = tokio::process::Command::new("gh")
+                            .args(["run", "view", &run_id.to_string(), "--log-failed"])
+                            .current_dir(cwd)
+                            .output()
+                            .await
+                        {
+                            if o.status.success() {
+                                let logs = String::from_utf8_lossy(&o.stdout);
+                                let trimmed: String = logs.lines()
+                                    .rev().take(50).collect::<Vec<_>>()
+                                    .into_iter().rev()
+                                    .collect::<Vec<_>>().join("\n");
+                                if !trimmed.is_empty() {
+                                    log_output.push_str(&format!("\n--- {} ---\n{}", name, trimmed));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let failed_names: Vec<&String> = failed_runs.iter().map(|(_, n)| n).collect();
+                let summary = if log_output.is_empty() {
+                    format!("CI: {}/{} failed on {} ({})", failed, total, branch_label, failed_names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+                } else {
+                    format!("CI: {}/{} failed on {} ({}){}", failed, total, branch_label, failed_names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "), log_output)
+                };
+
                 let _ = tx.send(tui::JobEvent::Complete {
                     id: job_id,
                     status: tui::JobStatus::Failed(format!("{} failed", failed)),
-                    summary: format!("CI: {}/{} failed on {} ({})", failed, total, branch_label, failed_names.join(", ")),
+                    summary,
                 });
             }
             return;

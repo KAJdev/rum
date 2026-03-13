@@ -1622,18 +1622,20 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let input_h = combined - msg_h;
 
     let visible_jobs = app.background_jobs.iter().any(|j| j.visible);
-    let jobs_h: u16 = if visible_jobs { 1 } else { 0 };
+    // no jobs: 1 blank line at bottom
+    // jobs: 1 buffer line + 1 jobs line
+    let (jobs_h, bottom_h): (u16, u16) = if visible_jobs { (1, 1) } else { (0, 1) };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),       // header
-            Constraint::Length(msg_h),   // current/queued messages
-            Constraint::Length(input_h), // input field
-            Constraint::Length(1),       // buffer after input
-            Constraint::Min(4),         // activity feed
-            Constraint::Length(jobs_h), // background jobs bar
-            Constraint::Length(1),       // bottom buffer
+            Constraint::Length(1),        // header
+            Constraint::Length(msg_h),    // current/queued messages
+            Constraint::Length(input_h),  // input field
+            Constraint::Length(1),        // buffer after input
+            Constraint::Min(4),          // activity feed
+            Constraint::Length(bottom_h), // buffer before jobs / bottom
+            Constraint::Length(jobs_h),   // background jobs bar
         ])
         .split(size);
 
@@ -1644,7 +1646,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // chunks[3] is the buffer after input
     render_activity(frame, app, chunks[4]);
     if jobs_h > 0 {
-        render_jobs_bar(frame, app, chunks[5]);
+        render_jobs_bar(frame, app, chunks[6]);
     }
 }
 
@@ -1681,7 +1683,10 @@ fn render_jobs_bar(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let line = Line::from(spans);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(INPUT_BG)),
+        area,
+    );
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
