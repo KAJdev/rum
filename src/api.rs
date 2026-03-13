@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
@@ -97,10 +97,11 @@ pub enum StreamEvent {
 pub enum AuthMethod {
     ApiKey(String),
     Bearer(String),
+    None,
 }
 
 pub struct ApiClient {
-    auth: AuthMethod,
+    pub auth: AuthMethod,
     model: String,
     base_url: String,
 }
@@ -113,22 +114,20 @@ impl ApiClient {
         } else if let Some(ref creds) = config.oauth {
             AuthMethod::Bearer(creds.access.clone())
         } else {
-            bail!(
-                "no credentials found. set ANTHROPIC_API_KEY or run `rum login`."
-            );
-        };
-
-        let base_url = match config.provider.as_str() {
-            "anthropic" => "https://api.anthropic.com".to_string(),
-            other => bail!("provider '{}' not yet supported in rum", other),
+            AuthMethod::None
         };
 
         Ok(Self {
             auth,
             model: config.model.clone(),
-            base_url,
+            base_url: "https://api.anthropic.com".to_string(),
         })
     }
+
+    pub fn set_bearer(&mut self, token: String) {
+        self.auth = AuthMethod::Bearer(token);
+    }
+
 
     pub fn set_model(&mut self, model: &str) {
         self.model = model.to_string();

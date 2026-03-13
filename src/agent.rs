@@ -60,6 +60,7 @@ pub enum AgentEvent {
 pub enum ControlMessage {
     ChangeModel(String),
     ChangeThinking(String),
+    UpdateAuth(String),
     ClearHistory,
 }
 
@@ -104,6 +105,10 @@ impl Agent {
 
     pub fn set_model(&mut self, model: &str) {
         self.client.set_model(model);
+    }
+
+    pub fn set_auth_token(&mut self, token: String) {
+        self.client.set_bearer(token);
     }
 
     pub fn set_thinking(&mut self, level: &str) {
@@ -548,6 +553,13 @@ async fn stream_request(
     use crate::api::{AuthMethod, MessagesRequest, OutputConfig, ThinkingConfig};
     use futures::StreamExt;
 
+    if matches!(auth, AuthMethod::None) {
+        let _ = tx.send(StreamEvent::Error(
+            "no credentials found. use /login to authenticate.".to_string(),
+        ));
+        return Ok(());
+    }
+
     let is_oauth = matches!(auth, AuthMethod::Bearer(_));
 
     // adaptive thinking for opus 4.6+, budget-based for older models
@@ -662,6 +674,7 @@ async fn stream_request(
                 format!("Bearer {}", token).parse()?,
             );
         }
+        AuthMethod::None => unreachable!("none auth filtered above"),
     }
     headers.insert("anthropic-version", "2023-06-01".parse()?);
     headers.insert(

@@ -193,6 +193,7 @@ async fn run_tui_mode(
     cwd: PathBuf,
     message_parts: Vec<String>,
 ) -> Result<()> {
+    let no_credentials = cfg.api_key.is_none() && cfg.oauth.is_none();
     let api_client = api::ApiClient::new(&cfg)?;
 
     let mut terminal = tui::Tui::new()?;
@@ -231,7 +232,14 @@ async fn run_tui_mode(
         agent_loop(agent, user_rx, control_rx, agent_tx).await;
     });
 
-    if !message_parts.is_empty() {
+    if no_credentials {
+        let (url, verifier) = auth::build_auth_url();
+        auth::open_browser(&url);
+        login_pending = Some(verifier);
+        app.push_system_message(format!(
+            "welcome to rum! log in to get started.\n\nopening browser...\nif it didn't open, visit:\n{url}\n\nthen paste the redirect URL here and press enter"
+        ));
+    } else if !message_parts.is_empty() {
         let msg = message_parts.join(" ");
         app.start_new_message(&msg);
         let _ = user_tx.send(msg);
@@ -257,7 +265,13 @@ async fn run_tui_mode(
         // drain completed login attempts
         while let Ok(result) = login_rx.try_recv() {
             match result {
-                Ok(()) => app.push_system_message("logged in to anthropic".to_string()),
+                Ok(()) => {
+                    app.push_system_message("logged in! start chatting below.".to_string());
+                    // hot-patch the running agent with the fresh token
+                    if let Some(creds) = auth::load_auth() {
+                        let _ = control_tx.send(agent::ControlMessage::UpdateAuth(creds.access));
+                    }
+                }
                 Err(e) => app.push_system_message(format!("login failed: {e}")),
             }
         }
@@ -554,6 +568,9 @@ async fn agent_loop(
                     }
                     Some(agent::ControlMessage::ChangeThinking(level)) => {
                         agent.set_thinking(&level);
+                    }
+                    Some(agent::ControlMessage::UpdateAuth(token)) => {
+                        agent.set_auth_token(token);
                     }
                     Some(agent::ControlMessage::ClearHistory) => {
                         agent.clear_history();
