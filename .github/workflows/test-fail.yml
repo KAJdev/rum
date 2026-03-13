@@ -1,0 +1,15 @@
+name: Test Fail
+
+on:
+  pull_request:
+    branches: [master]
+
+jobs:
+  fail:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "running tests..."
+          echo "FAILED: test_something_important"
+          echo "expected 42 but got 0"
+          exit 1
