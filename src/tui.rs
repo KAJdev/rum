@@ -194,6 +194,9 @@ pub struct App {
     input: String,
     cursor_pos: usize,
     activity: Vec<ActivityItem>,
+    // index into activity where the current login flow started; used to
+    // wipe login messages on success so only the result remains
+    login_activity_start: Option<usize>,
     current_message: Option<String>,
     queued_messages: Vec<String>,
     // summed across all api calls (for cost calculation)
@@ -238,6 +241,7 @@ impl App {
             input: String::new(),
             cursor_pos: 0,
             activity: Vec::new(),
+            login_activity_start: None,
             current_message: None,
             queued_messages: Vec::new(),
             total_input: 0,
@@ -474,6 +478,25 @@ impl App {
     pub fn push_update_notice(&mut self, msg: String) {
         self.activity.push(ActivityItem::System(SystemKind::Update, msg));
         self.auto_scroll = true;
+    }
+
+    // call just before showing login instructions; records the current
+    // activity length so clear_login_activity can wipe everything since
+    pub fn mark_login_start(&mut self) {
+        self.login_activity_start = Some(self.activity.len());
+    }
+
+    // truncate all activity added since mark_login_start, then push a
+    // single clean result message in its place
+    pub fn finish_login(&mut self, msg: String, success: bool) {
+        if let Some(start) = self.login_activity_start.take() {
+            self.activity.truncate(start);
+        }
+        if success {
+            self.push_success(msg);
+        } else {
+            self.push_error_msg(msg);
+        }
     }
 
     pub fn update_model(&mut self, model_id: &str) {

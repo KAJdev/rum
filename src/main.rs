@@ -242,6 +242,7 @@ async fn run_tui_mode(
         let (url, verifier) = auth::build_auth_url();
         auth::open_browser(&url);
         login_pending = Some(verifier);
+        app.mark_login_start();
         app.push_system_message(format!(
             "welcome to rum! log in to get started.\n\nopening browser...\nif it didn't open, visit:\n{url}\n\nthen paste the redirect URL here and press enter"
         ));
@@ -272,12 +273,12 @@ async fn run_tui_mode(
         while let Ok(result) = login_rx.try_recv() {
             match result {
                 Ok(()) => {
-                    app.push_success("logged in! start chatting below.".to_string());
+                    app.finish_login("logged in! start chatting below.".to_string(), true);
                     if let Some(creds) = auth::load_auth() {
                         let _ = control_tx.send(agent::ControlMessage::UpdateAuth(creds.access));
                     }
                 }
-                Err(e) => app.push_error_msg(format!("login failed: {e}")),
+                Err(e) => app.finish_login(format!("login failed: {e}"), false),
             }
         }
 
@@ -380,6 +381,7 @@ fn handle_slash_command(
             let (url, verifier) = auth::build_auth_url();
             auth::open_browser(&url);
             *login_pending = Some(verifier);
+            app.mark_login_start();
             app.push_system_message(format!(
                 "opening browser for anthropic login...\n\nif the browser didn't open, visit:\n{url}\n\nthen paste the redirect URL (or code#state) here and press enter"
             ));
