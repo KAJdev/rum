@@ -159,6 +159,7 @@ enum ActivityItem {
 enum CompactStatus {
     Running,
     Done(String),
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -479,6 +480,16 @@ impl App {
             AgentEvent::TurnComplete => {
                 self.is_running = false;
                 self.new_turn = true;
+                // cancel any in-progress compact animation
+                for item in self.activity.iter_mut().rev() {
+                    match item {
+                        ActivityItem::Compact(CompactStatus::Running) => {
+                            *item = ActivityItem::Compact(CompactStatus::Cancelled);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
             }
             AgentEvent::Status(msg) => {
                 self.activity.push(ActivityItem::System(SystemKind::Info, msg));
@@ -1909,6 +1920,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
             ActivityItem::System(_, t) => (t.len(), false, 0u8),
             ActivityItem::Compact(CompactStatus::Running) => (app.spin_frame as usize, false, 0u8),
             ActivityItem::Compact(CompactStatus::Done(_)) => (0, false, 1u8),
+            ActivityItem::Compact(CompactStatus::Cancelled) => (0, false, 2u8),
             ActivityItem::Tool(e) => {
                 let st = match &e.status {
                     ToolStatus::Running => 0,
@@ -2161,6 +2173,12 @@ fn render_compact_item(status: &CompactStatus, spin: u64) -> Vec<Line<'static>> 
             vec![Line::from(vec![
                 Span::styled("  ✓  ", Style::default().fg(GREEN)),
                 Span::styled(msg.clone(), Style::default().fg(FG)),
+            ])]
+        }
+        CompactStatus::Cancelled => {
+            vec![Line::from(vec![
+                Span::styled("  ✕  ", Style::default().fg(MUTED)),
+                Span::styled("compaction cancelled", Style::default().fg(MUTED)),
             ])]
         }
     }
