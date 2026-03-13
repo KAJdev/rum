@@ -464,9 +464,16 @@ impl App {
                 self.total_output += output_tokens;
                 self.total_cache_read += cache_read_tokens;
                 self.total_cache_creation += cache_creation_tokens;
-                // last_input drives context window display; include all input sources
-                self.last_input = input_tokens + cache_read_tokens + cache_creation_tokens;
-                self.last_output = output_tokens;
+                // context meter: update each field only when nonzero so
+                // incremental emissions (input first, output later) don't
+                // reset each other
+                let input_total = input_tokens + cache_read_tokens + cache_creation_tokens;
+                if input_total > 0 {
+                    self.last_input = input_total;
+                }
+                if output_tokens > 0 {
+                    self.last_output = output_tokens;
+                }
             }
             AgentEvent::TurnComplete => {
                 self.is_running = false;
