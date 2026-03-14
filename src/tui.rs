@@ -1,5 +1,6 @@
 use crate::agent::AgentEvent;
 use crate::api::{ContentBlock, Message, MessageContent};
+use crate::editor::{self, AgentEdit, EditorBuffer, SearchMode, SearchState};
 use crate::tools::{DiffInfo, DiffLineTag, ToolResult};
 use crossterm::{
     event::{
@@ -292,6 +293,12 @@ enum ToolStatus {
     Error(String),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ViewMode {
+    Chat,
+    Editor,
+}
+
 // cached rendered lines for a single activity item.
 // invalidated when content length, terminal width, expand state, or
 // tool status changes.
@@ -368,6 +375,14 @@ pub struct App {
     next_job_id: u64,
     // set when a git push is detected; main.rs reads and clears this to spawn CI watch
     pub pending_ci_watch: Option<String>,
+    // editor mode state
+    pub view_mode: ViewMode,
+    pub editor_buffer: Option<EditorBuffer>,
+    pub editor_search: Option<SearchState>,
+    pub follow_mode: bool,
+    pub agent_edits: Vec<AgentEdit>,
+    pub agent_edit_index: usize,
+    highlighter: Option<editor::Highlighter>,
 }
 
 impl App {
@@ -417,6 +432,13 @@ impl App {
             background_jobs: Vec::new(),
             next_job_id: 0,
             pending_ci_watch: None,
+            view_mode: ViewMode::Chat,
+            editor_buffer: None,
+            editor_search: None,
+            follow_mode: false,
+            agent_edits: Vec::new(),
+            agent_edit_index: 0,
+            highlighter: None,
         }
     }
 
@@ -510,6 +532,7 @@ impl App {
                 name,
                 result,
             } => {
+                let mut tracked_edit: Option<(String, Option<DiffInfo>)> = None;
                 if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.iter_mut().rev()
                     .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
                 {
@@ -524,6 +547,7 @@ impl App {
                             if let Some(d) = diff {
                                 entry.arg = d.path.clone();
                                 entry.diff = Some(d.clone());
+                                tracked_edit = Some((d.path.clone(), Some(d.clone())));
                             }
 
                             entry.expanded = self.diffs_expanded;
@@ -563,6 +587,9 @@ impl App {
                             entry.status = ToolStatus::Complete { exit_code: None };
                         }
                     }
+                }
+                if let Some((path, diff)) = tracked_edit {
+                    self.track_agent_edit(path, diff);
                 }
             }
             AgentEvent::TokenUsage {
@@ -1743,7 +1770,616 @@ fn wrap_md_lines_with_bar(md_lines: Vec<Line<'static>>, max_width: u16) -> Vec<L
     out
 }
 
+impl App {
+    #[allow(dead_code)]
+    pub fn open_file(&mut self, path: &std::path::Path) {
+        match EditorBuffer::open(path) {
+            Ok(buf) => {
+                self.editor_buffer = Some(buf);
+                self.view_mode = ViewMode::Editor;
+            }
+            Err(_) => {}
+        }
+    }
+
+    pub fn open_agent_edit(&mut self, index: usize) {
+        if index >= self.agent_edits.len() {
+            return;
+        }
+        let edit = self.agent_edits[index].clone();
+        let full_path = std::path::Path::new(&self.cwd).join(&edit.path);
+        match EditorBuffer::open(&full_path) {
+            Ok(mut buf) => {
+                // try to jump to the first changed line
+                if let Some(ref diff) = edit.diff {
+                    if let Some(hunk) = diff.hunks.first() {
+                        if let Some(offset) = hunk.lines.iter().position(|l| {
+                            l.tag == crate::tools::DiffLineTag::Insert
+                                || l.tag == crate::tools::DiffLineTag::Delete
+                        }) {
+                            buf.goto_line(hunk.new_start + offset);
+                        }
+                    }
+                }
+                self.editor_buffer = Some(buf);
+            }
+            Err(_) => {}
+        }
+    }
+
+    // called when the agent completes an edit tool to track it for follow mode
+    pub fn track_agent_edit(&mut self, path: String, diff: Option<DiffInfo>) {
+        let edit = AgentEdit {
+            path,
+            diff,
+            _timestamp: std::time::Instant::now(),
+        };
+        self.agent_edits.push(edit);
+
+        // in follow mode, auto-jump to the new edit
+        if self.follow_mode {
+            self.agent_edit_index = self.agent_edits.len() - 1;
+            self.open_agent_edit(self.agent_edit_index);
+        }
+    }
+
+    fn update_file_search(&mut self) {
+        if let Some(ref mut search) = self.editor_search {
+            if !matches!(search.mode, SearchMode::Files) {
+                return;
+            }
+            let root = std::path::Path::new(&self.cwd);
+            let files = editor::collect_files(root);
+            let mut scored: Vec<(i32, String)> = files
+                .into_iter()
+                .filter_map(|f| {
+                    editor::fuzzy_match(&search.query, &f).map(|score| (score, f))
+                })
+                .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            search.results = scored
+                .into_iter()
+                .take(100)
+                .map(|(_, path)| editor::SearchResult {
+                    path,
+                    line: None,
+                    content: None,
+                })
+                .collect();
+            search.selected = 0;
+        }
+    }
+
+    fn update_text_search(&mut self) {
+        if let Some(ref mut search) = self.editor_search {
+            if !matches!(search.mode, SearchMode::Text) {
+                return;
+            }
+            let root = std::path::Path::new(&self.cwd);
+            search.results = editor::search_text(root, &search.query, 100);
+            search.selected = 0;
+        }
+    }
+}
+
+fn handle_editor_key(
+    key: KeyEvent,
+    app: &mut App,
+    ctrl: bool,
+    alt: bool,
+    _shift: bool,
+    _super_key: bool,
+) -> InputAction {
+    // search overlay intercepts input when active
+    if app.editor_search.is_some() {
+        return handle_search_key(key, app, ctrl);
+    }
+
+    match key.code {
+        // ctrl+c: quit from editor
+        KeyCode::Char('c') if ctrl => {
+            return InputAction::Quit;
+        }
+        // ctrl+s: save
+        KeyCode::Char('s') if ctrl => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                let _ = buf.save();
+            }
+        }
+        // ctrl+z: undo
+        KeyCode::Char('z') if ctrl => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.undo();
+            }
+        }
+        // ctrl+y: redo
+        KeyCode::Char('y') if ctrl => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.redo();
+            }
+        }
+        // ctrl+p: file finder
+        KeyCode::Char('p') if ctrl => {
+            app.editor_search = Some(SearchState::new(SearchMode::Files));
+            app.update_file_search();
+        }
+        // ctrl+shift+f or ctrl+/: text search
+        KeyCode::Char('/') if ctrl => {
+            app.editor_search = Some(SearchState::new(SearchMode::Text));
+        }
+        // ctrl+g: goto line (opens file search with : prefix behavior)
+        KeyCode::Char('g') if ctrl => {
+            // for now reuse file search
+            app.editor_search = Some(SearchState::new(SearchMode::Files));
+            app.update_file_search();
+        }
+        // ctrl+k: delete line
+        KeyCode::Char('k') if ctrl => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.delete_line();
+            }
+        }
+        // navigation
+        KeyCode::Up if alt => {
+            // in follow mode, navigate to previous edit
+            if app.follow_mode && app.agent_edit_index > 0 {
+                app.agent_edit_index -= 1;
+                app.open_agent_edit(app.agent_edit_index);
+            }
+        }
+        KeyCode::Down if alt => {
+            if app.follow_mode && app.agent_edit_index + 1 < app.agent_edits.len() {
+                app.agent_edit_index += 1;
+                app.open_agent_edit(app.agent_edit_index);
+            }
+        }
+        KeyCode::Up => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_up();
+            }
+        }
+        KeyCode::Down => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_down();
+            }
+        }
+        KeyCode::Left if ctrl => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_word_left();
+            }
+        }
+        KeyCode::Right if ctrl => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_word_right();
+            }
+        }
+        KeyCode::Left if alt => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_word_left();
+            }
+        }
+        KeyCode::Right if alt => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_word_right();
+            }
+        }
+        KeyCode::Left => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_left();
+            }
+        }
+        KeyCode::Right => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_right();
+            }
+        }
+        KeyCode::Home => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_home();
+            }
+        }
+        KeyCode::End => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_end();
+            }
+        }
+        KeyCode::PageUp => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
+                buf.page_up(h.saturating_sub(2));
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
+                buf.page_down(h.saturating_sub(2));
+            }
+        }
+        // editing
+        KeyCode::Enter => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.insert_newline();
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.backspace();
+            }
+        }
+        KeyCode::Delete => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.delete();
+            }
+        }
+        KeyCode::Tab => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                // insert 4 spaces
+                for _ in 0..4 {
+                    buf.insert_char(' ');
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.insert_char(c);
+            }
+        }
+        _ => {}
+    }
+
+    // keep cursor visible after any action
+    if let Some(ref mut buf) = app.editor_buffer {
+        let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
+        buf.ensure_cursor_visible(h.saturating_sub(2)); // minus status bar
+    }
+
+    InputAction::None
+}
+
+fn handle_search_key(key: KeyEvent, app: &mut App, ctrl: bool) -> InputAction {
+    match key.code {
+        KeyCode::Esc => {
+            app.editor_search = None;
+        }
+        KeyCode::Enter => {
+            // open selected result
+            if let Some(ref search) = app.editor_search {
+                if let Some(result) = search.results.get(search.selected) {
+                    let full_path = std::path::Path::new(&app.cwd).join(&result.path);
+                    let line = result.line;
+                    match EditorBuffer::open(&full_path) {
+                        Ok(mut buf) => {
+                            if let Some(l) = line {
+                                buf.goto_line(l);
+                                let h = crossterm::terminal::size()
+                                    .map(|(_, h)| h)
+                                    .unwrap_or(24) as usize;
+                                buf.ensure_cursor_visible(h.saturating_sub(2));
+                            }
+                            app.editor_buffer = Some(buf);
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            app.editor_search = None;
+        }
+        KeyCode::Up => {
+            if let Some(ref mut search) = app.editor_search {
+                search.select_up();
+            }
+        }
+        KeyCode::Down => {
+            if let Some(ref mut search) = app.editor_search {
+                search.select_down();
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(ref mut search) = app.editor_search {
+                search.backspace();
+            }
+            match app.editor_search.as_ref().map(|s| s.mode.clone()) {
+                Some(SearchMode::Files) => app.update_file_search(),
+                Some(SearchMode::Text) => app.update_text_search(),
+                None => {}
+            }
+        }
+        KeyCode::Char('c') if ctrl => {
+            app.editor_search = None;
+        }
+        KeyCode::Char(c) => {
+            if let Some(ref mut search) = app.editor_search {
+                search.insert_char(c);
+            }
+            match app.editor_search.as_ref().map(|s| s.mode.clone()) {
+                Some(SearchMode::Files) => app.update_file_search(),
+                Some(SearchMode::Text) => app.update_text_search(),
+                None => {}
+            }
+        }
+        _ => {}
+    }
+    InputAction::None
+}
+
 pub fn render(frame: &mut Frame, app: &mut App) {
+    match app.view_mode {
+        ViewMode::Chat => render_chat(frame, app),
+        ViewMode::Editor => render_editor(frame, app),
+    }
+}
+
+fn render_editor(frame: &mut Frame, app: &mut App) {
+    let size = frame.area();
+
+    if app.editor_buffer.is_none() {
+        let msg = Paragraph::new(Line::from(vec![
+            Span::styled("  no file open. ", Style::default().fg(MUTED)),
+            Span::styled("ctrl+p", Style::default().fg(ACCENT)),
+            Span::styled(" to find a file, ", Style::default().fg(MUTED)),
+            Span::styled("ctrl+e", Style::default().fg(ACCENT)),
+            Span::styled(" to go back", Style::default().fg(MUTED)),
+        ]));
+        frame.render_widget(msg, size);
+        return;
+    }
+
+    // layout: status bar (1) + editor content (rest) + search overlay if active
+    let has_search = app.editor_search.is_some();
+    let search_h: u16 = if has_search { 12.min(size.height / 3) } else { 0 };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),                   // status bar
+            Constraint::Min(3),                      // editor content
+            Constraint::Length(search_h),             // search overlay
+        ])
+        .split(size);
+
+    // status bar
+    render_editor_status(frame, app, chunks[0]);
+
+    // editor content with syntax highlighting
+    render_editor_content(frame, app, chunks[1]);
+
+    // search overlay
+    if has_search {
+        render_search_overlay(frame, app, chunks[2]);
+    }
+}
+
+fn render_editor_status(frame: &mut Frame, app: &App, area: Rect) {
+    let buf = match &app.editor_buffer {
+        Some(b) => b,
+        None => return,
+    };
+
+    let dirty_marker = if buf.dirty { " [+]" } else { "" };
+    let rel_path = buf.relative_path(&app.cwd);
+    let position = format!("{}:{}", buf.cursor_row + 1, buf.cursor_col + 1);
+    let lines = format!("{} lines", buf.line_count());
+
+    let follow_indicator = if app.follow_mode {
+        let edit_pos = if app.agent_edits.is_empty() {
+            String::new()
+        } else {
+            format!(" {}/{}", app.agent_edit_index + 1, app.agent_edits.len())
+        };
+        format!("  follow{}", edit_pos)
+    } else {
+        String::new()
+    };
+
+    let right = format!("{}  {}  {}", follow_indicator, lines, position);
+    let left_budget = (area.width as usize).saturating_sub(right.len() + 2);
+
+    let display_path = if rel_path.len() > left_budget {
+        format!("...{}", &rel_path[rel_path.len().saturating_sub(left_budget - 3)..])
+    } else {
+        rel_path
+    };
+
+    let pad = (area.width as usize).saturating_sub(display_path.len() + dirty_marker.len() + right.len());
+
+    let mut spans = vec![
+        Span::styled(format!(" {}", display_path), Style::default().fg(FG)),
+        Span::styled(dirty_marker.to_string(), Style::default().fg(YELLOW)),
+        Span::styled(" ".repeat(pad), Style::default()),
+    ];
+
+    if app.follow_mode {
+        let fi = format!("  follow");
+        let edit_pos = if app.agent_edits.is_empty() {
+            String::new()
+        } else {
+            format!(" {}/{}", app.agent_edit_index + 1, app.agent_edits.len())
+        };
+        spans.push(Span::styled(fi, Style::default().fg(GREEN)));
+        spans.push(Span::styled(edit_pos, Style::default().fg(DIM)));
+        spans.push(Span::styled(
+            format!("  {}  {}", lines, position),
+            Style::default().fg(MUTED),
+        ));
+    } else {
+        spans.push(Span::styled(right, Style::default().fg(MUTED)));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(INPUT_BG)),
+        area,
+    );
+}
+
+fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
+    let buf = match &app.editor_buffer {
+        Some(b) => b,
+        None => return,
+    };
+
+    let viewport_h = area.height as usize;
+    let gutter_width: u16 = (buf.line_count().max(1).to_string().len() + 2) as u16;
+
+    // initialize highlighter lazily
+    if app.highlighter.is_none() {
+        app.highlighter = Some(editor::Highlighter::new());
+    }
+
+    let highlighted = if let Some(ref hl) = app.highlighter {
+        hl.highlight_lines(&buf.path, &buf.lines, buf.scroll_row, viewport_h)
+    } else {
+        Vec::new()
+    };
+
+    let mut lines: Vec<Line> = Vec::with_capacity(viewport_h);
+
+    for vi in 0..viewport_h {
+        let line_idx = buf.scroll_row + vi;
+        if line_idx >= buf.lines.len() {
+            // empty line beyond file end
+            let spans = vec![
+                Span::styled(
+                    format!("{:>width$} ", "~", width = gutter_width as usize - 1),
+                    Style::default().fg(DIM),
+                ),
+            ];
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        let line_num = format!("{:>width$} ", line_idx + 1, width = gutter_width as usize - 1);
+        let is_cursor_line = line_idx == buf.cursor_row;
+        let gutter_style = if is_cursor_line {
+            Style::default().fg(ACCENT)
+        } else {
+            Style::default().fg(DIM)
+        };
+
+        let mut spans = vec![Span::styled(line_num, gutter_style)];
+
+        // add syntax-highlighted content
+        if vi < highlighted.len() {
+            for (style, text) in &highlighted[vi] {
+                let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+                let mut s = Style::default().fg(fg);
+                if is_cursor_line {
+                    s = s.bg(Color::Rgb(30, 33, 40));
+                }
+                spans.push(Span::styled(text.clone(), s));
+            }
+        } else {
+            // fallback: no highlighting
+            let text = &buf.lines[line_idx];
+            let s = if is_cursor_line {
+                Style::default().fg(FG).bg(Color::Rgb(30, 33, 40))
+            } else {
+                Style::default().fg(FG)
+            };
+            spans.push(Span::styled(text.clone(), s));
+        }
+
+        // pad cursor line background
+        if is_cursor_line {
+            use unicode_width::UnicodeWidthStr;
+            let content_width: usize = spans.iter().skip(1).map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+            let remaining = (area.width as usize).saturating_sub(gutter_width as usize + content_width);
+            if remaining > 0 {
+                spans.push(Span::styled(
+                    " ".repeat(remaining),
+                    Style::default().bg(Color::Rgb(30, 33, 40)),
+                ));
+            }
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    let widget = Paragraph::new(lines).style(Style::default().bg(BG));
+    frame.render_widget(widget, area);
+
+    // set cursor position - convert byte offset to visual column width
+    let cursor_visual_row = buf.cursor_row.saturating_sub(buf.scroll_row) as u16;
+    let visual_col = if buf.cursor_row < buf.lines.len() {
+        use unicode_width::UnicodeWidthStr;
+        let line = &buf.lines[buf.cursor_row];
+        let byte_pos = buf.cursor_col.min(line.len());
+        // find the char boundary at or before byte_pos
+        let safe_pos = (0..=byte_pos).rev().find(|&i| line.is_char_boundary(i)).unwrap_or(0);
+        UnicodeWidthStr::width(&line[..safe_pos])
+    } else {
+        0
+    };
+    let cursor_x = area.x + gutter_width + visual_col as u16;
+    let cursor_y = area.y + cursor_visual_row;
+    if cursor_y < area.y + area.height && cursor_x < area.x + area.width {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+}
+
+fn render_search_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let search = match &app.editor_search {
+        Some(s) => s,
+        None => return,
+    };
+
+    let mode_label = match search.mode {
+        SearchMode::Files => "files",
+        SearchMode::Text => "search",
+    };
+
+    // input line
+    let input_line = Line::from(vec![
+        Span::styled(format!(" {} ", mode_label), Style::default().fg(BG).bg(ACCENT)),
+        Span::styled(format!(" {}", search.query), Style::default().fg(FG)),
+    ]);
+
+    let mut lines = vec![input_line];
+
+    // results
+    let max_visible = (area.height as usize).saturating_sub(1);
+    let start = if search.selected >= max_visible {
+        search.selected - max_visible + 1
+    } else {
+        0
+    };
+
+    for (i, result) in search.results.iter().skip(start).take(max_visible).enumerate() {
+        let idx = start + i;
+        let is_selected = idx == search.selected;
+
+        let (path_style, content_style) = if is_selected {
+            (
+                Style::default().fg(BG).bg(ACCENT),
+                Style::default().fg(BG).bg(ACCENT),
+            )
+        } else {
+            (Style::default().fg(ACCENT), Style::default().fg(MUTED))
+        };
+
+        let mut spans = vec![Span::styled(format!("  {}", result.path), path_style)];
+
+        if let Some(line) = result.line {
+            spans.push(Span::styled(format!(":{}", line + 1), path_style));
+        }
+
+        if let Some(ref content) = result.content {
+            let truncated = if content.chars().count() > 60 {
+                let s: String = content.chars().take(57).collect();
+                format!("  {}...", s)
+            } else {
+                format!("  {}", content)
+            };
+            spans.push(Span::styled(truncated, content_style));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    let widget = Paragraph::new(lines).style(Style::default().bg(INPUT_BG));
+    frame.render_widget(widget, area);
+}
+
+fn render_chat(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
     let max_input = (size.height / 3).max(2);
@@ -2935,6 +3571,37 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let super_key = key.modifiers.contains(KeyModifiers::SUPER);
+
+    // ctrl+e: toggle editor mode
+    if ctrl && key.code == KeyCode::Char('e') {
+        app.view_mode = match app.view_mode {
+            ViewMode::Chat => ViewMode::Editor,
+            ViewMode::Editor => {
+                app.editor_search = None;
+                ViewMode::Chat
+            }
+        };
+        return InputAction::None;
+    }
+
+    // ctrl+f: toggle follow mode (enters editor if not already)
+    if ctrl && key.code == KeyCode::Char('f') {
+        if app.view_mode == ViewMode::Chat {
+            app.view_mode = ViewMode::Editor;
+        }
+        app.follow_mode = !app.follow_mode;
+        // when enabling follow, jump to latest agent edit
+        if app.follow_mode && !app.agent_edits.is_empty() {
+            app.agent_edit_index = app.agent_edits.len() - 1;
+            app.open_agent_edit(app.agent_edit_index);
+        }
+        return InputAction::None;
+    }
+
+    // dispatch to editor-specific handler when in editor mode
+    if app.view_mode == ViewMode::Editor {
+        return handle_editor_key(key, app, ctrl, alt, shift, super_key);
+    }
 
     // ctrl+c: cancel if running, quit if idle with empty input, clear input otherwise
     if ctrl && key.code == KeyCode::Char('c') {

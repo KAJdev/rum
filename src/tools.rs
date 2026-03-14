@@ -57,6 +57,7 @@ pub struct DiffInfo {
 
 #[derive(Debug, Clone)]
 pub struct DiffHunk {
+    pub new_start: usize,
     pub lines: Vec<DiffLine>,
 }
 
@@ -685,7 +686,9 @@ pub fn compute_diff(path: &str, old: &str, new: &str) -> DiffInfo {
     let mut hunks = Vec::new();
 
     for group in text_diff.grouped_ops(3) {
-        let mut hunk = DiffHunk { lines: Vec::new() };
+        // the first op's new range start gives us the line number in the new file
+        let new_start = group.first().map(|op| op.new_range().start).unwrap_or(0);
+        let mut hunk = DiffHunk { new_start, lines: Vec::new() };
         for op in &group {
             for change in text_diff.iter_changes(op) {
                 let tag = match change.tag() {

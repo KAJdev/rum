@@ -2,6 +2,7 @@ mod agent;
 mod api;
 mod auth;
 mod config;
+mod editor;
 mod markdown;
 mod persistence;
 mod print;
