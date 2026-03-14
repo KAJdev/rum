@@ -6,15 +6,15 @@ const DIM: &str = "\x1b[2m";
 const STRIKETHROUGH: &str = "\x1b[9m";
 
 // palette
-const HEADING: &str = "\x1b[1;33m";       // bold yellow
-const HEADING2: &str = "\x1b[1;36m";      // bold cyan
-const HEADING3: &str = "\x1b[1;35m";      // bold magenta
+const HEADING: &str = "\x1b[1;33m"; // bold yellow
+const HEADING2: &str = "\x1b[1;36m"; // bold cyan
+const HEADING3: &str = "\x1b[1;35m"; // bold magenta
 const INLINE_CODE: &str = "\x1b[38;5;223m\x1b[48;5;236m"; // warm on dark bg
 const CODE_BORDER: &str = "\x1b[38;5;242m";
 const CODE_BG: &str = "\x1b[48;5;235m";
-const LINK_TEXT: &str = "\x1b[36m";        // cyan
-const LINK_URL: &str = "\x1b[38;5;242m";  // dim
-const LIST_BULLET: &str = "\x1b[33m";     // yellow
+const LINK_TEXT: &str = "\x1b[36m"; // cyan
+const LINK_URL: &str = "\x1b[38;5;242m"; // dim
+const LIST_BULLET: &str = "\x1b[33m"; // yellow
 const BLOCKQUOTE: &str = "\x1b[38;5;109m"; // muted blue
 const HR: &str = "\x1b[38;5;242m";
 const BOLD_STYLE: &str = "\x1b[1m";
@@ -22,14 +22,14 @@ const ITALIC_STYLE: &str = "\x1b[3m";
 const BOLD_ITALIC: &str = "\x1b[1;3m";
 
 // syntax highlight colors
-const SYN_KEYWORD: &str = "\x1b[38;5;176m";  // purple/pink
-const SYN_STRING: &str = "\x1b[38;5;150m";   // green
-const SYN_COMMENT: &str = "\x1b[38;5;242m";  // dim gray
-const SYN_NUMBER: &str = "\x1b[38;5;215m";   // orange
-const SYN_TYPE: &str = "\x1b[38;5;117m";     // light blue
-const SYN_FUNC: &str = "\x1b[38;5;222m";     // yellow
-const SYN_PUNCT: &str = "\x1b[38;5;248m";    // light gray
-const SYN_NORMAL: &str = "\x1b[38;5;252m";   // white-ish
+const SYN_KEYWORD: &str = "\x1b[38;5;176m"; // purple/pink
+const SYN_STRING: &str = "\x1b[38;5;150m"; // green
+const SYN_COMMENT: &str = "\x1b[38;5;242m"; // dim gray
+const SYN_NUMBER: &str = "\x1b[38;5;215m"; // orange
+const SYN_TYPE: &str = "\x1b[38;5;117m"; // light blue
+const SYN_FUNC: &str = "\x1b[38;5;222m"; // yellow
+const SYN_PUNCT: &str = "\x1b[38;5;248m"; // light gray
+const SYN_NORMAL: &str = "\x1b[38;5;252m"; // white-ish
 
 pub struct MarkdownRenderer {
     line_buf: String,
@@ -153,7 +153,9 @@ impl MarkdownRenderer {
 
         // horizontal rule
         if (line.starts_with("---") || line.starts_with("***") || line.starts_with("___"))
-            && line.chars().all(|c| c == '-' || c == '*' || c == '_' || c == ' ')
+            && line
+                .chars()
+                .all(|c| c == '-' || c == '*' || c == '_' || c == ' ')
             && line.len() >= 3
         {
             self.output.push(format!(
@@ -165,27 +167,23 @@ impl MarkdownRenderer {
 
         // headings
         if line.starts_with("# ") {
-            self.output.push(format!(
-                "{}{}{}", HEADING, &line[2..], RESET
-            ));
+            self.output
+                .push(format!("{}{}{}", HEADING, &line[2..], RESET));
             return;
         }
         if line.starts_with("## ") {
-            self.output.push(format!(
-                "{}{}{}", HEADING2, &line[3..], RESET
-            ));
+            self.output
+                .push(format!("{}{}{}", HEADING2, &line[3..], RESET));
             return;
         }
         if line.starts_with("### ") {
-            self.output.push(format!(
-                "{}{}{}", HEADING3, &line[4..], RESET
-            ));
+            self.output
+                .push(format!("{}{}{}", HEADING3, &line[4..], RESET));
             return;
         }
         if line.starts_with("#### ") {
-            self.output.push(format!(
-                "{}{}{}", HEADING3, &line[5..], RESET
-            ));
+            self.output
+                .push(format!("{}{}{}", HEADING3, &line[5..], RESET));
             return;
         }
 
@@ -201,10 +199,7 @@ impl MarkdownRenderer {
         }
 
         // unordered list
-        if line.starts_with("- ")
-            || line.starts_with("* ")
-            || line.starts_with("+ ")
-        {
+        if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
             self.output.push(format!(
                 "{}  \u{2022}{} {}",
                 LIST_BULLET,
@@ -244,9 +239,7 @@ impl MarkdownRenderer {
         if line.starts_with('|') && line.ends_with('|') {
             // separator row
             if line.contains("---") {
-                self.output.push(format!(
-                    "{}{}{}", DIM, line, RESET
-                ));
+                self.output.push(format!("{}{}{}", DIM, line, RESET));
                 return;
             }
             self.output.push(render_table_row(&line));
@@ -633,19 +626,30 @@ impl<'a> Tokenizer<'a> {
 fn highlight_rust(line: &str) -> String {
     static KEYWORDS: &[&str] = &[
         "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
-        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
-        "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super",
-        "trait", "true", "type", "unsafe", "use", "where", "while", "yield",
+        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+        "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait",
+        "true", "type", "unsafe", "use", "where", "while", "yield",
     ];
     static TYPES: &[&str] = &[
-        "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str",
-        "u8", "u16", "u32", "u64", "u128", "usize", "String", "Vec", "Box", "Rc", "Arc",
-        "Option", "Result", "Ok", "Err", "Some", "None", "HashMap", "HashSet", "Path",
-        "PathBuf",
+        "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str", "u8",
+        "u16", "u32", "u64", "u128", "usize", "String", "Vec", "Box", "Rc", "Arc", "Option",
+        "Result", "Ok", "Err", "Some", "None", "HashMap", "HashSet", "Path", "PathBuf",
     ];
     static BUILTINS: &[&str] = &[
-        "println", "eprintln", "format", "write", "writeln", "todo", "unimplemented",
-        "unreachable", "assert", "assert_eq", "assert_ne", "dbg", "vec", "panic",
+        "println",
+        "eprintln",
+        "format",
+        "write",
+        "writeln",
+        "todo",
+        "unimplemented",
+        "unreachable",
+        "assert",
+        "assert_eq",
+        "assert_ne",
+        "dbg",
+        "vec",
+        "panic",
     ];
     let mut tok = Tokenizer::new(line, "//", KEYWORDS, TYPES, BUILTINS);
     tok.highlight()
@@ -655,17 +659,44 @@ fn highlight_python(line: &str) -> String {
     static KEYWORDS: &[&str] = &[
         "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
         "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import",
-        "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return",
-        "True", "try", "while", "with", "yield",
+        "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
+        "try", "while", "with", "yield",
     ];
     static TYPES: &[&str] = &[
-        "int", "float", "str", "bool", "list", "dict", "tuple", "set", "bytes", "type",
-        "object", "Exception",
+        "int",
+        "float",
+        "str",
+        "bool",
+        "list",
+        "dict",
+        "tuple",
+        "set",
+        "bytes",
+        "type",
+        "object",
+        "Exception",
     ];
     static BUILTINS: &[&str] = &[
-        "print", "len", "range", "enumerate", "zip", "map", "filter", "sorted", "reversed",
-        "isinstance", "issubclass", "hasattr", "getattr", "setattr", "open", "input", "super",
-        "property", "staticmethod", "classmethod",
+        "print",
+        "len",
+        "range",
+        "enumerate",
+        "zip",
+        "map",
+        "filter",
+        "sorted",
+        "reversed",
+        "isinstance",
+        "issubclass",
+        "hasattr",
+        "getattr",
+        "setattr",
+        "open",
+        "input",
+        "super",
+        "property",
+        "staticmethod",
+        "classmethod",
     ];
     let mut tok = Tokenizer::new(line, "#", KEYWORDS, TYPES, BUILTINS);
     tok.highlight()
@@ -673,21 +704,75 @@ fn highlight_python(line: &str) -> String {
 
 fn highlight_js(line: &str) -> String {
     static KEYWORDS: &[&str] = &[
-        "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger",
-        "default", "delete", "do", "else", "export", "extends", "false", "finally", "for",
-        "from", "function", "if", "import", "in", "instanceof", "let", "new", "null", "of",
-        "return", "static", "super", "switch", "this", "throw", "true", "try", "typeof",
-        "undefined", "var", "void", "while", "with", "yield",
-        "interface", "type", "enum", "implements", "namespace", "declare", "abstract",
-        "readonly", "as", "keyof", "satisfies",
+        "async",
+        "await",
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "debugger",
+        "default",
+        "delete",
+        "do",
+        "else",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "from",
+        "function",
+        "if",
+        "import",
+        "in",
+        "instanceof",
+        "let",
+        "new",
+        "null",
+        "of",
+        "return",
+        "static",
+        "super",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "typeof",
+        "undefined",
+        "var",
+        "void",
+        "while",
+        "with",
+        "yield",
+        "interface",
+        "type",
+        "enum",
+        "implements",
+        "namespace",
+        "declare",
+        "abstract",
+        "readonly",
+        "as",
+        "keyof",
+        "satisfies",
     ];
     static TYPES: &[&str] = &[
-        "string", "number", "boolean", "any", "void", "never", "unknown", "object",
-        "Array", "Map", "Set", "Promise", "Record", "Partial", "Required", "Readonly",
+        "string", "number", "boolean", "any", "void", "never", "unknown", "object", "Array", "Map",
+        "Set", "Promise", "Record", "Partial", "Required", "Readonly",
     ];
     static BUILTINS: &[&str] = &[
-        "console", "Math", "JSON", "parseInt", "parseFloat", "setTimeout", "setInterval",
-        "fetch", "require",
+        "console",
+        "Math",
+        "JSON",
+        "parseInt",
+        "parseFloat",
+        "setTimeout",
+        "setInterval",
+        "fetch",
+        "require",
     ];
     let mut tok = Tokenizer::new(line, "//", KEYWORDS, TYPES, BUILTINS);
     tok.highlight()
@@ -695,14 +780,14 @@ fn highlight_js(line: &str) -> String {
 
 fn highlight_bash(line: &str) -> String {
     static KEYWORDS: &[&str] = &[
-        "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac",
-        "in", "function", "return", "exit", "local", "export", "readonly", "declare",
-        "unset", "shift", "break", "continue", "source", "true", "false",
+        "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac", "in",
+        "function", "return", "exit", "local", "export", "readonly", "declare", "unset", "shift",
+        "break", "continue", "source", "true", "false",
     ];
     static BUILTINS: &[&str] = &[
-        "echo", "printf", "cd", "pwd", "ls", "cat", "grep", "sed", "awk", "find", "xargs",
-        "sort", "uniq", "wc", "head", "tail", "cut", "tr", "tee", "mkdir", "rm", "cp", "mv",
-        "chmod", "chown", "curl", "wget", "git", "docker", "cargo", "npm", "pip",
+        "echo", "printf", "cd", "pwd", "ls", "cat", "grep", "sed", "awk", "find", "xargs", "sort",
+        "uniq", "wc", "head", "tail", "cut", "tr", "tee", "mkdir", "rm", "cp", "mv", "chmod",
+        "chown", "curl", "wget", "git", "docker", "cargo", "npm", "pip",
     ];
     let mut tok = Tokenizer::new(line, "#", KEYWORDS, &[], BUILTINS);
     tok.highlight()
@@ -710,14 +795,56 @@ fn highlight_bash(line: &str) -> String {
 
 fn highlight_go(line: &str) -> String {
     static KEYWORDS: &[&str] = &[
-        "break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough",
-        "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range",
-        "return", "select", "struct", "switch", "type", "var", "true", "false", "nil",
+        "break",
+        "case",
+        "chan",
+        "const",
+        "continue",
+        "default",
+        "defer",
+        "else",
+        "fallthrough",
+        "for",
+        "func",
+        "go",
+        "goto",
+        "if",
+        "import",
+        "interface",
+        "map",
+        "package",
+        "range",
+        "return",
+        "select",
+        "struct",
+        "switch",
+        "type",
+        "var",
+        "true",
+        "false",
+        "nil",
     ];
     static TYPES: &[&str] = &[
-        "bool", "byte", "complex64", "complex128", "error", "float32", "float64",
-        "int", "int8", "int16", "int32", "int64", "rune", "string",
-        "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+        "bool",
+        "byte",
+        "complex64",
+        "complex128",
+        "error",
+        "float32",
+        "float64",
+        "int",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "rune",
+        "string",
+        "uint",
+        "uint8",
+        "uint16",
+        "uint32",
+        "uint64",
+        "uintptr",
     ];
     static BUILTINS: &[&str] = &[
         "append", "cap", "close", "copy", "delete", "len", "make", "new", "panic", "print",
@@ -729,19 +856,84 @@ fn highlight_go(line: &str) -> String {
 
 fn highlight_c(line: &str) -> String {
     static KEYWORDS: &[&str] = &[
-        "auto", "break", "case", "char", "const", "continue", "default", "do", "double",
-        "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long",
-        "register", "return", "short", "signed", "sizeof", "static", "struct", "switch",
-        "typedef", "union", "unsigned", "void", "volatile", "while",
-        "class", "namespace", "template", "typename", "public", "private", "protected",
-        "virtual", "override", "new", "delete", "try", "catch", "throw", "nullptr",
-        "true", "false", "using", "constexpr", "noexcept", "auto",
-        "#include", "#define", "#ifdef", "#ifndef", "#endif", "#pragma",
+        "auto",
+        "break",
+        "case",
+        "char",
+        "const",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "extern",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "inline",
+        "int",
+        "long",
+        "register",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "static",
+        "struct",
+        "switch",
+        "typedef",
+        "union",
+        "unsigned",
+        "void",
+        "volatile",
+        "while",
+        "class",
+        "namespace",
+        "template",
+        "typename",
+        "public",
+        "private",
+        "protected",
+        "virtual",
+        "override",
+        "new",
+        "delete",
+        "try",
+        "catch",
+        "throw",
+        "nullptr",
+        "true",
+        "false",
+        "using",
+        "constexpr",
+        "noexcept",
+        "auto",
+        "#include",
+        "#define",
+        "#ifdef",
+        "#ifndef",
+        "#endif",
+        "#pragma",
     ];
     static TYPES: &[&str] = &[
-        "size_t", "int8_t", "int16_t", "int32_t", "int64_t",
-        "uint8_t", "uint16_t", "uint32_t", "uint64_t",
-        "bool", "string", "vector", "map", "set", "unique_ptr", "shared_ptr",
+        "size_t",
+        "int8_t",
+        "int16_t",
+        "int32_t",
+        "int64_t",
+        "uint8_t",
+        "uint16_t",
+        "uint32_t",
+        "uint64_t",
+        "bool",
+        "string",
+        "vector",
+        "map",
+        "set",
+        "unique_ptr",
+        "shared_ptr",
     ];
     let mut tok = Tokenizer::new(line, "//", KEYWORDS, TYPES, &[]);
     tok.highlight()
@@ -794,7 +986,12 @@ fn highlight_json(line: &str) -> String {
             if chars[i] == '-' {
                 i += 1;
             }
-            while i < len && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == 'e' || chars[i] == 'E') {
+            while i < len
+                && (chars[i].is_ascii_digit()
+                    || chars[i] == '.'
+                    || chars[i] == 'e'
+                    || chars[i] == 'E')
+            {
                 i += 1;
             }
             let s: String = chars[start..i].iter().collect();
@@ -802,10 +999,17 @@ fn highlight_json(line: &str) -> String {
             out.push_str(&s);
             out.push_str(RESET);
             out.push_str(CODE_BG);
-        } else if trimmed[i..].starts_with("true") || trimmed[i..].starts_with("false") || trimmed[i..].starts_with("null") {
-            let word = if trimmed[i..].starts_with("true") { "true" }
-                else if trimmed[i..].starts_with("false") { "false" }
-                else { "null" };
+        } else if trimmed[i..].starts_with("true")
+            || trimmed[i..].starts_with("false")
+            || trimmed[i..].starts_with("null")
+        {
+            let word = if trimmed[i..].starts_with("true") {
+                "true"
+            } else if trimmed[i..].starts_with("false") {
+                "false"
+            } else {
+                "null"
+            };
             out.push_str(SYN_KEYWORD);
             out.push_str(word);
             out.push_str(RESET);
@@ -843,7 +1047,10 @@ fn highlight_toml(line: &str) -> String {
         let value = &line[eq_pos + 3..];
         return format!(
             "{}{}{}{}= {}",
-            SYN_TYPE, key, RESET, CODE_BG,
+            SYN_TYPE,
+            key,
+            RESET,
+            CODE_BG,
             highlight_toml_value(value),
         );
     }
@@ -884,8 +1091,12 @@ fn highlight_yaml(line: &str) -> String {
 
         return format!(
             "{}{}{}{}{}:{} {}",
-            indent, prefix,
-            SYN_TYPE, actual_key, RESET, CODE_BG,
+            indent,
+            prefix,
+            SYN_TYPE,
+            actual_key,
+            RESET,
+            CODE_BG,
             highlight_yaml_value(value),
         );
     }
@@ -893,7 +1104,11 @@ fn highlight_yaml(line: &str) -> String {
     if trimmed.starts_with("- ") {
         let indent = &line[..line.len() - trimmed.len()];
         return format!(
-            "{}{}- {}{}{}", indent, LIST_BULLET, RESET, CODE_BG,
+            "{}{}- {}{}{}",
+            indent,
+            LIST_BULLET,
+            RESET,
+            CODE_BG,
             highlight_yaml_value(&trimmed[2..]),
         );
     }
@@ -915,27 +1130,141 @@ fn highlight_yaml_value(value: &str) -> String {
 
 fn highlight_sql(line: &str) -> String {
     static KEYWORDS: &[&str] = &[
-        "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON",
-        "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "GROUP", "BY", "ORDER",
-        "HAVING", "LIMIT", "OFFSET", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
-        "CREATE", "TABLE", "ALTER", "DROP", "INDEX", "VIEW", "TRIGGER", "FUNCTION",
-        "IF", "EXISTS", "THEN", "ELSE", "END", "CASE", "WHEN", "BEGIN", "COMMIT", "ROLLBACK",
-        "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "UNIQUE", "CHECK", "DEFAULT", "CONSTRAINT",
-        "ASC", "DESC", "DISTINCT", "UNION", "ALL", "ANY", "BETWEEN", "LIKE", "TRUE", "FALSE",
-        "select", "from", "where", "and", "or", "not", "in", "is", "null", "as", "on",
-        "join", "left", "right", "inner", "outer", "group", "by", "order", "having",
-        "limit", "offset", "insert", "into", "values", "update", "set", "delete",
-        "create", "table", "alter", "drop", "if", "exists", "primary", "key",
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "AND",
+        "OR",
+        "NOT",
+        "IN",
+        "IS",
+        "NULL",
+        "AS",
+        "ON",
+        "JOIN",
+        "LEFT",
+        "RIGHT",
+        "INNER",
+        "OUTER",
+        "FULL",
+        "CROSS",
+        "GROUP",
+        "BY",
+        "ORDER",
+        "HAVING",
+        "LIMIT",
+        "OFFSET",
+        "INSERT",
+        "INTO",
+        "VALUES",
+        "UPDATE",
+        "SET",
+        "DELETE",
+        "CREATE",
+        "TABLE",
+        "ALTER",
+        "DROP",
+        "INDEX",
+        "VIEW",
+        "TRIGGER",
+        "FUNCTION",
+        "IF",
+        "EXISTS",
+        "THEN",
+        "ELSE",
+        "END",
+        "CASE",
+        "WHEN",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "PRIMARY",
+        "KEY",
+        "FOREIGN",
+        "REFERENCES",
+        "UNIQUE",
+        "CHECK",
+        "DEFAULT",
+        "CONSTRAINT",
+        "ASC",
+        "DESC",
+        "DISTINCT",
+        "UNION",
+        "ALL",
+        "ANY",
+        "BETWEEN",
+        "LIKE",
+        "TRUE",
+        "FALSE",
+        "select",
+        "from",
+        "where",
+        "and",
+        "or",
+        "not",
+        "in",
+        "is",
+        "null",
+        "as",
+        "on",
+        "join",
+        "left",
+        "right",
+        "inner",
+        "outer",
+        "group",
+        "by",
+        "order",
+        "having",
+        "limit",
+        "offset",
+        "insert",
+        "into",
+        "values",
+        "update",
+        "set",
+        "delete",
+        "create",
+        "table",
+        "alter",
+        "drop",
+        "if",
+        "exists",
+        "primary",
+        "key",
     ];
     static TYPES: &[&str] = &[
-        "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "FLOAT", "DOUBLE", "DECIMAL",
-        "NUMERIC", "VARCHAR", "CHAR", "TEXT", "BLOB", "DATE", "DATETIME", "TIMESTAMP",
-        "BOOLEAN", "SERIAL", "UUID",
-        "int", "integer", "bigint", "varchar", "char", "text", "boolean", "serial",
+        "INT",
+        "INTEGER",
+        "BIGINT",
+        "SMALLINT",
+        "TINYINT",
+        "FLOAT",
+        "DOUBLE",
+        "DECIMAL",
+        "NUMERIC",
+        "VARCHAR",
+        "CHAR",
+        "TEXT",
+        "BLOB",
+        "DATE",
+        "DATETIME",
+        "TIMESTAMP",
+        "BOOLEAN",
+        "SERIAL",
+        "UUID",
+        "int",
+        "integer",
+        "bigint",
+        "varchar",
+        "char",
+        "text",
+        "boolean",
+        "serial",
     ];
     static BUILTINS: &[&str] = &[
-        "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "CAST", "CONCAT", "NOW",
-        "count", "sum", "avg", "min", "max", "coalesce", "cast", "concat", "now",
+        "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "CAST", "CONCAT", "NOW", "count", "sum",
+        "avg", "min", "max", "coalesce", "cast", "concat", "now",
     ];
     let mut tok = Tokenizer::new(line, "--", KEYWORDS, TYPES, BUILTINS);
     tok.highlight()
@@ -1050,7 +1379,9 @@ impl TuiMarkdownRenderer {
             if line.starts_with("# ") {
                 output.push(RLine::from(RSpan::styled(
                     line[2..].to_string(),
-                    RStyle::default().fg(TUI_YELLOW).add_modifier(RModifier::BOLD),
+                    RStyle::default()
+                        .fg(TUI_YELLOW)
+                        .add_modifier(RModifier::BOLD),
                 )));
                 idx += 1;
                 continue;
@@ -1067,7 +1398,9 @@ impl TuiMarkdownRenderer {
                 let text_start = if line.starts_with("#### ") { 5 } else { 4 };
                 output.push(RLine::from(RSpan::styled(
                     line[text_start..].to_string(),
-                    RStyle::default().fg(TUI_PURPLE).add_modifier(RModifier::BOLD),
+                    RStyle::default()
+                        .fg(TUI_PURPLE)
+                        .add_modifier(RModifier::BOLD),
                 )));
                 idx += 1;
                 continue;
@@ -1079,7 +1412,9 @@ impl TuiMarkdownRenderer {
                     RSpan::styled("\u{2502} ", RStyle::default().fg(TUI_DIM)),
                     RSpan::styled(
                         line[2..].to_string(),
-                        RStyle::default().fg(TUI_MUTED).add_modifier(RModifier::ITALIC),
+                        RStyle::default()
+                            .fg(TUI_MUTED)
+                            .add_modifier(RModifier::ITALIC),
                     ),
                 ]));
                 idx += 1;
@@ -1088,9 +1423,10 @@ impl TuiMarkdownRenderer {
 
             // unordered list
             if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
-                let mut spans = vec![
-                    RSpan::styled("  \u{2022} ", RStyle::default().fg(TUI_ACCENT)),
-                ];
+                let mut spans = vec![RSpan::styled(
+                    "  \u{2022} ",
+                    RStyle::default().fg(TUI_ACCENT),
+                )];
                 spans.extend(tui_inline_spans(&line[2..]));
                 output.push(RLine::from(spans));
                 idx += 1;
@@ -1099,12 +1435,10 @@ impl TuiMarkdownRenderer {
 
             // ordered list
             if let Some((num, rest)) = parse_ordered_list(line) {
-                let mut spans = vec![
-                    RSpan::styled(
-                        format!("  {num}. "),
-                        RStyle::default().fg(TUI_ACCENT),
-                    ),
-                ];
+                let mut spans = vec![RSpan::styled(
+                    format!("  {num}. "),
+                    RStyle::default().fg(TUI_ACCENT),
+                )];
                 spans.extend(tui_inline_spans(rest));
                 output.push(RLine::from(spans));
                 idx += 1;
@@ -1162,9 +1496,7 @@ fn render_tui_table(rows: &[&str]) -> Vec<RLine<'static>> {
         return output;
     }
 
-    let sep_idx = rows
-        .iter()
-        .position(|r| is_table_separator(r));
+    let sep_idx = rows.iter().position(|r| is_table_separator(r));
 
     // column widths based on content (excluding separator row)
     let mut col_widths = vec![0usize; num_cols];
@@ -1190,10 +1522,7 @@ fn render_tui_table(rows: &[&str]) -> Vec<RLine<'static>> {
                 if col_idx > 0 {
                     spans.push(RSpan::styled("\u{2500}\u{253c}\u{2500}", sep_style));
                 }
-                spans.push(RSpan::styled(
-                    "\u{2500}".repeat(*width),
-                    sep_style,
-                ));
+                spans.push(RSpan::styled("\u{2500}".repeat(*width), sep_style));
             }
             output.push(RLine::from(spans));
             continue;
@@ -1212,18 +1541,13 @@ fn render_tui_table(rows: &[&str]) -> Vec<RLine<'static>> {
             if is_header {
                 spans.push(RSpan::styled(
                     cell.to_string(),
-                    RStyle::default()
-                        .fg(TUI_FG)
-                        .add_modifier(RModifier::BOLD),
+                    RStyle::default().fg(TUI_FG).add_modifier(RModifier::BOLD),
                 ));
             } else {
                 spans.extend(tui_inline_spans(cell));
             }
             if padding > 0 {
-                spans.push(RSpan::styled(
-                    " ".repeat(padding),
-                    RStyle::default(),
-                ));
+                spans.push(RSpan::styled(" ".repeat(padding), RStyle::default()));
             }
         }
         output.push(RLine::from(spans));
@@ -1257,7 +1581,9 @@ fn tui_inline_spans(text: &str) -> Vec<RSpan<'static>> {
                 let inner: String = chars[i + 3..end].iter().collect();
                 spans.push(RSpan::styled(
                     inner,
-                    RStyle::default().fg(TUI_FG).add_modifier(RModifier::BOLD | RModifier::ITALIC),
+                    RStyle::default()
+                        .fg(TUI_FG)
+                        .add_modifier(RModifier::BOLD | RModifier::ITALIC),
                 ));
                 i = end + 3;
                 continue;
@@ -1312,7 +1638,9 @@ fn tui_inline_spans(text: &str) -> Vec<RSpan<'static>> {
                 flush(&mut buf, &mut spans);
                 spans.push(RSpan::styled(
                     link_text,
-                    RStyle::default().fg(TUI_CYAN).add_modifier(RModifier::UNDERLINED),
+                    RStyle::default()
+                        .fg(TUI_CYAN)
+                        .add_modifier(RModifier::UNDERLINED),
                 ));
                 spans.push(RSpan::styled(
                     format!(" ({})", url),

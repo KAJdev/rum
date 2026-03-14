@@ -37,7 +37,10 @@ fn parse_slash_command(text: &str) -> Option<SlashCommand> {
 
     let parts: Vec<&str> = text.splitn(2, ' ').collect();
     let cmd = parts[0].to_lowercase();
-    let arg = parts.get(1).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let arg = parts
+        .get(1)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     match cmd.as_str() {
         "/model" => Some(SlashCommand::Model(arg)),
@@ -195,11 +198,7 @@ async fn run_print_mode(
     Ok(())
 }
 
-async fn run_tui_mode(
-    cfg: config::Config,
-    cwd: PathBuf,
-    message_parts: Vec<String>,
-) -> Result<()> {
+async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<String>) -> Result<()> {
     let no_credentials = cfg.api_key.is_none() && cfg.oauth.is_none();
     let api_client = api::ApiClient::new(&cfg)?;
 
@@ -300,7 +299,8 @@ async fn run_tui_mode(
         // spawn CI watch when a git push is detected
         if let Some(cwd) = app.pending_ci_watch.take() {
             let tx = job_tx.clone();
-            let job_id = app.start_background_job("CI".to_string(), "waiting for runs…".to_string());
+            let job_id =
+                app.start_background_job("CI".to_string(), "waiting for runs…".to_string());
             tokio::spawn(async move {
                 ci_watch(job_id, &cwd, tx).await;
             });
@@ -367,17 +367,15 @@ async fn run_tui_mode(
                     cancel.reset();
                     let _ = user_tx.send(combined);
                 }
-                Some(tui::QueuedAction::RunCommand(cmd)) => {
-                    match cmd.as_str() {
-                        "/compact" => {
-                            cancel.reset();
-                            app.current_message = Some("/compact".to_string());
-                            app.is_running = true;
-                            let _ = control_tx.send(agent::ControlMessage::Compact);
-                        }
-                        _ => {}
+                Some(tui::QueuedAction::RunCommand(cmd)) => match cmd.as_str() {
+                    "/compact" => {
+                        cancel.reset();
+                        app.current_message = Some("/compact".to_string());
+                        app.is_running = true;
+                        let _ = control_tx.send(agent::ControlMessage::Compact);
                     }
-                }
+                    _ => {}
+                },
                 None => {}
             }
         }
@@ -388,69 +386,74 @@ async fn run_tui_mode(
                     match tui::handle_key_event(key, &mut app) {
                         tui::InputAction::Submit(msg) => {
                             if let Some(verifier) = login_pending.take() {
-                            // the user pasted the auth code from the browser
-                            handle_login_code(&msg, verifier, &mut app, login_tx.clone());
-                        } else if let Some(cmd) = parse_slash_command(&msg) {
-                            handle_slash_command(cmd, &mut app, &control_tx, &mut login_pending);
-                            if !app.should_quit {
-                                // persist any settings that may have changed
-                                let _ = persistence::save_settings(&persistence::RumSettings {
-                                    model: Some(app.model_name().to_string()),
-                                    thinking_level: Some(app.thinking_level().to_string()),
-                                    diffs_expanded: Some(app.diffs_expanded),
-                                });
-                            }
-                            if app.should_quit {
-                                break;
-                            }
-                        } else if msg.starts_with('!') {
-                            let cmd = msg[1..].trim().to_string();
-                            if !cmd.is_empty() {
+                                // the user pasted the auth code from the browser
+                                handle_login_code(&msg, verifier, &mut app, login_tx.clone());
+                            } else if let Some(cmd) = parse_slash_command(&msg) {
+                                handle_slash_command(
+                                    cmd,
+                                    &mut app,
+                                    &control_tx,
+                                    &mut login_pending,
+                                );
+                                if !app.should_quit {
+                                    // persist any settings that may have changed
+                                    let _ = persistence::save_settings(&persistence::RumSettings {
+                                        model: Some(app.model_name().to_string()),
+                                        thinking_level: Some(app.thinking_level().to_string()),
+                                        diffs_expanded: Some(app.diffs_expanded),
+                                    });
+                                }
+                                if app.should_quit {
+                                    break;
+                                }
+                            } else if msg.starts_with('!') {
+                                let cmd = msg[1..].trim().to_string();
+                                if !cmd.is_empty() {
+                                    cancel.reset();
+                                    app.push_history(&msg);
+                                    app.push_user_message(&msg);
+                                    app.is_running = true;
+                                    let _ = control_tx.send(agent::ControlMessage::UserBash(cmd));
+                                }
+                            } else {
                                 cancel.reset();
                                 app.push_history(&msg);
-                                app.push_user_message(&msg);
-                                app.is_running = true;
-                                let _ = control_tx.send(agent::ControlMessage::UserBash(cmd));
+                                app.start_new_message(&msg);
+                                let _ = user_tx.send(msg);
                             }
-                        } else {
-                            cancel.reset();
-                            app.push_history(&msg);
-                            app.start_new_message(&msg);
-                            let _ = user_tx.send(msg);
                         }
-                    }
-                    tui::InputAction::Cancel => {
-                        cancel.cancel();
-                        app.cancel_running();
-                        // restore the last queued message to input, then drop the rest
-                        app.pop_queued_message();
-                        app.clear_queue();
-                    }
-                    tui::InputAction::Quit => break,
-                    tui::InputAction::ScrollUp => {
-                        app.auto_scroll = false;
-                        app.scroll_offset = app.scroll_offset.saturating_sub(1);
-                    }
-                    tui::InputAction::ScrollDown => {
-                        app.scroll_offset = app.scroll_offset.saturating_add(1);
-                    }
-                    tui::InputAction::ToggleDiff => {
-                        app.toggle_diff();
-                        let _ = persistence::save_settings(&persistence::RumSettings {
-                            model: Some(app.model_name().to_string()),
-                            thinking_level: Some(app.thinking_level().to_string()),
-                            diffs_expanded: Some(app.diffs_expanded),
-                        });
-                    }
-                    tui::InputAction::PasteFromClipboard => {
-                        if let Some(img_path) = try_read_clipboard_image() {
-                            app.insert_text(img_path);
-                            app.paste_handled = true;
+                        tui::InputAction::Cancel => {
+                            cancel.cancel();
+                            app.cancel_running();
+                            // restore the last queued message to input, then drop the rest
+                            app.pop_queued_message();
+                            app.clear_queue();
                         }
-                        // if no image is on clipboard, bracketed paste will fire separately
+                        tui::InputAction::Quit => break,
+                        tui::InputAction::ScrollUp => {
+                            app.auto_scroll = false;
+                            app.scroll_offset = app.scroll_offset.saturating_sub(1);
+                        }
+                        tui::InputAction::ScrollDown => {
+                            app.scroll_offset = app.scroll_offset.saturating_add(1);
+                        }
+                        tui::InputAction::ToggleDiff => {
+                            app.toggle_diff();
+                            let _ = persistence::save_settings(&persistence::RumSettings {
+                                model: Some(app.model_name().to_string()),
+                                thinking_level: Some(app.thinking_level().to_string()),
+                                diffs_expanded: Some(app.diffs_expanded),
+                            });
+                        }
+                        tui::InputAction::PasteFromClipboard => {
+                            if let Some(img_path) = try_read_clipboard_image() {
+                                app.insert_text(img_path);
+                                app.paste_handled = true;
+                            }
+                            // if no image is on clipboard, bracketed paste will fire separately
+                        }
+                        tui::InputAction::None => {}
                     }
-                    tui::InputAction::None => {}
-                }
                 }
                 Event::Paste(text) => {
                     if app.paste_handled {
@@ -468,18 +471,16 @@ async fn run_tui_mode(
                         app.insert_paste(text);
                     }
                 }
-                Event::Mouse(mouse) => {
-                    match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            app.auto_scroll = false;
-                            app.scroll_offset = app.scroll_offset.saturating_sub(3);
-                        }
-                        MouseEventKind::ScrollDown => {
-                            app.scroll_offset = app.scroll_offset.saturating_add(3);
-                        }
-                        _ => {}
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        app.auto_scroll = false;
+                        app.scroll_offset = app.scroll_offset.saturating_sub(3);
                     }
-                }
+                    MouseEventKind::ScrollDown => {
+                        app.scroll_offset = app.scroll_offset.saturating_add(3);
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -552,14 +553,12 @@ fn handle_slash_command(
                 "opening browser for anthropic login...\n\nif the browser didn't open, visit:\n{url}\n\nthen paste the redirect URL (or code#state) here and press enter"
             ));
         }
-        SlashCommand::Logout => {
-            match auth::delete_auth() {
-                Ok(()) => app.push_warning(
-                    "logged out. set ANTHROPIC_API_KEY or run /login to re-authenticate.".to_string(),
-                ),
-                Err(e) => app.push_error_msg(format!("logout failed: {e}")),
-            }
-        }
+        SlashCommand::Logout => match auth::delete_auth() {
+            Ok(()) => app.push_warning(
+                "logged out. set ANTHROPIC_API_KEY or run /login to re-authenticate.".to_string(),
+            ),
+            Err(e) => app.push_error_msg(format!("logout failed: {e}")),
+        },
         SlashCommand::Help => {
             let help = "\
 available commands:\n\
@@ -605,9 +604,8 @@ fn handle_model_command(
         Some(pat) => {
             if let Some(model_def) = config::match_model(&pat) {
                 app.update_model(model_def.id);
-                let _ = control_tx.send(agent::ControlMessage::ChangeModel(
-                    model_def.id.to_string(),
-                ));
+                let _ =
+                    control_tx.send(agent::ControlMessage::ChangeModel(model_def.id.to_string()));
                 app.push_success(format!("switched to {} ({})", model_def.id, model_def.name));
             } else {
                 let mut msg = format!("no model matching \"{pat}\"");
@@ -636,9 +634,7 @@ fn handle_thinking_command(
         Some(lvl) => {
             let lvl_lower = lvl.to_lowercase();
             if config::THINKING_LEVELS.contains(&lvl_lower.as_str()) {
-                let _ = control_tx.send(agent::ControlMessage::ChangeThinking(
-                    lvl_lower.clone(),
-                ));
+                let _ = control_tx.send(agent::ControlMessage::ChangeThinking(lvl_lower.clone()));
                 app.update_thinking(&lvl_lower);
                 app.push_success(format!("thinking level set to {lvl_lower}"));
             } else {
@@ -680,7 +676,9 @@ fn handle_login_code(
 
 // refreshes the stored oauth token if it is expired
 async fn maybe_refresh_token() {
-    let Some(creds) = auth::load_auth() else { return };
+    let Some(creds) = auth::load_auth() else {
+        return;
+    };
     if !auth::is_expired(&creds) {
         return;
     }
@@ -705,8 +703,11 @@ async fn run_login_command() -> Result<()> {
     )
     .await?;
 
-    let (code, state) = auth::parse_auth_response(input.trim())
-        .ok_or_else(|| anyhow::anyhow!("could not parse auth response. expected CODE#STATE or the full redirect URL"))?;
+    let (code, state) = auth::parse_auth_response(input.trim()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not parse auth response. expected CODE#STATE or the full redirect URL"
+        )
+    })?;
 
     println!("exchanging code for token...");
     let creds = auth::exchange_code(&code, &state, &verifier).await?;
@@ -783,7 +784,9 @@ fn resolve_pasted_path(text: &str, cwd: &std::path::Path) -> Option<String> {
             format!("/{stripped}")
         } else {
             // file://hostname/path → /path
-            rest.split_once('/').map(|(_, p)| format!("/{p}"))?.to_string()
+            rest.split_once('/')
+                .map(|(_, p)| format!("/{p}"))?
+                .to_string()
         }
     } else {
         text.to_string()
@@ -1082,10 +1085,14 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
 
         let output = match tokio::process::Command::new("gh")
             .args([
-                "run", "list",
-                "--commit", &sha,
-                "--json", "status,conclusion,name,url,databaseId",
-                "--limit", "20",
+                "run",
+                "list",
+                "--commit",
+                &sha,
+                "--json",
+                "status,conclusion,name,url,databaseId",
+                "--limit",
+                "20",
             ])
             .current_dir(cwd)
             .output()
@@ -1124,12 +1131,20 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
         }
 
         let total = runs.len();
-        let completed = runs.iter().filter(|r| {
-            r.get("status").and_then(|s| s.as_str()) == Some("completed")
-        }).count();
-        let failed = runs.iter().filter(|r| {
-            r.get("conclusion").and_then(|s| s.as_str()).map_or(false, |c| c == "failure" || c == "cancelled" || c == "timed_out")
-        }).count();
+        let completed = runs
+            .iter()
+            .filter(|r| r.get("status").and_then(|s| s.as_str()) == Some("completed"))
+            .count();
+        let failed = runs
+            .iter()
+            .filter(|r| {
+                r.get("conclusion")
+                    .and_then(|s| s.as_str())
+                    .map_or(false, |c| {
+                        c == "failure" || c == "cancelled" || c == "timed_out"
+                    })
+            })
+            .count();
 
         let _ = tx.send(tui::JobEvent::Update {
             id: job_id,
@@ -1144,12 +1159,21 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                     summary: format!("CI: {} checks passed on {}", total, branch_label),
                 });
             } else {
-                let failed_runs: Vec<(&serde_json::Value, String)> = runs.iter()
+                let failed_runs: Vec<(&serde_json::Value, String)> = runs
+                    .iter()
                     .filter(|r| {
-                        r.get("conclusion").and_then(|s| s.as_str()).map_or(false, |c| c == "failure" || c == "cancelled" || c == "timed_out")
+                        r.get("conclusion")
+                            .and_then(|s| s.as_str())
+                            .map_or(false, |c| {
+                                c == "failure" || c == "cancelled" || c == "timed_out"
+                            })
                     })
                     .map(|r| {
-                        let name = r.get("name").and_then(|n| n.as_str()).unwrap_or("unknown").to_string();
+                        let name = r
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
                         (r, name)
                     })
                     .collect();
@@ -1167,12 +1191,15 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                             if o.status.success() {
                                 let logs = String::from_utf8_lossy(&o.stdout);
                                 let mut in_group = false;
-                                let cleaned: Vec<String> = logs.lines()
+                                let cleaned: Vec<String> = logs
+                                    .lines()
                                     .filter_map(|line| {
                                         // each line is: "job\tstep\ttimestamp content"
                                         let rest = line.splitn(3, '\t').nth(2).unwrap_or(line);
                                         // strip the timestamp prefix (2026-01-01T00:00:00.0000000Z)
-                                        let content = if rest.len() > 28 && rest.as_bytes().get(4) == Some(&b'-') {
+                                        let content = if rest.len() > 28
+                                            && rest.as_bytes().get(4) == Some(&b'-')
+                                        {
                                             rest.get(29..).unwrap_or(rest).trim()
                                         } else {
                                             rest.trim()
@@ -1186,21 +1213,31 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                                             in_group = false;
                                             return None;
                                         }
-                                        if in_group { return None; }
+                                        if in_group {
+                                            return None;
+                                        }
                                         if content.is_empty() || content.starts_with("\u{FEFF}") {
                                             return None;
                                         }
-                                        let content = content.strip_prefix("##[error]").unwrap_or(content);
+                                        let content =
+                                            content.strip_prefix("##[error]").unwrap_or(content);
                                         let clean = tui::strip_ansi(content);
-                                        if clean.is_empty() { return None; }
+                                        if clean.is_empty() {
+                                            return None;
+                                        }
                                         Some(clean)
                                     })
                                     .collect();
-                                let tail: String = cleaned.iter()
-                                    .rev().take(30).collect::<Vec<_>>()
-                                    .into_iter().rev()
+                                let tail: String = cleaned
+                                    .iter()
+                                    .rev()
+                                    .take(30)
+                                    .collect::<Vec<_>>()
+                                    .into_iter()
+                                    .rev()
                                     .map(|s| s.as_str())
-                                    .collect::<Vec<_>>().join("\n");
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
                                 if !tail.is_empty() {
                                     log_output.push_str(&format!("\n--- {} ---\n{}", name, tail));
                                 }
@@ -1211,9 +1248,30 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
 
                 let failed_names: Vec<&String> = failed_runs.iter().map(|(_, n)| n).collect();
                 let summary = if log_output.is_empty() {
-                    format!("CI: {}/{} failed on {} ({})", failed, total, branch_label, failed_names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+                    format!(
+                        "CI: {}/{} failed on {} ({})",
+                        failed,
+                        total,
+                        branch_label,
+                        failed_names
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 } else {
-                    format!("CI: {}/{} failed on {} ({}){}", failed, total, branch_label, failed_names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "), log_output)
+                    format!(
+                        "CI: {}/{} failed on {} ({}){}",
+                        failed,
+                        total,
+                        branch_label,
+                        failed_names
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        log_output
+                    )
                 };
 
                 let _ = tx.send(tui::JobEvent::Complete {

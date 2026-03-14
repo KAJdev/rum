@@ -65,7 +65,6 @@ pub struct OutputConfig {
     pub effort: String,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
@@ -117,12 +116,18 @@ pub enum StreamEvent {
     Thinking(String),
     ThinkingSignature(String),
     Text(String),
-    ToolUseStart { id: String, name: String },
+    ToolUseStart {
+        id: String,
+        name: String,
+    },
     ToolUseInput(String),
     ContentBlockStop,
     CompactionStart,
     CompactionDelta(String),
-    MessageDelta { stop_reason: Option<String>, output_tokens: u32 },
+    MessageDelta {
+        stop_reason: Option<String>,
+        output_tokens: u32,
+    },
     MessageStart {
         input_tokens: u32,
         cache_read_tokens: u32,
@@ -168,7 +173,6 @@ impl ApiClient {
     pub fn set_bearer(&mut self, token: String) {
         self.auth = AuthMethod::Bearer(token);
     }
-
 
     pub fn set_model(&mut self, model: &str) {
         self.model = model.to_string();
@@ -293,11 +297,12 @@ pub fn parse_sse_event(text: &str) -> Option<StreamEvent> {
                 .pointer("/usage/output_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32;
-            Some(StreamEvent::MessageDelta { stop_reason, output_tokens })
+            Some(StreamEvent::MessageDelta {
+                stop_reason,
+                output_tokens,
+            })
         }
-        "message_stop" => {
-            Some(StreamEvent::MessageDone)
-        }
+        "message_stop" => Some(StreamEvent::MessageDone),
         "error" => {
             let msg = json
                 .pointer("/error/message")

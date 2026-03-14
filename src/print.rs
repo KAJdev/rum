@@ -589,11 +589,7 @@ impl PrintMode {
     }
 
     fn print_diff_summary(&self, name: &str, diff: &DiffInfo) {
-        let mut lines = vec![format!(
-            "  {DIM}{} {}{RESET}",
-            cap_tool(name),
-            diff.path,
-        )];
+        let mut lines = vec![format!("  {DIM}{} {}{RESET}", cap_tool(name), diff.path,)];
 
         if diff.stat.additions > 0 {
             let last = lines.last_mut().unwrap();
@@ -675,7 +671,11 @@ fn last_paragraph(text: &str) -> &str {
     let trimmed = text.trim_end();
     if let Some(pos) = trimmed.rfind("\n\n") {
         let after = trimmed[pos + 2..].trim_start_matches('\n');
-        if after.is_empty() { trimmed } else { after }
+        if after.is_empty() {
+            trimmed
+        } else {
+            after
+        }
     } else {
         trimmed
     }

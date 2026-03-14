@@ -1,9 +1,11 @@
+use crate::agent::AgentEvent;
+use crate::api::{ContentBlock, Message, MessageContent};
+use crate::tools::{DiffInfo, DiffLineTag, ToolResult};
 use crossterm::{
     event::{
-        KeyCode, KeyEvent, KeyModifiers,
-        KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-        EnableBracketedPaste, DisableBracketedPaste,
-        EnableMouseCapture, DisableMouseCapture,
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -19,9 +21,6 @@ use ratatui::{
 use std::io::{self, Stdout};
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
-use crate::agent::AgentEvent;
-use crate::api::{ContentBlock, Message, MessageContent};
-use crate::tools::{DiffInfo, DiffLineTag, ToolResult};
 
 const BG: Color = Color::Rgb(11, 14, 20);
 const FG: Color = Color::Rgb(191, 189, 182);
@@ -47,15 +46,51 @@ struct SlashDef {
 }
 
 const SLASH_COMMANDS: &[SlashDef] = &[
-    SlashDef { name: "/model", args: "[name]", description: "Switch model" },
-    SlashDef { name: "/thinking", args: "[level]", description: "Set thinking level" },
-    SlashDef { name: "/new", args: "", description: "Start new conversation" },
-    SlashDef { name: "/compact", args: "", description: "Summarize context to free up space" },
-    SlashDef { name: "/cd", args: "<path>", description: "Change working directory" },
-    SlashDef { name: "/login", args: "", description: "Log in with Anthropic OAuth" },
-    SlashDef { name: "/logout", args: "", description: "Log out" },
-    SlashDef { name: "/help", args: "", description: "Show available commands" },
-    SlashDef { name: "/quit", args: "", description: "Quit" },
+    SlashDef {
+        name: "/model",
+        args: "[name]",
+        description: "Switch model",
+    },
+    SlashDef {
+        name: "/thinking",
+        args: "[level]",
+        description: "Set thinking level",
+    },
+    SlashDef {
+        name: "/new",
+        args: "",
+        description: "Start new conversation",
+    },
+    SlashDef {
+        name: "/compact",
+        args: "",
+        description: "Summarize context to free up space",
+    },
+    SlashDef {
+        name: "/cd",
+        args: "<path>",
+        description: "Change working directory",
+    },
+    SlashDef {
+        name: "/login",
+        args: "",
+        description: "Log in with Anthropic OAuth",
+    },
+    SlashDef {
+        name: "/logout",
+        args: "",
+        description: "Log out",
+    },
+    SlashDef {
+        name: "/help",
+        args: "",
+        description: "Show available commands",
+    },
+    SlashDef {
+        name: "/quit",
+        args: "",
+        description: "Quit",
+    },
 ];
 
 struct Suggestion {
@@ -74,7 +109,8 @@ fn slash_suggestions(input: &str) -> Vec<Suggestion> {
 
     if parts.len() == 1 {
         // completing the command name
-        return SLASH_COMMANDS.iter()
+        return SLASH_COMMANDS
+            .iter()
             .filter(|h| h.name.starts_with(cmd_part.as_str()))
             .map(|h| Suggestion {
                 display: if h.args.is_empty() {
@@ -96,7 +132,8 @@ fn slash_suggestions(input: &str) -> Vec<Suggestion> {
     // completing a command argument
     let arg_partial = parts[1].to_lowercase();
     match cmd_part.as_str() {
-        "/model" => crate::config::ANTHROPIC_MODELS.iter()
+        "/model" => crate::config::ANTHROPIC_MODELS
+            .iter()
             .filter(|m| {
                 m.id.to_lowercase().contains(arg_partial.as_str())
                     || m.name.to_lowercase().contains(arg_partial.as_str())
@@ -107,7 +144,8 @@ fn slash_suggestions(input: &str) -> Vec<Suggestion> {
                 completion: format!("/model {}", m.id),
             })
             .collect(),
-        "/thinking" => crate::config::THINKING_LEVELS.iter()
+        "/thinking" => crate::config::THINKING_LEVELS
+            .iter()
             .filter(|l| l.starts_with(arg_partial.as_str()))
             .map(|l| Suggestion {
                 display: l.to_string(),
@@ -216,11 +254,22 @@ pub enum JobStatus {
 // event sent from background job tasks to update the UI
 #[derive(Debug)]
 pub enum JobEvent {
-    Show { id: u64 },
-    Update { id: u64, detail: String },
-    Complete { id: u64, status: JobStatus, summary: String },
+    Show {
+        id: u64,
+    },
+    Update {
+        id: u64,
+        detail: String,
+    },
+    Complete {
+        id: u64,
+        status: JobStatus,
+        summary: String,
+    },
     // silently remove a job without inserting a message
-    Dismiss { id: u64 },
+    Dismiss {
+        id: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -456,7 +505,11 @@ impl App {
                     }
                 }
             }
-            AgentEvent::ToolComplete { id: _, name, result } => {
+            AgentEvent::ToolComplete {
+                id: _,
+                name,
+                result,
+            } => {
                 if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.iter_mut().rev()
                     .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
                 {
@@ -550,7 +603,8 @@ impl App {
             AgentEvent::UserMessage(msg) => {
                 // the agent consumed queued messages at a tool break;
                 // remove them from the queue display
-                self.queued_messages.retain(|q| !matches!(q, QueuedItem::Message(_)));
+                self.queued_messages
+                    .retain(|q| !matches!(q, QueuedItem::Message(_)));
                 self.activity.push(ActivityItem::UserMessage(msg.clone()));
                 if let Some(ref mut current) = self.current_message {
                     current.push_str(&format!("\n{}", msg));
@@ -558,18 +612,24 @@ impl App {
                 self.auto_scroll = true;
             }
             AgentEvent::Status(msg) => {
-                self.activity.push(ActivityItem::System(SystemKind::Info, msg));
+                self.activity
+                    .push(ActivityItem::System(SystemKind::Info, msg));
             }
             AgentEvent::Error(e) => {
                 self.is_running = false;
-                self.activity.push(ActivityItem::Text(format!("[error] {e}")));
+                self.activity
+                    .push(ActivityItem::Text(format!("[error] {e}")));
             }
             AgentEvent::CompactStart => {
-                self.activity.push(ActivityItem::Compact(CompactStatus::Running));
+                self.activity
+                    .push(ActivityItem::Compact(CompactStatus::Running));
                 self.auto_scroll = true;
             }
             AgentEvent::CompactDone(msg) => {
-                if let Some(ActivityItem::Compact(ref mut s)) = self.activity.iter_mut().rev()
+                if let Some(ActivityItem::Compact(ref mut s)) = self
+                    .activity
+                    .iter_mut()
+                    .rev()
                     .find(|i| matches!(i, ActivityItem::Compact(_)))
                 {
                     *s = CompactStatus::Done(msg);
@@ -579,7 +639,8 @@ impl App {
     }
 
     pub fn start_new_message(&mut self, message: &str) {
-        self.activity.push(ActivityItem::UserMessage(message.to_string()));
+        self.activity
+            .push(ActivityItem::UserMessage(message.to_string()));
         self.current_message = Some(message.to_string());
         self.is_running = true;
         self.auto_scroll = true;
@@ -625,7 +686,8 @@ impl App {
 
     // queue a slash command to be dispatched when the current turn finishes
     pub fn queue_command(&mut self, cmd: &str) {
-        self.queued_messages.push(QueuedItem::Command(cmd.to_string()));
+        self.queued_messages
+            .push(QueuedItem::Command(cmd.to_string()));
     }
 
     // queue an explicit message string (used by background jobs like CI watch)
@@ -687,7 +749,10 @@ impl App {
     // pop the last queued message back into the input for editing
     pub fn pop_queued_message(&mut self) -> bool {
         // find the last Message item (skip over any queued commands)
-        let pos = self.queued_messages.iter().rposition(|i| matches!(i, QueuedItem::Message(_)));
+        let pos = self
+            .queued_messages
+            .iter()
+            .rposition(|i| matches!(i, QueuedItem::Message(_)));
         if let Some(idx) = pos {
             if let QueuedItem::Message(msg) = self.queued_messages.remove(idx) {
                 self.input = msg;
@@ -708,32 +773,38 @@ impl App {
     }
 
     pub fn push_user_message(&mut self, msg: &str) {
-        self.activity.push(ActivityItem::UserMessage(msg.to_string()));
+        self.activity
+            .push(ActivityItem::UserMessage(msg.to_string()));
         self.auto_scroll = true;
     }
 
     pub fn push_system_message(&mut self, msg: String) {
-        self.activity.push(ActivityItem::System(SystemKind::Info, msg));
+        self.activity
+            .push(ActivityItem::System(SystemKind::Info, msg));
         self.auto_scroll = true;
     }
 
     pub fn push_success(&mut self, msg: String) {
-        self.activity.push(ActivityItem::System(SystemKind::Success, msg));
+        self.activity
+            .push(ActivityItem::System(SystemKind::Success, msg));
         self.auto_scroll = true;
     }
 
     pub fn push_warning(&mut self, msg: String) {
-        self.activity.push(ActivityItem::System(SystemKind::Warning, msg));
+        self.activity
+            .push(ActivityItem::System(SystemKind::Warning, msg));
         self.auto_scroll = true;
     }
 
     pub fn push_error_msg(&mut self, msg: String) {
-        self.activity.push(ActivityItem::System(SystemKind::Error, msg));
+        self.activity
+            .push(ActivityItem::System(SystemKind::Error, msg));
         self.auto_scroll = true;
     }
 
     pub fn push_update_notice(&mut self, msg: String) {
-        self.activity.push(ActivityItem::System(SystemKind::Update, msg));
+        self.activity
+            .push(ActivityItem::System(SystemKind::Update, msg));
         self.auto_scroll = true;
     }
 
@@ -763,7 +834,11 @@ impl App {
                     job.detail = detail;
                 }
             }
-            JobEvent::Complete { id, status, summary } => {
+            JobEvent::Complete {
+                id,
+                status,
+                summary,
+            } => {
                 if let Some(job) = self.background_jobs.iter_mut().find(|j| j.id == id) {
                     job.status = status.clone();
                     job.detail = summary.clone();
@@ -784,9 +859,8 @@ impl App {
 
     // remove completed background jobs older than the given duration
     pub fn gc_background_jobs(&mut self, max_age: std::time::Duration) {
-        self.background_jobs.retain(|j| {
-            matches!(j.status, JobStatus::Running) || j.started_at.elapsed() < max_age
-        });
+        self.background_jobs
+            .retain(|j| matches!(j.status, JobStatus::Running) || j.started_at.elapsed() < max_age);
     }
 
     // reconstruct the activity feed and input history from persisted messages
@@ -812,7 +886,11 @@ impl App {
                                     self.push_history(text);
                                 }
                             }
-                            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } => {
                                 if let Some(&idx) = tool_map.get(tool_use_id) {
                                     if let ActivityItem::Tool(ref mut entry) = self.activity[idx] {
                                         let output = tool_result_display_text(content);
@@ -1024,7 +1102,9 @@ impl App {
     }
 
     fn context_pct(&self) -> f64 {
-        if self.context_limit == 0 { return 0.0; }
+        if self.context_limit == 0 {
+            return 0.0;
+        }
         (self.context_used() as f64 / self.context_limit as f64).min(1.0)
     }
 
@@ -1049,7 +1129,8 @@ impl App {
     // cursor_pos is a char-count offset. convert to byte index for
     // String insert/remove operations.
     fn cursor_byte_pos(&self) -> usize {
-        self.input.char_indices()
+        self.input
+            .char_indices()
             .nth(self.cursor_pos)
             .map(|(i, _)| i)
             .unwrap_or(self.input.len())
@@ -1130,7 +1211,9 @@ impl App {
     // visual line count after soft-wrapping to terminal width
     fn input_visual_line_count(&self) -> usize {
         let content_width = (self.term_width as usize).saturating_sub(2); // prefix width
-        if content_width == 0 { return 1; }
+        if content_width == 0 {
+            return 1;
+        }
         let display = make_display_input(&self.input, &self.paste_chunks);
         let mut count = 0;
         for line in display.split('\n') {
@@ -1144,7 +1227,8 @@ impl App {
         count.max(1)
     }
 
-    fn delete_to_line_start(&mut self) {        let (_, col) = self.cursor_line_col();
+    fn delete_to_line_start(&mut self) {
+        let (_, col) = self.cursor_line_col();
         if col == 0 {
             if self.cursor_pos > 0 {
                 let bp = self.cursor_byte_pos();
@@ -1156,8 +1240,13 @@ impl App {
             }
         } else {
             let bp = self.cursor_byte_pos();
-            let start = bp - self.input[..bp].chars().rev().take(col)
-                .map(|c| c.len_utf8()).sum::<usize>();
+            let start = bp
+                - self.input[..bp]
+                    .chars()
+                    .rev()
+                    .take(col)
+                    .map(|c| c.len_utf8())
+                    .sum::<usize>();
             self.input.replace_range(start..bp, "");
             self.cursor_pos -= col;
         }
@@ -1165,31 +1254,48 @@ impl App {
 
     fn delete_to_line_end(&mut self) {
         let bp = self.cursor_byte_pos();
-        let end = self.input[bp..].find('\n')
+        let end = self.input[bp..]
+            .find('\n')
             .map(|i| bp + i)
             .unwrap_or(self.input.len());
         self.input.replace_range(bp..end, "");
     }
 
     fn delete_word_backward(&mut self) {
-        if self.cursor_pos == 0 { return; }
+        if self.cursor_pos == 0 {
+            return;
+        }
         let chars: Vec<char> = self.input.chars().collect();
         let mut new_pos = self.cursor_pos;
-        while new_pos > 0 && chars[new_pos - 1].is_whitespace() { new_pos -= 1; }
-        while new_pos > 0 && !chars[new_pos - 1].is_whitespace() { new_pos -= 1; }
-        let byte_start = self.input.char_indices()
-            .nth(new_pos).map(|(i, _)| i).unwrap_or(0);
+        while new_pos > 0 && chars[new_pos - 1].is_whitespace() {
+            new_pos -= 1;
+        }
+        while new_pos > 0 && !chars[new_pos - 1].is_whitespace() {
+            new_pos -= 1;
+        }
+        let byte_start = self
+            .input
+            .char_indices()
+            .nth(new_pos)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         let byte_end = self.cursor_byte_pos();
         self.input.replace_range(byte_start..byte_end, "");
         self.cursor_pos = new_pos;
     }
 
     fn move_word_left(&mut self) {
-        if self.cursor_pos == 0 { return; }
+        if self.cursor_pos == 0 {
+            return;
+        }
         let chars: Vec<char> = self.input.chars().collect();
         let mut pos = self.cursor_pos;
-        while pos > 0 && chars[pos - 1].is_whitespace() { pos -= 1; }
-        while pos > 0 && !chars[pos - 1].is_whitespace() { pos -= 1; }
+        while pos > 0 && chars[pos - 1].is_whitespace() {
+            pos -= 1;
+        }
+        while pos > 0 && !chars[pos - 1].is_whitespace() {
+            pos -= 1;
+        }
         self.cursor_pos = pos;
     }
 
@@ -1197,8 +1303,12 @@ impl App {
         let chars: Vec<char> = self.input.chars().collect();
         let len = chars.len();
         let mut pos = self.cursor_pos;
-        while pos < len && !chars[pos].is_whitespace() { pos += 1; }
-        while pos < len && chars[pos].is_whitespace() { pos += 1; }
+        while pos < len && !chars[pos].is_whitespace() {
+            pos += 1;
+        }
+        while pos < len && chars[pos].is_whitespace() {
+            pos += 1;
+        }
         self.cursor_pos = pos;
     }
 
@@ -1210,14 +1320,18 @@ impl App {
     fn move_line_end(&mut self) {
         let chars: Vec<char> = self.input.chars().collect();
         let mut pos = self.cursor_pos;
-        while pos < chars.len() && chars[pos] != '\n' { pos += 1; }
+        while pos < chars.len() && chars[pos] != '\n' {
+            pos += 1;
+        }
         self.cursor_pos = pos;
     }
 
     // returns false if already on the first line
     fn move_cursor_up(&mut self) -> bool {
         let (line, col) = self.cursor_line_col();
-        if line == 0 { return false; }
+        if line == 0 {
+            return false;
+        }
         let lines: Vec<&str> = self.input.split('\n').collect();
         let prev_len = lines[line - 1].chars().count();
         let new_col = col.min(prev_len);
@@ -1234,7 +1348,9 @@ impl App {
     fn move_cursor_down(&mut self) -> bool {
         let (line, col) = self.cursor_line_col();
         let lines: Vec<&str> = self.input.split('\n').collect();
-        if line >= lines.len() - 1 { return false; }
+        if line >= lines.len() - 1 {
+            return false;
+        }
         let next_len = lines[line + 1].chars().count();
         let new_col = col.min(next_len);
         let mut new_pos = 0;
@@ -1316,14 +1432,21 @@ fn detect_git_branch(cwd: &str) -> Option<String> {
         .ok()?;
     if out.status.success() {
         let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if branch.is_empty() { None } else { Some(branch) }
+        if branch.is_empty() {
+            None
+        } else {
+            Some(branch)
+        }
     } else {
         None
     }
 }
 
 fn guess_context_limit(model: &str) -> u32 {
-    if let Some(def) = crate::config::ANTHROPIC_MODELS.iter().find(|m| m.id == model) {
+    if let Some(def) = crate::config::ANTHROPIC_MODELS
+        .iter()
+        .find(|m| m.id == model)
+    {
         return def.context_window;
     }
     DEFAULT_CONTEXT
@@ -1344,18 +1467,26 @@ fn capitalize_tool(name: &str) -> &str {
 // extract the primary argument (path or command) from streaming tool input
 fn extract_tool_arg(name: &str, input: &serde_json::Value) -> String {
     match name {
-        "read" | "edit" | "write" => {
-            input.get("path").and_then(|v| v.as_str()).unwrap_or("...").to_string()
-        }
-        "bash" => {
-            input.get("command").and_then(|v| v.as_str()).unwrap_or("...").to_string()
-        }
-        "web_search" => {
-            input.get("query").and_then(|v| v.as_str()).unwrap_or("...").to_string()
-        }
-        "explore" => {
-            input.get("prompt").and_then(|v| v.as_str()).unwrap_or("...").to_string()
-        }
+        "read" | "edit" | "write" => input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("...")
+            .to_string(),
+        "bash" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("...")
+            .to_string(),
+        "web_search" => input
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("...")
+            .to_string(),
+        "explore" => input
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("...")
+            .to_string(),
         _ => "...".to_string(),
     }
 }
@@ -1364,7 +1495,9 @@ fn extract_tool_arg(name: &str, input: &serde_json::Value) -> String {
 // tools.rs prefixes non-zero exits with "[exit code: N]\n"
 fn parse_exit_code(output: &str) -> Option<i32> {
     if output.starts_with("[exit code: ") {
-        output[12..].split(']').next()
+        output[12..]
+            .split(']')
+            .next()
             .and_then(|s| s.parse::<i32>().ok())
     } else {
         Some(0)
@@ -1376,18 +1509,17 @@ fn parse_exit_code(output: &str) -> Option<i32> {
 fn tool_result_display_text(content: &serde_json::Value) -> String {
     match content {
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(arr) => {
-            arr.iter()
-                .filter_map(|item| {
-                    if item.get("type")?.as_str()? == "text" {
-                        item.get("text")?.as_str().map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|item| {
+                if item.get("type")?.as_str()? == "text" {
+                    item.get("text")?.as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         _ => String::new(),
     }
 }
@@ -1398,7 +1530,11 @@ fn last_paragraph(text: &str) -> &str {
     let trimmed = text.trim_end();
     if let Some(pos) = trimmed.rfind("\n\n") {
         let after = trimmed[pos + 2..].trim_start_matches('\n');
-        if after.is_empty() { trimmed } else { after }
+        if after.is_empty() {
+            trimmed
+        } else {
+            after
+        }
     } else {
         trimmed
     }
@@ -1500,7 +1636,10 @@ fn wrap_text_with_bar(text: &str, max_width: u16, style: Style) -> Vec<Line<'sta
         while !remaining.is_empty() {
             let w = UnicodeWidthStr::width(remaining);
             if w <= content_width {
-                lines.push(Line::from(vec![bar.clone(), Span::styled(remaining.to_string(), style)]));
+                lines.push(Line::from(vec![
+                    bar.clone(),
+                    Span::styled(remaining.to_string(), style),
+                ]));
                 break;
             }
             // find a break point near content_width
@@ -1514,8 +1653,13 @@ fn wrap_text_with_bar(text: &str, max_width: u16, style: Style) -> Vec<Line<'sta
                 cur_w += cw;
                 split = i + ch.len_utf8();
             }
-            if split == 0 { split = remaining.len(); }
-            lines.push(Line::from(vec![bar.clone(), Span::styled(remaining[..split].to_string(), style)]));
+            if split == 0 {
+                split = remaining.len();
+            }
+            lines.push(Line::from(vec![
+                bar.clone(),
+                Span::styled(remaining[..split].to_string(), style),
+            ]));
             remaining = &remaining[split..];
         }
     }
@@ -1532,7 +1676,11 @@ fn wrap_md_lines_with_bar(md_lines: Vec<Line<'static>>, max_width: u16) -> Vec<L
     let mut out = Vec::new();
     for ml in md_lines {
         // estimate the display width of the line
-        let line_width: usize = ml.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+        let line_width: usize = ml
+            .spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
         if line_width <= content_width {
             let mut spans = vec![bar.clone()];
             spans.extend(ml.spans);
@@ -1568,7 +1716,9 @@ fn wrap_md_lines_with_bar(md_lines: Vec<Line<'static>>, max_width: u16) -> Vec<L
                     let mut w = 0;
                     for (i, ch) in remaining.char_indices() {
                         let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                        if w + cw > avail { break; }
+                        if w + cw > avail {
+                            break;
+                        }
                         w += cw;
                         split = i + ch.len_utf8();
                     }
@@ -1643,7 +1793,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Constraint::Length(msg_h),    // current/queued messages
             Constraint::Length(input_h),  // input field
             Constraint::Length(1),        // buffer after input
-            Constraint::Min(4),          // activity feed
+            Constraint::Min(4),           // activity feed
             Constraint::Length(bottom_h), // buffer before jobs / bottom
             Constraint::Length(jobs_h),   // background jobs bar
         ])
@@ -1661,7 +1811,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_jobs_bar(frame: &mut Frame, app: &App, area: Rect) {
-    if area.height == 0 { return; }
+    if area.height == 0 {
+        return;
+    }
 
     let mut spans: Vec<Span> = Vec::new();
     let visible: Vec<&BackgroundJob> = app.background_jobs.iter().filter(|j| j.visible).collect();
@@ -1674,10 +1826,16 @@ fn render_jobs_bar(frame: &mut Frame, app: &App, area: Rect) {
             JobStatus::Passed => ("✓", GREEN),
             JobStatus::Failed(_) => ("✗", RED),
         };
-        spans.push(Span::styled(format!("{} ", icon), Style::default().fg(icon_color)));
+        spans.push(Span::styled(
+            format!("{} ", icon),
+            Style::default().fg(icon_color),
+        ));
         spans.push(Span::styled(job.label.clone(), Style::default().fg(MUTED)));
         if !job.detail.is_empty() {
-            spans.push(Span::styled(format!(" {}", job.detail), Style::default().fg(DIM)));
+            spans.push(Span::styled(
+                format!(" {}", job.detail),
+                Style::default().fg(DIM),
+            ));
         }
         if matches!(job.status, JobStatus::Running) {
             let secs = job.started_at.elapsed().as_secs();
@@ -1703,7 +1861,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let w = area.width as usize;
 
     let thinking_suffix = if app.thinking_level != "off" {
-        format!(" ({})", app.thinking_level)
+        format!(" ({}) ", app.thinking_level)
     } else {
         String::new()
     };
@@ -1718,15 +1876,30 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let ctx_bar_width: usize = 8;
     let filled = ((pct * ctx_bar_width as f64).round() as usize).min(ctx_bar_width);
     let empty = ctx_bar_width - filled;
-    let ctx_color = if pct > 0.8 { RED } else if pct > 0.6 { YELLOW } else { ACCENT };
+    let ctx_color = if pct > 0.8 {
+        RED
+    } else if pct > 0.6 {
+        YELLOW
+    } else {
+        ACCENT
+    };
 
     let rate_str = format!("{:.0} tok/s", rate);
     let cost_str = format!("${:.3}", app.cost_usd());
     let ctx_label = format!("{}k/{}k", used_k, limit_k);
     let ctx_pct = format!("{:.0}%", pct * 100.0);
 
-    let right_len = spark_width + 1 + rate_str.len() + 2 + cost_str.len() + 2
-        + ctx_label.len() + 2 + ctx_bar_width + 2 + ctx_pct.len();
+    let right_len = spark_width
+        + 1
+        + rate_str.len()
+        + 2
+        + cost_str.len()
+        + 2
+        + ctx_label.len()
+        + 2
+        + ctx_bar_width
+        + 2
+        + ctx_pct.len();
 
     // fixed-width parts of the left side: "rum  " + "  " + model + thinking
     let model_part = app.model_name.len() + thinking_suffix.len();
@@ -1741,12 +1914,24 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let branch_overhead = if has_branch { 4 } else { 0 };
 
     let full_cwd = &app.cwd;
-    let full_left_content = full_cwd.len() + if has_branch { full_branch.len() + branch_overhead } else { 0 };
+    let full_left_content = full_cwd.len()
+        + if has_branch {
+            full_branch.len() + branch_overhead
+        } else {
+            0
+        };
 
     // determine what to show, truncating to fit within budget
     let (display_cwd, display_branch): (String, Option<String>) = if full_left_content <= budget {
         // everything fits
-        (full_cwd.clone(), if has_branch { Some(full_branch.to_string()) } else { None })
+        (
+            full_cwd.clone(),
+            if has_branch {
+                Some(full_branch.to_string())
+            } else {
+                None
+            },
+        )
     } else if has_branch {
         // try truncating branch first (min 7 chars)
         let min_branch = 7usize;
@@ -1786,7 +1971,10 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut spans = vec![
-        Span::styled("rum", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "rum",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!("  {}  ", display_cwd), Style::default().fg(FG)),
     ];
 
@@ -1799,8 +1987,14 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         0
     };
 
-    spans.push(Span::styled(app.model_name.clone(), Style::default().fg(MUTED)));
-    spans.push(Span::styled(thinking_suffix.clone(), Style::default().fg(MUTED)));
+    spans.push(Span::styled(
+        app.model_name.clone(),
+        Style::default().fg(MUTED),
+    ));
+    spans.push(Span::styled(
+        thinking_suffix.clone(),
+        Style::default().fg(MUTED),
+    ));
 
     let left_len = 4 + display_cwd.len() + 4 + branch_display_len + model_part;
 
@@ -1863,11 +2057,15 @@ fn truncate_path_start(path: &str, max_len: usize) -> String {
 // (max_width - prefix_width) columns
 fn visual_line_count(text: &str, max_width: u16, prefix_width: usize) -> usize {
     let content_width = (max_width as usize).saturating_sub(prefix_width);
-    if content_width == 0 { return 1; }
+    if content_width == 0 {
+        return 1;
+    }
     let mut count = 0;
     for line in text.split('\n') {
         let w = UnicodeWidthStr::width(line);
-        if w == 0 { count += 1; } else {
+        if w == 0 {
+            count += 1;
+        } else {
             count += (w + content_width - 1) / content_width;
         }
     }
@@ -1876,10 +2074,17 @@ fn visual_line_count(text: &str, max_width: u16, prefix_width: usize) -> usize {
 
 // wrap a message into indented lines with a given text style.
 // used for rendering the active message and queued messages above the input.
-fn wrap_message_lines(text: &str, max_width: u16, text_style: Style, spinner: Option<&str>) -> Vec<Line<'static>> {
+fn wrap_message_lines(
+    text: &str,
+    max_width: u16,
+    text_style: Style,
+    spinner: Option<&str>,
+) -> Vec<Line<'static>> {
     let prefix_width = 2usize;
     let content_width = (max_width as usize).saturating_sub(prefix_width);
-    if content_width == 0 { return vec![]; }
+    if content_width == 0 {
+        return vec![];
+    }
 
     let mut lines = Vec::new();
     for logical_line in text.split('\n') {
@@ -1894,11 +2099,15 @@ fn wrap_message_lines(text: &str, max_width: u16, text_style: Style, spinner: Op
             let mut chunk_end = chunk_start;
             while chunk_end < chars.len() {
                 let cw = unicode_width::UnicodeWidthChar::width(chars[chunk_end]).unwrap_or(0);
-                if w + cw > content_width { break; }
+                if w + cw > content_width {
+                    break;
+                }
                 w += cw;
                 chunk_end += 1;
             }
-            if chunk_end == chunk_start { chunk_end = chunk_start + 1; }
+            if chunk_end == chunk_start {
+                chunk_end = chunk_start + 1;
+            }
             let chunk_text: String = chars[chunk_start..chunk_end].iter().collect();
 
             let prefix = if lines.is_empty() {
@@ -1958,9 +2167,10 @@ fn wrap_input_text(
                     cursor_visual = Some((lines.len() as u16, 0));
                 }
             }
-            lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                prefix,
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )]));
             // advance past the newline separator (except after the last line)
             char_offset += 1; // for the '\n'
             continue;
@@ -1996,7 +2206,8 @@ fn wrap_input_text(
                 let abs_end = char_offset + chunk_end;
                 if cp >= abs_start && cp < abs_end {
                     let col_chars = &chars[chunk_start..(chunk_start + (cp - abs_start))];
-                    let col_w: usize = col_chars.iter()
+                    let col_w: usize = col_chars
+                        .iter()
                         .map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0))
                         .sum();
                     cursor_visual = Some((lines.len() as u16, col_w as u16));
@@ -2008,7 +2219,10 @@ fn wrap_input_text(
             }
 
             lines.push(Line::from(vec![
-                Span::styled(row_prefix, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    row_prefix,
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(chunk_text, Style::default().fg(text_color)),
             ]));
 
@@ -2023,9 +2237,10 @@ fn wrap_input_text(
     }
 
     if lines.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("\u{203a} ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            "\u{203a} ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )]));
         if cursor_char_pos == Some(0) {
             cursor_visual = Some((0, 0));
         }
@@ -2034,7 +2249,13 @@ fn wrap_input_text(
     (lines, cursor_visual)
 }
 
-fn render_message_area(frame: &mut Frame, app: &App, area: Rect, suggestions: &[Suggestion], selected: Option<usize>) {
+fn render_message_area(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    suggestions: &[Suggestion],
+    selected: Option<usize>,
+) {
     if area.height == 0 {
         return;
     }
@@ -2044,12 +2265,22 @@ fn render_message_area(frame: &mut Frame, app: &App, area: Rect, suggestions: &[
     if app.is_running && suggestions.is_empty() {
         let spin = spinner_char(app.spin_frame);
         if let Some(ref msg) = app.current_message {
-            lines.extend(wrap_message_lines(msg, area.width, Style::default().fg(ACCENT), Some(spin)));
+            lines.extend(wrap_message_lines(
+                msg,
+                area.width,
+                Style::default().fg(ACCENT),
+                Some(spin),
+            ));
         }
         for qm in &app.queued_messages {
             match qm {
                 QueuedItem::Message(s) => {
-                    lines.extend(wrap_message_lines(s, area.width, Style::default().fg(MUTED), None));
+                    lines.extend(wrap_message_lines(
+                        s,
+                        area.width,
+                        Style::default().fg(MUTED),
+                        None,
+                    ));
                 }
                 QueuedItem::Command(s) => {
                     lines.push(Line::from(vec![
@@ -2182,8 +2413,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     for idx in 0..n {
         if idx > 0 {
             let both_collapsed_tools =
-                is_compact_tool(&app.activity[idx - 1])
-                && is_compact_tool(&app.activity[idx]);
+                is_compact_tool(&app.activity[idx - 1]) && is_compact_tool(&app.activity[idx]);
             if !both_collapsed_tools {
                 total += 1;
             }
@@ -2234,8 +2464,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
             // blank line between items, except between consecutive collapsed tools
             if idx > 0 {
                 let both_collapsed_tools =
-                    is_compact_tool(&app.activity[idx - 1])
-                    && is_compact_tool(&app.activity[idx]);
+                    is_compact_tool(&app.activity[idx - 1]) && is_compact_tool(&app.activity[idx]);
                 if !both_collapsed_tools {
                     if cursor >= vp_start {
                         lines.push(Line::from(""));
@@ -2307,11 +2536,15 @@ fn render_user_message(text: &str, w: u16) -> Vec<Line<'static>> {
             let mut end = start;
             while end < chars.len() {
                 let cw = unicode_width::UnicodeWidthChar::width(chars[end]).unwrap_or(0);
-                if w_used + cw > content_width { break; }
+                if w_used + cw > content_width {
+                    break;
+                }
                 w_used += cw;
                 end += 1;
             }
-            if end == start { end = start + 1; }
+            if end == start {
+                end = start + 1;
+            }
             let chunk: String = chars[start..end].iter().collect();
             lines.push(Line::from(vec![
                 Span::styled(pfx.to_string(), prefix_style),
@@ -2325,11 +2558,11 @@ fn render_user_message(text: &str, w: u16) -> Vec<Line<'static>> {
 
 fn render_system_msg(kind: &SystemKind, text: &str) -> Vec<Line<'static>> {
     let (icon, color, bold) = match kind {
-        SystemKind::Info    => ("  ",     MUTED,   false),
-        SystemKind::Success => ("  ✓ ",   GREEN,   false),
-        SystemKind::Warning => ("  ⚠ ",   YELLOW,  false),
-        SystemKind::Error   => ("  ✗ ",   RED,     false),
-        SystemKind::Update  => ("  ↑ ",   ACCENT,  true),
+        SystemKind::Info => ("  ", MUTED, false),
+        SystemKind::Success => ("  ✓ ", GREEN, false),
+        SystemKind::Warning => ("  ⚠ ", YELLOW, false),
+        SystemKind::Error => ("  ✗ ", RED, false),
+        SystemKind::Update => ("  ↑ ", ACCENT, true),
     };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -2428,7 +2661,10 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                 } else {
                     format!("{}s", secs)
                 };
-                spans.push(Span::styled(format!(" {}", timer), Style::default().fg(DIM)));
+                spans.push(Span::styled(
+                    format!(" {}", timer),
+                    Style::default().fg(DIM),
+                ));
             }
             if !display_arg.is_empty() {
                 spans.push(Span::styled(
@@ -2473,10 +2709,7 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
             }
 
             // tool name in accent, argument in muted
-            spans.push(Span::styled(
-                label.to_string(),
-                Style::default().fg(ACCENT),
-            ));
+            spans.push(Span::styled(label.to_string(), Style::default().fg(ACCENT)));
             if !display_arg.is_empty() {
                 spans.push(Span::styled(
                     format!(" {}", display_arg),
@@ -2515,12 +2748,10 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
                     }
                     let total_lines = display.lines().count();
                     if total_lines > 8 {
-                        lines.push(tool_line(vec![
-                            Span::styled(
-                                format!("    ...{} more lines", total_lines - 8),
-                                Style::default().fg(DIM),
-                            ),
-                        ]));
+                        lines.push(tool_line(vec![Span::styled(
+                            format!("    ...{} more lines", total_lines - 8),
+                            Style::default().fg(DIM),
+                        )]));
                     }
                 }
 
@@ -2531,7 +2762,11 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
             }
         }
         ToolStatus::Error(e) => {
-            let short = if e.len() > 80 { format!("{}...", &e[..77]) } else { e.clone() };
+            let short = if e.len() > 80 {
+                format!("{}...", &e[..77])
+            } else {
+                e.clone()
+            };
             lines.push(tool_line(vec![
                 Span::styled("\u{2717} ", Style::default().fg(RED)),
                 Span::styled(
@@ -2547,7 +2782,10 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
 // render a sparkline where each bar is colored by the dominant token type
 // in that bucket. colors: text=accent, thinking=purple, tool=cyan, input=blue.
 fn render_colored_sparkline(samples: &[TokenBucket], width: usize) -> Vec<Span<'static>> {
-    let blocks = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+    let blocks = [
+        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
 
     if samples.is_empty() {
         return vec![Span::styled(" ".repeat(width), Style::default())];
@@ -2612,7 +2850,8 @@ fn dominant_color(bucket: &TokenBucket) -> Color {
         (bucket.thinking, THINKING_COLOR),
         (bucket.tool, TOOL_COLOR),
     ];
-    pairs.iter()
+    pairs
+        .iter()
         .max_by_key(|(count, _)| *count)
         .map(|(_, color)| *color)
         .unwrap_or(ACCENT)
@@ -2652,9 +2891,7 @@ impl Tui {
         // keys on Enter (needed for shift+enter newline detection)
         let _ = execute!(
             stdout,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            )
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
@@ -2881,9 +3118,18 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 match c {
                     'a' => app.move_line_start(),
                     'e' => app.move_line_end(),
-                    'u' => { app.reset_slash_completion(); app.delete_to_line_start(); }
-                    'k' => { app.reset_slash_completion(); app.delete_to_line_end(); }
-                    'w' => { app.reset_slash_completion(); app.delete_word_backward(); }
+                    'u' => {
+                        app.reset_slash_completion();
+                        app.delete_to_line_start();
+                    }
+                    'k' => {
+                        app.reset_slash_completion();
+                        app.delete_to_line_end();
+                    }
+                    'w' => {
+                        app.reset_slash_completion();
+                        app.delete_word_backward();
+                    }
                     'j' => {
                         // ctrl+j inserts newline (traditional unix LF)
                         app.reset_slash_completion();
@@ -2907,10 +3153,18 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                         app.move_word_right();
                         let end = app.cursor_pos;
                         if end > start {
-                            let byte_start = app.input.char_indices()
-                                .nth(start).map(|(i, _)| i).unwrap_or(app.input.len());
-                            let byte_end = app.input.char_indices()
-                                .nth(end).map(|(i, _)| i).unwrap_or(app.input.len());
+                            let byte_start = app
+                                .input
+                                .char_indices()
+                                .nth(start)
+                                .map(|(i, _)| i)
+                                .unwrap_or(app.input.len());
+                            let byte_end = app
+                                .input
+                                .char_indices()
+                                .nth(end)
+                                .map(|(i, _)| i)
+                                .unwrap_or(app.input.len());
                             app.input.replace_range(byte_start..byte_end, "");
                             app.cursor_pos = start;
                         }

@@ -43,7 +43,10 @@ impl CancelToken {
 pub enum AgentEvent {
     Thinking(String),
     Text(String),
-    ToolStart { id: String, name: String },
+    ToolStart {
+        id: String,
+        name: String,
+    },
     ToolInputDelta(String),
     ToolComplete {
         id: String,
@@ -101,10 +104,7 @@ impl Agent {
             system.push_str(ctx);
         }
 
-        system.push_str(&format!(
-            "\n\nCurrent working directory: {}",
-            cwd.display()
-        ));
+        system.push_str(&format!("\n\nCurrent working directory: {}", cwd.display()));
 
         let messages = crate::persistence::load_history(&cwd);
 
@@ -185,14 +185,8 @@ impl Agent {
             base_url: String::new(),
             cancel: Some(cancel_arc),
         };
-        let result = tools::execute_tool(
-            "bash",
-            &input,
-            &self.cwd,
-            Some(stream_tx),
-            Some(&api_ctx),
-        )
-        .await;
+        let result =
+            tools::execute_tool("bash", &input, &self.cwd, Some(stream_tx), Some(&api_ctx)).await;
 
         forward_handle.await.ok();
 
@@ -302,7 +296,9 @@ impl Agent {
 
         let summary = summary.trim().to_string();
         if summary.is_empty() {
-            let _ = event_tx.send(AgentEvent::Error("compact: received empty summary".to_string()));
+            let _ = event_tx.send(AgentEvent::Error(
+                "compact: received empty summary".to_string(),
+            ));
             let _ = event_tx.send(AgentEvent::TurnComplete);
             return Ok(());
         }
@@ -403,9 +399,7 @@ impl Agent {
                 )
                 .await
                 {
-                    let _ = stream_tx.send(StreamEvent::Error(
-                        format!("stream error: {}", e),
-                    ));
+                    let _ = stream_tx.send(StreamEvent::Error(format!("stream error: {}", e)));
                 }
             });
 
@@ -435,7 +429,11 @@ impl Agent {
                     break;
                 }
                 match evt {
-                    StreamEvent::MessageStart { input_tokens: it, cache_read_tokens: crt, cache_creation_tokens: cct } => {
+                    StreamEvent::MessageStart {
+                        input_tokens: it,
+                        cache_read_tokens: crt,
+                        cache_creation_tokens: cct,
+                    } => {
                         // emit input tokens immediately so the TUI can update cost/context
                         let _ = event_tx.send(AgentEvent::TokenUsage {
                             input_tokens: it,
@@ -483,7 +481,8 @@ impl Agent {
                     StreamEvent::CompactionStart => {
                         in_compaction = true;
                         current_compaction.clear();
-                        let _ = event_tx.send(AgentEvent::Status("compacting context...".to_string()));
+                        let _ =
+                            event_tx.send(AgentEvent::Status("compacting context...".to_string()));
                     }
                     StreamEvent::CompactionDelta(c) => {
                         if in_compaction {
@@ -535,7 +534,10 @@ impl Agent {
                             in_text = false;
                         }
                     }
-                    StreamEvent::MessageDelta { stop_reason: sr, output_tokens: ot } => {
+                    StreamEvent::MessageDelta {
+                        stop_reason: sr,
+                        output_tokens: ot,
+                    } => {
                         stop_reason = sr;
                         output_tokens = ot;
                     }
@@ -555,7 +557,8 @@ impl Agent {
 
             // execute all pending tools in parallel
             if !pending_tools.is_empty() && !self.cancel.is_cancelled() {
-                let mut handles: Vec<tokio::task::JoinHandle<(String, String, ToolResult)>> = Vec::new();
+                let mut handles: Vec<tokio::task::JoinHandle<(String, String, ToolResult)>> =
+                    Vec::new();
 
                 for (tool_id, tool_name, input) in pending_tools.drain(..) {
                     let cwd = self.cwd.clone();
@@ -600,11 +603,7 @@ impl Agent {
                 for handle in handles {
                     if let Ok((id, name, result)) = handle.await {
                         tool_results.insert(id.clone(), result.clone());
-                        let _ = event_tx.send(AgentEvent::ToolComplete {
-                            id,
-                            name,
-                            result,
-                        });
+                        let _ = event_tx.send(AgentEvent::ToolComplete { id, name, result });
                     }
                 }
             }
@@ -663,7 +662,9 @@ impl Agent {
                             } else {
                                 result_blocks.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
-                                    content: serde_json::Value::String("cancelled by user".to_string()),
+                                    content: serde_json::Value::String(
+                                        "cancelled by user".to_string(),
+                                    ),
                                     is_error: Some(true),
                                 });
                             }
@@ -742,7 +743,10 @@ impl Agent {
                     let cached = tool_results.remove(id.as_str());
                     let (content, is_error) = match cached {
                         Some(r) => tool_result_content(r),
-                        None => (serde_json::Value::String("tool result missing".to_string()), Some(true)),
+                        None => (
+                            serde_json::Value::String("tool result missing".to_string()),
+                            Some(true),
+                        ),
                     };
                     result_blocks.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
@@ -762,9 +766,7 @@ impl Agent {
                 if !injected.is_empty() {
                     let combined = injected.join("\n\n");
                     let _ = event_tx.send(AgentEvent::UserMessage(combined.clone()));
-                    result_blocks.push(ContentBlock::Text {
-                        text: combined,
-                    });
+                    result_blocks.push(ContentBlock::Text { text: combined });
                 }
             }
 
@@ -827,7 +829,10 @@ fn clean_thinking_blocks(messages: Vec<Message>) -> Vec<Message> {
                 }
                 other => other,
             };
-            Message { role: m.role, content }
+            Message {
+                role: m.role,
+                content,
+            }
         })
         .collect()
 }
@@ -837,13 +842,13 @@ fn clean_thinking_blocks(messages: Vec<Message>) -> Vec<Message> {
 // matching the anthropic api's multi-block tool_result format.
 fn tool_result_content(result: tools::ToolResult) -> (serde_json::Value, Option<bool>) {
     match result {
-        tools::ToolResult::Success { output, .. } => {
-            (serde_json::Value::String(output), None)
-        }
-        tools::ToolResult::Error(e) => {
-            (serde_json::Value::String(e), Some(true))
-        }
-        tools::ToolResult::Image { text, data, media_type } => {
+        tools::ToolResult::Success { output, .. } => (serde_json::Value::String(output), None),
+        tools::ToolResult::Error(e) => (serde_json::Value::String(e), Some(true)),
+        tools::ToolResult::Image {
+            text,
+            data,
+            media_type,
+        } => {
             let content = serde_json::json!([
                 {"type": "text", "text": text},
                 {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
@@ -865,8 +870,10 @@ fn is_retryable_error(e: &str) -> bool {
 }
 
 fn is_adaptive_model(model: &str) -> bool {
-    model.contains("opus-4-5") || model.contains("opus-4-6")
-        || model.contains("sonnet-4-5") || model.contains("sonnet-4-6")
+    model.contains("opus-4-5")
+        || model.contains("opus-4-6")
+        || model.contains("sonnet-4-5")
+        || model.contains("sonnet-4-6")
         || model.contains("haiku-4-5")
 }
 
@@ -885,7 +892,9 @@ async fn stream_request(
     tools_json: &[serde_json::Value],
     tx: mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
-    use crate::api::{AuthMethod, CompactEdit, ContextManagement, MessagesRequest, OutputConfig, ThinkingConfig};
+    use crate::api::{
+        AuthMethod, CompactEdit, ContextManagement, MessagesRequest, OutputConfig, ThinkingConfig,
+    };
     use futures::StreamExt;
 
     if matches!(auth, AuthMethod::None) {
@@ -898,44 +907,47 @@ async fn stream_request(
     let is_oauth = matches!(auth, AuthMethod::Bearer(_));
 
     // adaptive thinking for opus 4.6+, budget-based for older models
-    let (thinking, output_config, max_tokens) = if is_adaptive_model(model) && thinking_level != "off" {
-        let effort = match thinking_level {
-            "minimal" | "low" => "low",
-            "medium" => "medium",
-            "high" => "high",
-            "xhigh" => "max",
-            _ => "high",
-        };
-        (
-            Some(ThinkingConfig::Adaptive {
-                thinking_type: "adaptive".to_string(),
-            }),
-            Some(OutputConfig { effort: effort.to_string() }),
-            16384,
-        )
-    } else {
-        let thinking_budget = match thinking_level {
-            "minimal" => Some(1024u32),
-            "low" => Some(4096),
-            "medium" => Some(10240),
-            "high" => Some(32768),
-            "xhigh" => Some(65536),
-            _ => None,
-        };
+    let (thinking, output_config, max_tokens) =
+        if is_adaptive_model(model) && thinking_level != "off" {
+            let effort = match thinking_level {
+                "minimal" | "low" => "low",
+                "medium" => "medium",
+                "high" => "high",
+                "xhigh" => "max",
+                _ => "high",
+            };
+            (
+                Some(ThinkingConfig::Adaptive {
+                    thinking_type: "adaptive".to_string(),
+                }),
+                Some(OutputConfig {
+                    effort: effort.to_string(),
+                }),
+                16384,
+            )
+        } else {
+            let thinking_budget = match thinking_level {
+                "minimal" => Some(1024u32),
+                "low" => Some(4096),
+                "medium" => Some(10240),
+                "high" => Some(32768),
+                "xhigh" => Some(65536),
+                _ => None,
+            };
 
-        let thinking = thinking_budget.map(|budget| ThinkingConfig::Budget {
-            thinking_type: "enabled".to_string(),
-            budget_tokens: budget,
-        });
+            let thinking = thinking_budget.map(|budget| ThinkingConfig::Budget {
+                thinking_type: "enabled".to_string(),
+                budget_tokens: budget,
+            });
 
-        // max_tokens must be strictly greater than the thinking budget
-        let max_tokens = match thinking_budget {
-            Some(budget) => budget + 16384,
-            None => 8192,
+            // max_tokens must be strictly greater than the thinking budget
+            let max_tokens = match thinking_budget {
+                Some(budget) => budget + 16384,
+                None => 8192,
+            };
+
+            (thinking, None, max_tokens)
         };
-
-        (thinking, None, max_tokens)
-    };
 
     // oauth requires claude code identity in system prompt
     let system_value = if is_oauth {
@@ -949,35 +961,49 @@ async fn stream_request(
 
     // oauth requires claude code tool name casing
     let tools = if is_oauth {
-        tools_json.iter().map(|t| {
-            let mut t = t.clone();
-            if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
-                t["name"] = serde_json::Value::String(to_cc_name(name).to_string());
-            }
-            t
-        }).collect()
+        tools_json
+            .iter()
+            .map(|t| {
+                let mut t = t.clone();
+                if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
+                    t["name"] = serde_json::Value::String(to_cc_name(name).to_string());
+                }
+                t
+            })
+            .collect()
     } else {
         tools_json.to_vec()
     };
 
     // remap tool names in conversation history for oauth
     let messages = if is_oauth {
-        messages.iter().map(|m| {
-            let content = match &m.content {
-                MessageContent::Blocks(blocks) => {
-                    MessageContent::Blocks(blocks.iter().map(|b| match b {
-                        ContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
-                            id: id.clone(),
-                            name: to_cc_name(name).to_string(),
-                            input: input.clone(),
-                        },
-                        other => other.clone(),
-                    }).collect())
+        messages
+            .iter()
+            .map(|m| {
+                let content = match &m.content {
+                    MessageContent::Blocks(blocks) => MessageContent::Blocks(
+                        blocks
+                            .iter()
+                            .map(|b| match b {
+                                ContentBlock::ToolUse { id, name, input } => {
+                                    ContentBlock::ToolUse {
+                                        id: id.clone(),
+                                        name: to_cc_name(name).to_string(),
+                                        input: input.clone(),
+                                    }
+                                }
+                                other => other.clone(),
+                            })
+                            .collect(),
+                    ),
+                    other => other.clone(),
+                };
+                Message {
+                    role: m.role.clone(),
+                    content,
                 }
-                other => other.clone(),
-            };
-            Message { role: m.role.clone(), content }
-        }).collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
     } else {
         messages.to_vec()
     };
@@ -1027,10 +1053,7 @@ async fn stream_request(
         AuthMethod::None => unreachable!("none auth filtered above"),
     }
     headers.insert("anthropic-version", "2023-06-01".parse()?);
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        "application/json".parse()?,
-    );
+    headers.insert(reqwest::header::CONTENT_TYPE, "application/json".parse()?);
 
     // build beta features list
     let mut beta_features = Vec::new();
@@ -1063,7 +1086,10 @@ async fn stream_request(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        let _ = tx.send(StreamEvent::Error(format!("api error ({}): {}", status, body)));
+        let _ = tx.send(StreamEvent::Error(format!(
+            "api error ({}): {}",
+            status, body
+        )));
         return Ok(());
     }
 
@@ -1074,9 +1100,7 @@ async fn stream_request(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(StreamEvent::Error(
-                    format!("stream read error: {}", e),
-                ));
+                let _ = tx.send(StreamEvent::Error(format!("stream read error: {}", e)));
                 return Ok(());
             }
         };
