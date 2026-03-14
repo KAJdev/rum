@@ -894,20 +894,8 @@ async fn maybe_refresh_oauth(client: &mut crate::api::ApiClient) {
     if !matches!(client.auth, crate::api::AuthMethod::Bearer(_)) {
         return;
     }
-    let Some(creds) = crate::auth::load_auth() else {
-        return;
-    };
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    // refresh if within 5 minutes of expiry
-    if now_ms + 5 * 60 * 1000 < creds.expires {
-        return;
-    }
-    if let Ok(new_creds) = crate::auth::refresh(&creds.refresh).await {
-        client.set_auth(crate::api::AuthMethod::Bearer(new_creds.access.clone()));
-        let _ = crate::auth::save_auth(&new_creds);
+    if let Some(new_creds) = crate::auth::maybe_refresh().await {
+        client.set_auth(crate::api::AuthMethod::Bearer(new_creds.access));
     }
 }
 

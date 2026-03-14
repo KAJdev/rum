@@ -70,12 +70,20 @@ pub fn delete_auth() -> Result<()> {
     Ok(())
 }
 
-pub fn is_expired(creds: &OAuthCredentials) -> bool {
+// refreshes the stored oauth token if it's expired or within 5 minutes of expiry.
+// returns the new credentials if a refresh occurred.
+pub async fn maybe_refresh() -> Option<OAuthCredentials> {
+    let creds = load_auth()?;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    now_ms >= creds.expires
+    if now_ms + 5 * 60 * 1000 < creds.expires {
+        return None;
+    }
+    let new_creds = refresh(&creds.refresh).await.ok()?;
+    let _ = save_auth(&new_creds);
+    Some(new_creds)
 }
 
 // generates (verifier, challenge) for the pkce flow

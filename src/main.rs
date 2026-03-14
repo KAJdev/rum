@@ -699,17 +699,8 @@ fn handle_login_code(
     }
 }
 
-// refreshes the stored oauth token if it is expired
 async fn maybe_refresh_token() {
-    let Some(creds) = auth::load_auth() else {
-        return;
-    };
-    if !auth::is_expired(&creds) {
-        return;
-    }
-    if let Ok(new_creds) = auth::refresh(&creds.refresh).await {
-        let _ = auth::save_auth(&new_creds);
-    }
+    auth::maybe_refresh().await;
 }
 
 // standalone `rum login` command
