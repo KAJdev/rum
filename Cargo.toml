@@ -1,6 +1,6 @@
 [package]
 name = "rum"
-version = "0.5.12"
+version = "0.5.13"
 edition = "2021"
 description = "a fast coding agent for the terminal"
 license = "MIT"
