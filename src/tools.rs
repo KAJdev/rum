@@ -38,14 +38,23 @@ pub enum ToolResult {
     Success {
         output: String,
         diff: Option<DiffInfo>,
+        // set by the read tool to indicate which file/line was viewed
+        read: Option<ReadInfo>,
     },
-    // image file read result — base64-encoded data sent to the model as a content block
+    // image file read result -- base64-encoded data sent to the model as a content block
     Image {
         text: String,
         data: String,
         media_type: String,
     },
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ReadInfo {
+    pub path: String,
+    // 1-indexed line offset
+    pub offset: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -247,10 +256,11 @@ pub fn execute_tool<'a>(
 }
 
 async fn exec_read(input: &serde_json::Value, cwd: &Path) -> ToolResult {
-    let path = match input.get("path").and_then(|v| v.as_str()) {
-        Some(p) => resolve_path(p, cwd),
+    let raw_path = match input.get("path").and_then(|v| v.as_str()) {
+        Some(p) => p,
         None => return ToolResult::Error("missing 'path' parameter".to_string()),
     };
+    let path = resolve_path(raw_path, cwd);
 
     let offset = input
         .get("offset")
@@ -280,7 +290,19 @@ async fn exec_read(input: &serde_json::Value, cwd: &Path) -> ToolResult {
                 result
             };
 
-            ToolResult::Success { output, diff: None }
+            let display_path = path.strip_prefix(cwd)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+
+            ToolResult::Success {
+                output,
+                diff: None,
+                read: Some(ReadInfo {
+                    path: display_path,
+                    offset: offset.unwrap_or(1),
+                }),
+            }
         }
         Err(e) => ToolResult::Error(format!("failed to read {}: {}", path.display(), e)),
     }
@@ -497,9 +519,8 @@ async fn exec_bash(
         collected
     };
 
-    ToolResult::Success { output, diff: None }
+    ToolResult::Success { output, diff: None, read: None }
 }
-
 async fn exec_view_file(input: &serde_json::Value, cwd: &Path) -> ToolResult {
     use base64::{engine::general_purpose::STANDARD, Engine};
 
@@ -629,6 +650,7 @@ async fn exec_edit(input: &serde_json::Value, cwd: &Path) -> ToolResult {
     ToolResult::Success {
         output: format!("edited {}", display_path),
         diff: Some(diff_info),
+        read: None,
     }
 }
 
@@ -676,6 +698,7 @@ async fn exec_write(input: &serde_json::Value, cwd: &Path) -> ToolResult {
     ToolResult::Success {
         output: format!("{} {} ({} bytes)", action, display_path, content.len()),
         diff: Some(diff_info),
+        read: None,
     }
 }
 
@@ -1074,6 +1097,7 @@ async fn exec_explore(
             return ToolResult::Success {
                 output: writeup,
                 diff: None,
+                read: None,
             };
         }
 
@@ -1156,7 +1180,7 @@ async fn exec_web_search(input: &serde_json::Value) -> ToolResult {
         Ok(response) if response.status().is_success() => {
             let body = response.text().await.unwrap_or_default();
             let output = parse_ddg_results(&body, limit);
-            ToolResult::Success { output, diff: None }
+            ToolResult::Success { output, diff: None, read: None }
         }
         Ok(response) => ToolResult::Error(format!("search returned status {}", response.status())),
         Err(e) => ToolResult::Error(format!("search request failed: {}", e)),

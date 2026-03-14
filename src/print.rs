@@ -434,7 +434,7 @@ impl PrintMode {
                 self.tracker = None;
 
                 match &result {
-                    ToolResult::Success { output: _, diff } => {
+                    ToolResult::Success { output: _, diff, .. } => {
                         match name.as_str() {
                             "bash" => {
                                 // command was already streamed

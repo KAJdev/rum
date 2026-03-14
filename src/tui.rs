@@ -543,12 +543,12 @@ impl App {
                 name,
                 result,
             } => {
-                let mut tracked_edit: Option<(String, Option<DiffInfo>)> = None;
+                let mut tracked: Option<(String, Option<DiffInfo>, Option<usize>)> = None;
                 if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.iter_mut().rev()
                     .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
                 {
                     match &result {
-                        ToolResult::Success { output, diff } => {
+                        ToolResult::Success { output, diff, read } => {
                             let exit_code = if name == "bash" {
                                 parse_exit_code(output)
                             } else {
@@ -558,7 +558,9 @@ impl App {
                             if let Some(d) = diff {
                                 entry.arg = d.path.clone();
                                 entry.diff = Some(d.clone());
-                                tracked_edit = Some((d.path.clone(), Some(d.clone())));
+                                tracked = Some((d.path.clone(), Some(d.clone()), None));
+                            } else if let Some(r) = read {
+                                tracked = Some((r.path.clone(), None, Some(r.offset)));
                             }
 
                             entry.expanded = self.diffs_expanded;
@@ -599,8 +601,8 @@ impl App {
                         }
                     }
                 }
-                if let Some((path, diff)) = tracked_edit {
-                    self.track_agent_edit(path, diff);
+                if let Some((path, diff, line)) = tracked {
+                    self.track_agent_edit(path, diff, line);
                 }
             }
             AgentEvent::TokenUsage {
@@ -627,6 +629,8 @@ impl App {
             AgentEvent::TurnComplete => {
                 self.is_running = false;
                 self.new_turn = true;
+                // BEL character triggers terminal/OS notification
+                print!("\x07");
                 // cancel any in-progress compact animation
                 for item in self.activity.iter_mut().rev() {
                     match item {
@@ -1802,9 +1806,9 @@ impl App {
         let full_path = std::path::Path::new(&self.cwd).join(&edit.path);
         match EditorBuffer::open(&full_path) {
             Ok(mut buf) => {
-                // build diff markers and jump to first change
                 self.diff_markers.clear();
                 if let Some(ref diff) = edit.diff {
+                    // build diff markers and jump to first change
                     let mut first_change_line: Option<usize> = None;
                     for hunk in &diff.hunks {
                         let mut new_line = hunk.new_start;
@@ -1848,6 +1852,13 @@ impl App {
                             .unwrap_or(24) as usize;
                         buf.ensure_cursor_visible(h.saturating_sub(2));
                     }
+                } else if let Some(line) = edit.line {
+                    // no diff (read tool) - jump to the requested line
+                    buf.goto_line(line.saturating_sub(1));
+                    let h = crossterm::terminal::size()
+                        .map(|(_, h)| h)
+                        .unwrap_or(24) as usize;
+                    buf.ensure_cursor_visible(h.saturating_sub(2));
                 }
                 self.editor_buffer = Some(buf);
             }
@@ -1855,11 +1866,11 @@ impl App {
         }
     }
 
-    // called when the agent completes an edit tool to track it for follow mode
-    pub fn track_agent_edit(&mut self, path: String, diff: Option<DiffInfo>) {
+    pub fn track_agent_edit(&mut self, path: String, diff: Option<DiffInfo>, line: Option<usize>) {
         let edit = AgentEdit {
             path,
             diff,
+            line,
             _timestamp: std::time::Instant::now(),
         };
         self.agent_edits.push(edit);

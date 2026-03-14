@@ -6,11 +6,13 @@ use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 
 use crate::tools::DiffInfo;
 
-// tracks an agent edit for follow mode navigation
+// tracks an agent file operation (edit or read) for follow mode navigation
 #[derive(Debug, Clone)]
 pub struct AgentEdit {
     pub path: String,
     pub diff: Option<DiffInfo>,
+    // line to jump to when no diff is present (e.g. read tool offset)
+    pub line: Option<usize>,
     pub _timestamp: Instant,
 }
 
