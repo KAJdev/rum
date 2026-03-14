@@ -186,6 +186,10 @@ impl ApiClient {
         self.auth.clone()
     }
 
+    pub fn set_auth(&mut self, auth: AuthMethod) {
+        self.auth = auth;
+    }
+
     pub fn base_url_clone(&self) -> String {
         self.base_url.clone()
     }

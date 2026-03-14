@@ -251,6 +251,9 @@ impl Agent {
         });
 
         let (stream_tx, mut stream_rx) = mpsc::unbounded_channel::<StreamEvent>();
+
+        maybe_refresh_oauth(&mut self.client).await;
+
         let client_model = self.client.model_clone();
         let client_auth = self.client.auth_clone();
         let client_base_url = self.client.base_url_clone();
@@ -373,6 +376,9 @@ impl Agent {
             let messages = self.messages.clone();
             let system = self.system_prompt.clone();
             let thinking = self.thinking_level.clone();
+
+            // refresh oauth token if it's expired or about to expire
+            maybe_refresh_oauth(&mut self.client).await;
 
             let client_model = self.client.model_clone();
             let client_auth = self.client.auth_clone();
@@ -883,6 +889,28 @@ fn supports_compaction(model: &str) -> bool {
     model.contains("opus-4-6") || model.contains("sonnet-4-6")
 }
 
+// refreshes the oauth token on the client if it's expired or will expire within 5 minutes
+async fn maybe_refresh_oauth(client: &mut crate::api::ApiClient) {
+    if !matches!(client.auth, crate::api::AuthMethod::Bearer(_)) {
+        return;
+    }
+    let Some(creds) = crate::auth::load_auth() else {
+        return;
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    // refresh if within 5 minutes of expiry
+    if now_ms + 5 * 60 * 1000 < creds.expires {
+        return;
+    }
+    if let Ok(new_creds) = crate::auth::refresh(&creds.refresh).await {
+        client.set_auth(crate::api::AuthMethod::Bearer(new_creds.access.clone()));
+        let _ = crate::auth::save_auth(&new_creds);
+    }
+}
+
 async fn stream_request(
     client: &reqwest::Client,
     auth: &crate::api::AuthMethod,
@@ -1067,6 +1095,10 @@ async fn stream_request(
             "claude-cli/2.1.2 (external, cli)".parse()?,
         );
         headers.insert("x-app", "cli".parse()?);
+        headers.insert(
+            "anthropic-dangerous-direct-browser-access",
+            "true".parse()?,
+        );
     }
     if request.thinking.is_some() {
         beta_features.push("interleaved-thinking-2025-05-14");

@@ -620,7 +620,7 @@ async fn exec_edit(input: &serde_json::Value, cwd: &Path) -> ToolResult {
         .to_string_lossy()
         .to_string();
 
-    let diff_info = compute_diff(&display_path, old_text, new_text);
+    let diff_info = compute_diff(&display_path, &content, &new_content);
 
     if let Err(e) = std::fs::write(&path, &new_content) {
         return ToolResult::Error(format!("failed to write {}: {}", path.display(), e));
@@ -1292,3 +1292,4 @@ fn strip_html_tags(s: &str) -> String {
     }
     result.trim().to_string()
 }
+
