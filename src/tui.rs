@@ -614,6 +614,25 @@ impl App {
         matches!(self.queued_messages.first(), Some(QueuedItem::Message(_)))
     }
 
+    // pull queued messages out for mid-turn injection without changing
+    // the current_message display or other UI state
+    pub fn take_queued_messages(&mut self) -> Option<String> {
+        let mut msgs = Vec::new();
+        while self.next_queued_is_message() {
+            if let QueuedItem::Message(m) = self.queued_messages.remove(0) {
+                msgs.push(m);
+            }
+        }
+        if msgs.is_empty() {
+            None
+        } else {
+            let combined = msgs.join("\n\n");
+            self.activity.push(ActivityItem::UserMessage(combined.clone()));
+            self.auto_scroll = true;
+            Some(combined)
+        }
+    }
+
     // queue an explicit message string (used by background jobs like CI watch)
     pub fn queue_message_str(&mut self, msg: String) {
         self.queued_messages.push(QueuedItem::Message(msg));

@@ -361,13 +361,9 @@ async fn run_tui_mode(
 
         // inject queued messages mid-turn so the agent sees them at
         // the next natural break point (after tool calls finish)
-        if app.is_running && app.has_queued_items() {
-            // drain only Message items; stop at the first Command
-            // (commands like /compact need to wait for the turn to finish)
-            while app.has_queued_items() && app.next_queued_is_message() {
-                if let Some(tui::QueuedAction::SendMessage(msg)) = app.drain_next_queued() {
-                    let _ = inject_tx.send(msg);
-                }
+        if app.is_running {
+            if let Some(msg) = app.take_queued_messages() {
+                let _ = inject_tx.send(msg);
             }
         }
 

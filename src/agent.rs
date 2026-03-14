@@ -756,7 +756,6 @@ impl Agent {
                 }
                 if !injected.is_empty() {
                     let combined = injected.join("\n\n");
-                    let _ = event_tx.send(AgentEvent::UserMessage(combined.clone()));
                     result_blocks.push(ContentBlock::Text {
                         text: combined,
                     });
