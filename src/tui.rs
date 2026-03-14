@@ -2111,8 +2111,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_editor(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
+    let has_search = app.editor_search.is_some();
+    let search_h: u16 = if has_search { 12.min(size.height / 3) } else { 0 };
 
-    if app.editor_buffer.is_none() {
+    if app.editor_buffer.is_none() && !has_search {
         let msg = Paragraph::new(Line::from(vec![
             Span::styled("  no file open. ", Style::default().fg(MUTED)),
             Span::styled("ctrl+p", Style::default().fg(ACCENT)),
@@ -2123,10 +2125,6 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
         frame.render_widget(msg, size);
         return;
     }
-
-    // layout: status bar (1) + editor content (rest) + search overlay if active
-    let has_search = app.editor_search.is_some();
-    let search_h: u16 = if has_search { 12.min(size.height / 3) } else { 0 };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2141,7 +2139,9 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
     render_editor_status(frame, app, chunks[0]);
 
     // editor content with syntax highlighting
-    render_editor_content(frame, app, chunks[1]);
+    if app.editor_buffer.is_some() {
+        render_editor_content(frame, app, chunks[1]);
+    }
 
     // search overlay
     if has_search {
@@ -3581,6 +3581,14 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 ViewMode::Chat
             }
         };
+        return InputAction::None;
+    }
+
+    // ctrl+p: file finder (enters editor if not already)
+    if ctrl && key.code == KeyCode::Char('p') {
+        app.view_mode = ViewMode::Editor;
+        app.editor_search = Some(SearchState::new(SearchMode::Files));
+        app.update_file_search();
         return InputAction::None;
     }
 
