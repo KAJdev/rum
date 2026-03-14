@@ -474,11 +474,35 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                 }
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => {
-                        app.auto_scroll = false;
-                        app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                        if app.view_mode == tui::ViewMode::Editor {
+                            if let Some(ref mut buf) = app.editor_buffer {
+                                for _ in 0..3 {
+                                    buf.move_up();
+                                }
+                                let h = crossterm::terminal::size()
+                                    .map(|(_, h)| h)
+                                    .unwrap_or(24) as usize;
+                                buf.ensure_cursor_visible(h.saturating_sub(2));
+                            }
+                        } else {
+                            app.auto_scroll = false;
+                            app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                        }
                     }
                     MouseEventKind::ScrollDown => {
-                        app.scroll_offset = app.scroll_offset.saturating_add(3);
+                        if app.view_mode == tui::ViewMode::Editor {
+                            if let Some(ref mut buf) = app.editor_buffer {
+                                for _ in 0..3 {
+                                    buf.move_down();
+                                }
+                                let h = crossterm::terminal::size()
+                                    .map(|(_, h)| h)
+                                    .unwrap_or(24) as usize;
+                                buf.ensure_cursor_visible(h.saturating_sub(2));
+                            }
+                        } else {
+                            app.scroll_offset = app.scroll_offset.saturating_add(3);
+                        }
                     }
                     _ => {}
                 },
