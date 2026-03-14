@@ -1052,20 +1052,8 @@ impl App {
             return;
         }
 
-        // large pastes go to a tmp file so the model can read them directly
-        let line_count = text.lines().count();
-        if line_count > 50 || text.len() > 2000 {
-            if let Some(path) = save_paste_to_tmp(&text) {
-                let bp = self.cursor_byte_pos();
-                self.input.insert_str(bp, &path);
-                self.cursor_pos += path.chars().count();
-                return;
-            }
-        }
-
         let idx = self.paste_chunks.len();
         if idx > 15 {
-            // too many chunks, insert inline as a fallback
             let bp = self.cursor_byte_pos();
             self.input.insert_str(bp, &text);
             self.cursor_pos += text.chars().count();
@@ -1255,18 +1243,6 @@ fn paste_display_str(chunk: &str) -> String {
 }
 
 // write paste content to a uniquely named temp file and return its path
-fn save_paste_to_tmp(content: &str) -> Option<String> {
-    use std::io::Write;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let path = std::env::temp_dir().join(format!("rum_paste_{}.txt", ts));
-    let mut f = std::fs::File::create(&path).ok()?;
-    f.write_all(content.as_bytes()).ok()?;
-    Some(path.to_string_lossy().into_owned())
-}
-
 // expand paste placeholders to their display summaries (e.g. "[3 lines]")
 fn make_display_input(input: &str, paste_chunks: &[String]) -> String {
     let mut out = String::new();
