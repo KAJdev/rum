@@ -2225,8 +2225,8 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
         app.highlighter = Some(editor::Highlighter::new());
     }
 
-    let highlighted = if let Some(ref hl) = app.highlighter {
-        hl.highlight_lines(&buf.path, &buf.lines, buf.scroll_row, viewport_h)
+    let highlighted = if let Some(ref mut hl) = app.highlighter {
+        hl.highlight_lines(&buf.path, &buf.lines, buf.generation, buf.scroll_row, viewport_h)
     } else {
         Vec::new()
     };
@@ -3595,10 +3595,13 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
     // ctrl+f: toggle follow mode (enters editor if not already)
     if ctrl && key.code == KeyCode::Char('f') {
         if app.view_mode == ViewMode::Chat {
+            // from chat mode: always enable follow and switch to editor
             app.view_mode = ViewMode::Editor;
+            app.follow_mode = true;
+        } else {
+            // from editor mode: toggle
+            app.follow_mode = !app.follow_mode;
         }
-        app.follow_mode = !app.follow_mode;
-        // when enabling follow, jump to latest agent edit
         if app.follow_mode && !app.agent_edits.is_empty() {
             app.agent_edit_index = app.agent_edits.len() - 1;
             app.open_agent_edit(app.agent_edit_index);
