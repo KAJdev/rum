@@ -300,6 +300,13 @@ pub enum ViewMode {
     Editor,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum DiffMarker {
+    Insert,
+    // line immediately after a deleted block
+    DeleteBoundary,
+}
+
 // cached rendered lines for a single activity item.
 // invalidated when content length, terminal width, expand state, or
 // tool status changes.
@@ -383,6 +390,8 @@ pub struct App {
     pub follow_mode: bool,
     pub agent_edits: Vec<AgentEdit>,
     pub agent_edit_index: usize,
+    // maps line number (0-indexed) to diff tag for follow mode highlighting
+    diff_markers: std::collections::HashMap<usize, DiffMarker>,
     highlighter: Option<editor::Highlighter>,
 }
 
@@ -439,6 +448,7 @@ impl App {
             follow_mode: false,
             agent_edits: Vec::new(),
             agent_edit_index: 0,
+            diff_markers: std::collections::HashMap::new(),
             highlighter: None,
         }
     }
@@ -1777,6 +1787,7 @@ impl App {
         match EditorBuffer::open(path) {
             Ok(buf) => {
                 self.editor_buffer = Some(buf);
+                self.diff_markers.clear();
                 self.view_mode = ViewMode::Editor;
             }
             Err(_) => {}
@@ -1791,19 +1802,51 @@ impl App {
         let full_path = std::path::Path::new(&self.cwd).join(&edit.path);
         match EditorBuffer::open(&full_path) {
             Ok(mut buf) => {
-                // try to jump to the first changed line
+                // build diff markers and jump to first change
+                self.diff_markers.clear();
                 if let Some(ref diff) = edit.diff {
-                    if let Some(hunk) = diff.hunks.first() {
-                        if let Some(offset) = hunk.lines.iter().position(|l| {
-                            l.tag == crate::tools::DiffLineTag::Insert
-                                || l.tag == crate::tools::DiffLineTag::Delete
-                        }) {
-                            buf.goto_line(hunk.new_start + offset);
-                            let h = crossterm::terminal::size()
-                                .map(|(_, h)| h)
-                                .unwrap_or(24) as usize;
-                            buf.ensure_cursor_visible(h.saturating_sub(2));
+                    let mut first_change_line: Option<usize> = None;
+                    for hunk in &diff.hunks {
+                        let mut new_line = hunk.new_start;
+                        let mut pending_delete = false;
+                        for dl in &hunk.lines {
+                            match dl.tag {
+                                crate::tools::DiffLineTag::Equal => {
+                                    if pending_delete {
+                                        self.diff_markers.entry(new_line)
+                                            .or_insert(DiffMarker::DeleteBoundary);
+                                        pending_delete = false;
+                                    }
+                                    new_line += 1;
+                                }
+                                crate::tools::DiffLineTag::Insert => {
+                                    if first_change_line.is_none() {
+                                        first_change_line = Some(new_line);
+                                    }
+                                    self.diff_markers.insert(new_line, DiffMarker::Insert);
+                                    pending_delete = false;
+                                    new_line += 1;
+                                }
+                                crate::tools::DiffLineTag::Delete => {
+                                    if first_change_line.is_none() {
+                                        first_change_line = Some(new_line);
+                                    }
+                                    pending_delete = true;
+                                }
+                            }
                         }
+                        // if hunk ends with deletions, mark the next line
+                        if pending_delete {
+                            self.diff_markers.entry(new_line)
+                                .or_insert(DiffMarker::DeleteBoundary);
+                        }
+                    }
+                    if let Some(line) = first_change_line {
+                        buf.goto_line(line);
+                        let h = crossterm::terminal::size()
+                            .map(|(_, h)| h)
+                            .unwrap_or(24) as usize;
+                        buf.ensure_cursor_visible(h.saturating_sub(2));
                     }
                 }
                 self.editor_buffer = Some(buf);
@@ -2074,6 +2117,7 @@ fn handle_search_key(key: KeyEvent, app: &mut App, ctrl: bool) -> InputAction {
                                 buf.ensure_cursor_visible(h.saturating_sub(2));
                             }
                             app.editor_buffer = Some(buf);
+                            app.diff_markers.clear();
                         }
                         Err(_) => {}
                     }
@@ -2283,10 +2327,21 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
 
         let line_num = format!("{:>width$} ", line_idx + 1, width = gutter_width as usize - 1);
         let is_cursor_line = line_idx == buf.cursor_row;
-        let gutter_style = if is_cursor_line {
-            Style::default().fg(ACCENT)
-        } else {
-            Style::default().fg(DIM)
+        let diff_marker = if app.follow_mode { app.diff_markers.get(&line_idx) } else { None };
+
+        // gutter coloring: diff markers override normal styling
+        let gutter_style = match diff_marker {
+            Some(DiffMarker::Insert) => Style::default().fg(GREEN),
+            Some(DiffMarker::DeleteBoundary) => Style::default().fg(RED),
+            _ if is_cursor_line => Style::default().fg(ACCENT),
+            _ => Style::default().fg(DIM),
+        };
+
+        // subtle background tint for changed lines
+        let line_bg = match diff_marker {
+            Some(DiffMarker::Insert) => Some(Color::Rgb(20, 40, 20)),
+            Some(DiffMarker::DeleteBoundary) => Some(Color::Rgb(40, 20, 20)),
+            _ => None,
         };
 
         let mut spans = vec![Span::styled(line_num, gutter_style)];
@@ -2298,29 +2353,41 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
                 let mut s = Style::default().fg(fg);
                 if is_cursor_line {
                     s = s.bg(Color::Rgb(30, 33, 40));
+                } else if let Some(bg) = line_bg {
+                    s = s.bg(bg);
                 }
                 spans.push(Span::styled(text.clone(), s));
             }
         } else {
             // fallback: no highlighting
             let text = &buf.lines[line_idx];
-            let s = if is_cursor_line {
+            let mut s = if is_cursor_line {
                 Style::default().fg(FG).bg(Color::Rgb(30, 33, 40))
             } else {
                 Style::default().fg(FG)
             };
+            if let Some(bg) = line_bg {
+                if !is_cursor_line {
+                    s = s.bg(bg);
+                }
+            }
             spans.push(Span::styled(text.clone(), s));
         }
 
-        // pad cursor line background
-        if is_cursor_line {
+        // pad line background to edge
+        let pad_bg = if is_cursor_line {
+            Some(Color::Rgb(30, 33, 40))
+        } else {
+            line_bg
+        };
+        if let Some(bg) = pad_bg {
             use unicode_width::UnicodeWidthStr;
             let content_width: usize = spans.iter().skip(1).map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
             let remaining = (area.width as usize).saturating_sub(gutter_width as usize + content_width);
             if remaining > 0 {
                 spans.push(Span::styled(
                     " ".repeat(remaining),
-                    Style::default().bg(Color::Rgb(30, 33, 40)),
+                    Style::default().bg(bg),
                 ));
             }
         }
@@ -3757,6 +3824,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         if app.follow_mode && !app.agent_edits.is_empty() {
             app.agent_edit_index = app.agent_edits.len() - 1;
             app.open_agent_edit(app.agent_edit_index);
+        } else if !app.follow_mode {
+            app.diff_markers.clear();
         }
         return InputAction::None;
     }
