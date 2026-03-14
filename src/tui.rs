@@ -312,6 +312,8 @@ pub struct App {
     // set when PasteFromClipboard already handled an image this tick,
     // so the subsequent Event::Paste("") doesn't duplicate it
     pub paste_handled: bool,
+    // channel for injecting queued messages into a running turn
+    inject_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     // background jobs shown in the bottom status bar
     pub background_jobs: Vec<BackgroundJob>,
     next_job_id: u64,
@@ -362,10 +364,15 @@ impl App {
             input_history_pos: None,
             input_draft: String::new(),
             paste_handled: false,
+            inject_tx: None,
             background_jobs: Vec::new(),
             next_job_id: 0,
             pending_ci_watch: None,
         }
+    }
+
+    pub fn set_inject_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        self.inject_tx = Some(tx);
     }
 
     pub fn tick_rate(&mut self) {
@@ -541,7 +548,13 @@ impl App {
                 }
             }
             AgentEvent::UserMessage(msg) => {
-                self.activity.push(ActivityItem::UserMessage(msg));
+                // the agent consumed queued messages at a tool break;
+                // remove them from the queue display
+                self.queued_messages.retain(|q| !matches!(q, QueuedItem::Message(_)));
+                self.activity.push(ActivityItem::UserMessage(msg.clone()));
+                if let Some(ref mut current) = self.current_message {
+                    current.push_str(&format!("\n{}", msg));
+                }
                 self.auto_scroll = true;
             }
             AgentEvent::Status(msg) => {
@@ -595,10 +608,15 @@ impl App {
     }
 
     // queue a followup message while the agent is running.
-    // appears in the activity feed immediately as pending.
+    // appears in the queued messages area; sent to the agent's inject
+    // channel so it can be picked up at the next tool break.
     pub fn queue_message(&mut self) {
         if !self.input.is_empty() {
-            self.queued_messages.push(QueuedItem::Message(self.expand_input()));
+            let msg = self.expand_input();
+            if let Some(ref tx) = self.inject_tx {
+                let _ = tx.send(msg.clone());
+            }
+            self.queued_messages.push(QueuedItem::Message(msg));
             self.input.clear();
             self.cursor_pos = 0;
             self.paste_chunks.clear();
@@ -610,31 +628,11 @@ impl App {
         self.queued_messages.push(QueuedItem::Command(cmd.to_string()));
     }
 
-    pub fn next_queued_is_message(&self) -> bool {
-        matches!(self.queued_messages.first(), Some(QueuedItem::Message(_)))
-    }
-
-    // pull queued messages out for mid-turn injection without changing
-    // the current_message display or other UI state
-    pub fn take_queued_messages(&mut self) -> Option<String> {
-        let mut msgs = Vec::new();
-        while self.next_queued_is_message() {
-            if let QueuedItem::Message(m) = self.queued_messages.remove(0) {
-                msgs.push(m);
-            }
-        }
-        if msgs.is_empty() {
-            None
-        } else {
-            let combined = msgs.join("\n\n");
-            self.activity.push(ActivityItem::UserMessage(combined.clone()));
-            self.auto_scroll = true;
-            Some(combined)
-        }
-    }
-
     // queue an explicit message string (used by background jobs like CI watch)
     pub fn queue_message_str(&mut self, msg: String) {
+        if let Some(ref tx) = self.inject_tx {
+            let _ = tx.send(msg.clone());
+        }
         self.queued_messages.push(QueuedItem::Message(msg));
     }
 

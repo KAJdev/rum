@@ -216,6 +216,7 @@ async fn run_tui_mode(
 
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
     let (inject_tx, inject_rx) = mpsc::unbounded_channel::<String>();
+    app.set_inject_tx(inject_tx);
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let (control_tx, control_rx) = mpsc::unbounded_channel::<agent::ControlMessage>();
     let (login_tx, mut login_rx) = mpsc::unbounded_channel::<Result<(), String>>();
@@ -357,14 +358,6 @@ async fn run_tui_mode(
                 tag,
                 env!("CARGO_PKG_VERSION"),
             ));
-        }
-
-        // inject queued messages mid-turn so the agent sees them at
-        // the next natural break point (after tool calls finish)
-        if app.is_running {
-            if let Some(msg) = app.take_queued_messages() {
-                let _ = inject_tx.send(msg);
-            }
         }
 
         // process queued items when the current turn finishes
