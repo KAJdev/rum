@@ -37,6 +37,7 @@ const THINKING_COLOR: Color = Color::Rgb(180, 140, 255);
 const TOOL_COLOR: Color = Color::Rgb(100, 200, 220);
 const INPUT_BG: Color = Color::Rgb(16, 20, 28);
 const BRANCH_COLOR: Color = Color::Rgb(120, 190, 148);
+const SIDEBAR_WIDTH: u16 = 30;
 
 const DEFAULT_CONTEXT: u32 = 200_000;
 
@@ -1798,6 +1799,10 @@ impl App {
                                 || l.tag == crate::tools::DiffLineTag::Delete
                         }) {
                             buf.goto_line(hunk.new_start + offset);
+                            let h = crossterm::terminal::size()
+                                .map(|(_, h)| h)
+                                .unwrap_or(24) as usize;
+                            buf.ensure_cursor_visible(h.saturating_sub(2));
                         }
                     }
                 }
@@ -1867,7 +1872,7 @@ fn handle_editor_key(
     app: &mut App,
     ctrl: bool,
     alt: bool,
-    _shift: bool,
+    shift: bool,
     _super_key: bool,
 ) -> InputAction {
     // search overlay intercepts input when active
@@ -1931,6 +1936,18 @@ fn handle_editor_key(
             if app.follow_mode && app.agent_edit_index + 1 < app.agent_edits.len() {
                 app.agent_edit_index += 1;
                 app.open_agent_edit(app.agent_edit_index);
+            }
+        }
+        KeyCode::Up if shift => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
+                buf.page_up(h.saturating_sub(2) / 2);
+            }
+        }
+        KeyCode::Down if shift => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
+                buf.page_down(h.saturating_sub(2) / 2);
             }
         }
         KeyCode::Up => {
@@ -2115,6 +2132,14 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
     let search_h: u16 = if has_search { 12.min(size.height / 3) } else { 0 };
 
     if app.editor_buffer.is_none() && !has_search {
+        // split horizontally so the sidebar still renders
+        let hsplit = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(20),
+                Constraint::Length(SIDEBAR_WIDTH),
+            ])
+            .split(size);
         let msg = Paragraph::new(Line::from(vec![
             Span::styled("  no file open. ", Style::default().fg(MUTED)),
             Span::styled("ctrl+p", Style::default().fg(ACCENT)),
@@ -2122,31 +2147,40 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
             Span::styled("ctrl+e", Style::default().fg(ACCENT)),
             Span::styled(" to go back", Style::default().fg(MUTED)),
         ]));
-        frame.render_widget(msg, size);
+        frame.render_widget(msg, hsplit[0]);
+        render_editor_sidebar(frame, app, hsplit[1]);
         return;
     }
 
-    let chunks = Layout::default()
+    // split: left (editor + search) | right (sidebar)
+    let hsplit = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(20),
+            Constraint::Length(SIDEBAR_WIDTH),
+        ])
+        .split(size);
+
+    let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                   // status bar
             Constraint::Min(3),                      // editor content
             Constraint::Length(search_h),             // search overlay
         ])
-        .split(size);
+        .split(hsplit[0]);
 
-    // status bar
-    render_editor_status(frame, app, chunks[0]);
+    render_editor_status(frame, app, left_chunks[0]);
 
-    // editor content with syntax highlighting
     if app.editor_buffer.is_some() {
-        render_editor_content(frame, app, chunks[1]);
+        render_editor_content(frame, app, left_chunks[1]);
     }
 
-    // search overlay
     if has_search {
-        render_search_overlay(frame, app, chunks[2]);
+        render_search_overlay(frame, app, left_chunks[2]);
     }
+
+    render_editor_sidebar(frame, app, hsplit[1]);
 }
 
 fn render_editor_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -2377,6 +2411,145 @@ fn render_search_overlay(frame: &mut Frame, app: &App, area: Rect) {
 
     let widget = Paragraph::new(lines).style(Style::default().bg(INPUT_BG));
     frame.render_widget(widget, area);
+}
+
+fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width < 4 || area.height < 2 {
+        return;
+    }
+
+    let max_w = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    // header
+    let header_text = if app.follow_mode {
+        let pos = if app.agent_edits.is_empty() {
+            String::new()
+        } else {
+            format!(" {}/{}", app.agent_edit_index + 1, app.agent_edits.len())
+        };
+        format!(" follow{}", pos)
+    } else if app.is_running {
+        " running".to_string()
+    } else {
+        " activity".to_string()
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{:<w$}", header_text, w = max_w + 1),
+            Style::default().fg(if app.follow_mode { GREEN } else { MUTED }).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // render activity items bottom-up (most recent first),
+    // fitting as many as the sidebar height allows
+    let avail = area.height.saturating_sub(2) as usize;
+    let mut item_lines: Vec<Line> = Vec::new();
+
+    for item in app.activity.iter().rev() {
+        if item_lines.len() >= avail {
+            break;
+        }
+        match item {
+            ActivityItem::Thinking(t) => {
+                let text = t.chars().take(max_w).collect::<String>();
+                item_lines.push(Line::from(Span::styled(
+                    format!(" {}", text),
+                    Style::default().fg(THINKING_COLOR).add_modifier(Modifier::ITALIC),
+                )));
+            }
+            ActivityItem::Text(t) => {
+                // show just the last line of text output
+                let last = t.lines().last().unwrap_or("");
+                let text: String = last.chars().take(max_w.saturating_sub(2)).collect();
+                item_lines.push(Line::from(vec![
+                    Span::styled(" \u{2502} ", Style::default().fg(BAR_COLOR)),
+                    Span::styled(text, Style::default().fg(FG)),
+                ]));
+            }
+            ActivityItem::Tool(entry) => {
+                let icon = match entry.status {
+                    ToolStatus::Running => spinner_char(app.spin_frame),
+                    ToolStatus::Complete { exit_code } => {
+                        if exit_code.unwrap_or(0) != 0 { "✗" } else { "✓" }
+                    }
+                    ToolStatus::Error(_) => "✗",
+                };
+                let icon_color = match entry.status {
+                    ToolStatus::Running => ACCENT,
+                    ToolStatus::Complete { exit_code } => {
+                        if exit_code.unwrap_or(0) != 0 { RED } else { GREEN }
+                    }
+                    ToolStatus::Error(_) => RED,
+                };
+                let label = capitalize_tool(&entry.name);
+                let arg_budget = max_w.saturating_sub(label.len() + 4);
+                let arg: String = entry.arg.chars().take(arg_budget).collect();
+                item_lines.push(Line::from(vec![
+                    Span::styled(format!(" {} ", icon), Style::default().fg(icon_color)),
+                    Span::styled(label.to_string(), Style::default().fg(TOOL_COLOR)),
+                    Span::styled(format!(" {}", arg), Style::default().fg(DIM)),
+                ]));
+            }
+            ActivityItem::UserMessage(msg) => {
+                let text: String = msg.chars().take(max_w.saturating_sub(2)).collect();
+                item_lines.push(Line::from(vec![
+                    Span::styled(" > ", Style::default().fg(ACCENT)),
+                    Span::styled(text, Style::default().fg(FG)),
+                ]));
+            }
+            ActivityItem::System(kind, msg) => {
+                let color = match kind {
+                    SystemKind::Info => MUTED,
+                    SystemKind::Success => GREEN,
+                    SystemKind::Warning => YELLOW,
+                    SystemKind::Error => RED,
+                    SystemKind::Update => ACCENT,
+                };
+                let text: String = msg.lines().next().unwrap_or("").chars().take(max_w).collect();
+                item_lines.push(Line::from(Span::styled(
+                    format!(" {}", text),
+                    Style::default().fg(color),
+                )));
+            }
+            ActivityItem::Compact(status) => {
+                let (icon, text) = match status {
+                    CompactStatus::Running => (spinner_char(app.spin_frame), "compacting..."),
+                    CompactStatus::Done(_) => ("✓", "compacted"),
+                    CompactStatus::Cancelled => ("✗", "cancelled"),
+                };
+                item_lines.push(Line::from(vec![
+                    Span::styled(format!(" {} ", icon), Style::default().fg(MUTED)),
+                    Span::styled(text.to_string(), Style::default().fg(MUTED)),
+                ]));
+            }
+        }
+    }
+
+    // reverse so newest is at bottom
+    item_lines.reverse();
+    lines.extend(item_lines);
+
+    // separator on the left edge
+    let sep_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: 1,
+        height: area.height,
+    };
+    let sep_lines: Vec<Line> = (0..area.height)
+        .map(|_| Line::from(Span::styled("\u{2502}", Style::default().fg(DIM))))
+        .collect();
+    frame.render_widget(Paragraph::new(sep_lines), sep_area);
+
+    let content_area = Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: area.width.saturating_sub(1),
+        height: area.height,
+    };
+    frame.render_widget(Paragraph::new(lines), content_area);
 }
 
 fn render_chat(frame: &mut Frame, app: &mut App) {

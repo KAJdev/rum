@@ -30,6 +30,9 @@ pub struct EditorBuffer {
     pub scroll_row: usize,
     pub dirty: bool,
     pub generation: u64,
+    // tracks the desired column across vertical movements so the cursor
+    // returns to its original column after passing through short lines
+    desired_col: Option<usize>,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
 }
@@ -50,6 +53,7 @@ impl EditorBuffer {
             scroll_row: 0,
             dirty: false,
             generation: 0,
+            desired_col: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         })
@@ -75,6 +79,7 @@ impl EditorBuffer {
         });
         self.redo_stack.clear();
         self.generation += 1;
+        self.desired_col = None;
         if self.undo_stack.len() > 200 {
             self.undo_stack.remove(0);
         }
@@ -120,6 +125,21 @@ impl EditorBuffer {
         }
     }
 
+    // clamp cursor_col but use desired_col to remember the target column
+    fn clamp_cursor_vertical(&mut self) {
+        if self.cursor_row >= self.lines.len() {
+            self.cursor_row = self.lines.len().saturating_sub(1);
+        }
+        let target = self.desired_col.unwrap_or(self.cursor_col);
+        let line_len = self.lines[self.cursor_row].len();
+        self.cursor_col = target.min(line_len);
+    }
+
+    // any horizontal movement clears the desired column
+    fn clear_desired_col(&mut self) {
+        self.desired_col = None;
+    }
+
     pub fn ensure_cursor_visible(&mut self, viewport_height: usize) {
         if self.cursor_row < self.scroll_row {
             self.scroll_row = self.cursor_row;
@@ -131,19 +151,26 @@ impl EditorBuffer {
 
     pub fn move_up(&mut self) {
         if self.cursor_row > 0 {
+            if self.desired_col.is_none() {
+                self.desired_col = Some(self.cursor_col);
+            }
             self.cursor_row -= 1;
-            self.clamp_cursor();
+            self.clamp_cursor_vertical();
         }
     }
 
     pub fn move_down(&mut self) {
         if self.cursor_row + 1 < self.lines.len() {
+            if self.desired_col.is_none() {
+                self.desired_col = Some(self.cursor_col);
+            }
             self.cursor_row += 1;
-            self.clamp_cursor();
+            self.clamp_cursor_vertical();
         }
     }
 
     pub fn move_left(&mut self) {
+        self.clear_desired_col();
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
         } else if self.cursor_row > 0 {
@@ -153,6 +180,7 @@ impl EditorBuffer {
     }
 
     pub fn move_right(&mut self) {
+        self.clear_desired_col();
         let line_len = self.lines[self.cursor_row].len();
         if self.cursor_col < line_len {
             self.cursor_col += 1;
@@ -163,14 +191,17 @@ impl EditorBuffer {
     }
 
     pub fn move_home(&mut self) {
+        self.clear_desired_col();
         self.cursor_col = 0;
     }
 
     pub fn move_end(&mut self) {
+        self.clear_desired_col();
         self.cursor_col = self.lines[self.cursor_row].len();
     }
 
     pub fn move_word_left(&mut self) {
+        self.clear_desired_col();
         if self.cursor_col == 0 {
             if self.cursor_row > 0 {
                 self.cursor_row -= 1;
@@ -191,6 +222,7 @@ impl EditorBuffer {
     }
 
     pub fn move_word_right(&mut self) {
+        self.clear_desired_col();
         let line = &self.lines[self.cursor_row];
         let len = line.len();
         if self.cursor_col >= len {
@@ -212,14 +244,20 @@ impl EditorBuffer {
     }
 
     pub fn page_up(&mut self, viewport_height: usize) {
+        if self.desired_col.is_none() {
+            self.desired_col = Some(self.cursor_col);
+        }
         self.cursor_row = self.cursor_row.saturating_sub(viewport_height);
-        self.clamp_cursor();
+        self.clamp_cursor_vertical();
     }
 
     pub fn page_down(&mut self, viewport_height: usize) {
+        if self.desired_col.is_none() {
+            self.desired_col = Some(self.cursor_col);
+        }
         self.cursor_row =
             (self.cursor_row + viewport_height).min(self.lines.len().saturating_sub(1));
-        self.clamp_cursor();
+        self.clamp_cursor_vertical();
     }
 
     pub fn goto_line(&mut self, line: usize) {
