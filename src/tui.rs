@@ -1404,7 +1404,8 @@ fn last_paragraph(text: &str) -> &str {
 }
 
 // remove ansi escape sequences and other terminal control codes from tool output.
-// covers CSI sequences (\x1b[...X), OSC sequences (\x1b]...ST), and bare \x1b.
+// covers CSI sequences (\x1b[...X), OSC sequences (\x1b]...ST), character set
+// designations (\x1b(F), and bare \x1b.
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -1413,36 +1414,39 @@ pub fn strip_ansi(s: &str) -> String {
             match chars.peek() {
                 Some('[') => {
                     chars.next();
-                    // consume until final byte (letter or @-~)
+                    // CSI: consume until final byte (0x40-0x7E)
                     while let Some(&ch) = chars.peek() {
                         chars.next();
-                        if ch.is_ascii_alphabetic() || ch == '~' || ch == '@' {
+                        if ch as u32 >= 0x40 && ch as u32 <= 0x7E {
                             break;
                         }
                     }
                 }
-                Some(']') => {
+                Some(']') | Some('P') | Some('X') | Some('^') | Some('_') => {
                     chars.next();
-                    // OSC: consume until ST (\x1b\\) or BEL (\x07)
+                    // OSC/DCS/APC: consume until ST (\x1b\\) or BEL (\x07)
+                    let mut prev = '\0';
                     while let Some(&ch) = chars.peek() {
+                        chars.next();
                         if ch == '\x07' {
-                            chars.next();
                             break;
                         }
-                        if ch == '\x1b' {
-                            chars.next();
-                            if chars.peek() == Some(&'\\') {
-                                chars.next();
-                            }
+                        if prev == '\x1b' && ch == '\\' {
                             break;
                         }
-                        chars.next();
+                        prev = ch;
                     }
                 }
-                _ => {
-                    // bare escape or two-char sequence, skip next char
+                Some('(' | ')' | '*' | '+') => {
+                    // character set designation: ESC ( F, ESC ) F, etc.
+                    chars.next();
                     chars.next();
                 }
+                Some(_) => {
+                    // two-char sequence, skip next char
+                    chars.next();
+                }
+                _ => {}
             }
         } else if c == '\r' {
             // carriage return: overwrite the current line

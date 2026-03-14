@@ -280,8 +280,8 @@ async fn exec_read(input: &serde_json::Value, cwd: &Path) -> ToolResult {
 }
 
 // strip ANSI escape sequences and normalize carriage returns.
-// handles CSI (cursor movement, colors, erase), OSC (window title), and
-// other two-character sequences produced by terminal-aware programs.
+// handles CSI (colors, cursor, erase), OSC/DCS/APC string sequences,
+// character set designations (e.g. ESC ( B), and other escape sequences.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -311,6 +311,12 @@ fn strip_ansi(s: &str) -> String {
                             }
                             prev = c;
                         }
+                    }
+                    Some(&'(' | &')' | &'*' | &'+') => {
+                        // character set designation: ESC ( F, ESC ) F, etc.
+                        // three bytes total, skip the intermediate and final
+                        chars.next();
+                        chars.next();
                     }
                     Some(_) => {
                         // two-character sequence (e.g. ESC M reverse index)
@@ -403,7 +409,8 @@ async fn exec_bash(
     // dropping the original sender so the channel closes when both reader tasks finish
     drop(merge_tx);
 
-    let mut collected = String::new();
+    let mut collected;
+    let mut raw_collected = String::new();
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     let mut timed_out = false;
@@ -426,12 +433,15 @@ async fn exec_bash(
                 match chunk {
                     Ok(Some(bytes)) => {
                         let raw = String::from_utf8_lossy(&bytes);
-                        let clean = strip_ansi(&raw);
-                        if !clean.is_empty() {
-                            if let Some(ref tx) = stream_tx {
-                                let _ = tx.send(clean.clone());
+                        raw_collected.push_str(&raw);
+                        // per-chunk strip for streaming display (may have minor
+                        // artifacts from sequences split across chunks, but the
+                        // final result is stripped from the full raw buffer below)
+                        if let Some(ref tx) = stream_tx {
+                            let clean = strip_ansi(&raw);
+                            if !clean.is_empty() {
+                                let _ = tx.send(clean);
                             }
-                            collected.push_str(&clean);
                         }
                     }
                     Ok(None) => break,
@@ -460,6 +470,11 @@ async fn exec_bash(
 
     let exit_status = child.wait().await.ok();
     let exit_code = exit_status.and_then(|s| s.code()).unwrap_or(-1);
+
+    // strip the full raw buffer so escape sequences split across chunks are
+    // handled correctly (streaming display may have had minor artifacts but
+    // this final result is what the agent and history see)
+    collected = strip_ansi(&raw_collected);
 
     if collected.is_empty() {
         collected = "(no output)".to_string();

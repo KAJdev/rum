@@ -319,18 +319,9 @@ async fn run_tui_mode(
             } else {
                 None
             };
-            // skip the system message insert if we're about to send it as an agent turn
-            if trigger_msg.is_some() {
-                // just update the job status without pushing to activity feed
-                if let tui::JobEvent::Complete { id, status, summary, .. } = &evt {
-                    if let Some(job) = app.background_jobs.iter_mut().find(|j| j.id == *id) {
-                        job.status = status.clone();
-                        job.detail = summary.clone();
-                    }
-                }
-            } else {
-                app.handle_job_event(evt);
-            }
+            // always show the job event in the activity feed
+            app.handle_job_event(evt);
+            // on CI failure with logs, also send the output to the agent
             if let Some(msg) = trigger_msg {
                 if !app.is_running {
                     cancel.reset();
@@ -1166,10 +1157,10 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                         {
                             if o.status.success() {
                                 let logs = String::from_utf8_lossy(&o.stdout);
+                                let mut in_group = false;
                                 let cleaned: Vec<String> = logs.lines()
                                     .filter_map(|line| {
                                         // each line is: "job\tstep\ttimestamp content"
-                                        // extract just the content after the timestamp
                                         let rest = line.splitn(3, '\t').nth(2).unwrap_or(line);
                                         // strip the timestamp prefix (2026-01-01T00:00:00.0000000Z)
                                         let content = if rest.len() > 28 && rest.as_bytes().get(4) == Some(&b'-') {
@@ -1177,15 +1168,19 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                                         } else {
                                             rest.trim()
                                         };
-                                        // skip github actions markers and empty lines
-                                        if content.is_empty()
-                                            || content.starts_with("##[group]")
-                                            || content.starts_with("##[endgroup]")
-                                            || content.starts_with("\u{FEFF}")
-                                        {
+                                        // skip group blocks (script definitions echoed by actions)
+                                        if content.starts_with("##[group]") {
+                                            in_group = true;
                                             return None;
                                         }
-                                        // strip ##[error] prefix but keep the message
+                                        if content.starts_with("##[endgroup]") {
+                                            in_group = false;
+                                            return None;
+                                        }
+                                        if in_group { return None; }
+                                        if content.is_empty() || content.starts_with("\u{FEFF}") {
+                                            return None;
+                                        }
                                         let content = content.strip_prefix("##[error]").unwrap_or(content);
                                         let clean = tui::strip_ansi(content);
                                         if clean.is_empty() { return None; }
@@ -1197,9 +1192,6 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                                     .into_iter().rev()
                                     .map(|s| s.as_str())
                                     .collect::<Vec<_>>().join("\n");
-                                if !tail.is_empty() {
-                                    log_output.push_str(&format!("\n--- {} ---\n{}", name, tail));
-                                }
                                 if !tail.is_empty() {
                                     log_output.push_str(&format!("\n--- {} ---\n{}", name, tail));
                                 }
