@@ -13,7 +13,8 @@ pub struct ApiContext {
 
 impl ApiContext {
     fn is_cancelled(&self) -> bool {
-        self.cancel.as_ref()
+        self.cancel
+            .as_ref()
             .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
             .unwrap_or(false)
     }
@@ -222,7 +223,15 @@ pub fn execute_tool<'a>(
     Box::pin(async move {
         match name {
             "read" => exec_read(input, cwd).await,
-            "bash" => exec_bash(input, cwd, stream_tx, api_ctx.and_then(|c| c.cancel.clone())).await,
+            "bash" => {
+                exec_bash(
+                    input,
+                    cwd,
+                    stream_tx,
+                    api_ctx.and_then(|c| c.cancel.clone()),
+                )
+                .await
+            }
             "edit" => exec_edit(input, cwd).await,
             "write" => exec_write(input, cwd).await,
             "web_search" => exec_web_search(input).await,
@@ -270,10 +279,7 @@ async fn exec_read(input: &serde_json::Value, cwd: &Path) -> ToolResult {
                 result
             };
 
-            ToolResult::Success {
-                output,
-                diff: None,
-            }
+            ToolResult::Success { output, diff: None }
         }
         Err(e) => ToolResult::Error(format!("failed to read {}: {}", path.display(), e)),
     }
@@ -349,10 +355,7 @@ async fn exec_bash(
         None => return ToolResult::Error("missing 'command' parameter".to_string()),
     };
 
-    let timeout_secs = input
-        .get("timeout")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(120);
+    let timeout_secs = input.get("timeout").and_then(|v| v.as_u64()).unwrap_or(600);
 
     use tokio::io::AsyncReadExt;
 
@@ -411,14 +414,17 @@ async fn exec_bash(
 
     let mut collected;
     let mut raw_collected = String::new();
-    let deadline =
-        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     let mut timed_out = false;
 
     // poll for cancellation every 100 ms alongside the output stream
     let cancel_poll = async {
         loop {
-            if cancel.as_ref().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(false) {
+            if cancel
+                .as_ref()
+                .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(false)
+            {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -506,7 +512,8 @@ async fn exec_view_file(input: &serde_json::Value, cwd: &Path) -> ToolResult {
     let media_type = match detect_image_media_type(&path) {
         Some(t) => t,
         None => {
-            let ext = path.extension()
+            let ext = path
+                .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("unknown");
             return ToolResult::Error(format!(
@@ -535,7 +542,11 @@ async fn exec_view_file(input: &serde_json::Value, cwd: &Path) -> ToolResult {
     let kb = bytes.len() as f64 / 1024.0;
     let text = format!("{} [{}, {:.1} KB]", path.display(), media_type, kb);
 
-    ToolResult::Image { text, data, media_type: media_type.to_string() }
+    ToolResult::Image {
+        text,
+        data,
+        media_type: media_type.to_string(),
+    }
 }
 
 // detect an image's mime type from magic bytes first, then file extension
@@ -608,11 +619,7 @@ async fn exec_edit(input: &serde_json::Value, cwd: &Path) -> ToolResult {
         .to_string_lossy()
         .to_string();
 
-    let diff_info = compute_diff(
-        &display_path,
-        old_text,
-        new_text,
-    );
+    let diff_info = compute_diff(&display_path, old_text, new_text);
 
     if let Err(e) = std::fs::write(&path, &new_content) {
         return ToolResult::Error(format!("failed to write {}: {}", path.display(), e));
@@ -797,10 +804,7 @@ fn explore_arg_preview(name: &str, input: &serde_json::Value) -> String {
             .to_string(),
         "view_file" => explore_view_file_preview(input),
         "bash" => {
-            let cmd = input
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("?");
             if cmd.len() > 60 {
                 format!("{}...", &cmd[..57])
             } else {
@@ -808,10 +812,7 @@ fn explore_arg_preview(name: &str, input: &serde_json::Value) -> String {
             }
         }
         "web_search" => {
-            let q = input
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let q = input.get("query").and_then(|v| v.as_str()).unwrap_or("?");
             if q.len() > 60 {
                 format!("{}...", &q[..57])
             } else {
@@ -885,10 +886,7 @@ async fn exec_explore(
                 return ToolResult::Error("explore: no credentials available".to_string());
             }
         }
-        headers.insert(
-            "anthropic-version",
-            "2023-06-01".parse().unwrap(),
-        );
+        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
         headers.insert(
             reqwest::header::CONTENT_TYPE,
             "application/json".parse().unwrap(),
@@ -908,10 +906,7 @@ async fn exec_explore(
         let messages_json = match serde_json::to_value(&messages) {
             Ok(v) => v,
             Err(e) => {
-                return ToolResult::Error(format!(
-                    "explore: failed to serialize messages: {}",
-                    e
-                ))
+                return ToolResult::Error(format!("explore: failed to serialize messages: {}", e))
             }
         };
 
@@ -936,7 +931,8 @@ async fn exec_explore(
             Err(e) => {
                 if retries < 3 {
                     retries += 1;
-                    tokio::time::sleep(std::time::Duration::from_secs(1u64 << retries.min(4))).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(1u64 << retries.min(4)))
+                        .await;
                     continue;
                 }
                 return ToolResult::Error(format!("explore: request failed: {}", e));
@@ -951,10 +947,7 @@ async fn exec_explore(
                 tokio::time::sleep(std::time::Duration::from_secs(1u64 << retries.min(4))).await;
                 continue;
             }
-            return ToolResult::Error(format!(
-                "explore: api error ({}): {}",
-                status, body_text
-            ));
+            return ToolResult::Error(format!("explore: api error ({}): {}", status, body_text));
         }
 
         // process the SSE stream for this turn
@@ -1053,7 +1046,9 @@ async fn exec_explore(
                 tokio::time::sleep(std::time::Duration::from_secs(1u64 << retries.min(4))).await;
                 continue;
             }
-            let err = stream_errors.first().cloned()
+            let err = stream_errors
+                .first()
+                .cloned()
                 .unwrap_or_else(|| "stream ended without a response".to_string());
             return ToolResult::Error(format!("explore: {}", err));
         }
@@ -1071,9 +1066,7 @@ async fn exec_explore(
         if stop_reason.as_deref() != Some("tool_use") {
             let writeup = current_text.trim().to_string();
             if writeup.is_empty() {
-                return ToolResult::Error(
-                    "explore: sub-agent produced no writeup".to_string(),
-                );
+                return ToolResult::Error("explore: sub-agent produced no writeup".to_string());
             }
             return ToolResult::Success {
                 output: writeup,
@@ -1099,17 +1092,16 @@ async fn exec_explore(
                 }
 
                 // sub-tools get no stream_tx and no api_ctx (explore can't recurse)
-                let result =
-                    execute_tool(local, input, cwd, None, None).await;
+                let result = execute_tool(local, input, cwd, None, None).await;
 
                 let (content, is_error) = match result {
-                    ToolResult::Success { output, .. } => {
-                        (serde_json::Value::String(output), None)
-                    }
-                    ToolResult::Error(e) => {
-                        (serde_json::Value::String(e), Some(true))
-                    }
-                    ToolResult::Image { text, data, media_type } => {
+                    ToolResult::Success { output, .. } => (serde_json::Value::String(output), None),
+                    ToolResult::Error(e) => (serde_json::Value::String(e), Some(true)),
+                    ToolResult::Image {
+                        text,
+                        data,
+                        media_type,
+                    } => {
                         let val = serde_json::json!([
                             {"type": "text", "text": text},
                             {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
@@ -1139,10 +1131,7 @@ async fn exec_web_search(input: &serde_json::Value) -> ToolResult {
         None => return ToolResult::Error("missing 'query' parameter".to_string()),
     };
 
-    let limit = input
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(5) as usize;
+    let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -1151,7 +1140,10 @@ async fn exec_web_search(input: &serde_json::Value) -> ToolResult {
 
     let resp = client
         .post("https://html.duckduckgo.com/html/")
-        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        )
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(format!("q={}", url_encode(query)))
         .send()
@@ -1163,9 +1155,7 @@ async fn exec_web_search(input: &serde_json::Value) -> ToolResult {
             let output = parse_ddg_results(&body, limit);
             ToolResult::Success { output, diff: None }
         }
-        Ok(response) => {
-            ToolResult::Error(format!("search returned status {}", response.status()))
-        }
+        Ok(response) => ToolResult::Error(format!("search returned status {}", response.status())),
         Err(e) => ToolResult::Error(format!("search request failed: {}", e)),
     }
 }

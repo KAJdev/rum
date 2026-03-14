@@ -132,7 +132,7 @@ fn default_system_prompt() -> String {
 
 Available tools:
 - read: Read file contents
-- bash: Execute bash commands (ls, grep, find, etc.). Optional timeout in seconds (default 120).
+- bash: Execute bash commands (ls, grep, find, etc.). Optional timeout in seconds (default 600).
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
 - web_search: Search the web using DuckDuckGo
@@ -301,10 +301,19 @@ pub fn model_pricing(model: &str) -> ModelPricing {
     }
     let m = model.to_lowercase();
     if m.contains("opus") {
-        ModelPricing { input: 5.0, output: 25.0 }
+        ModelPricing {
+            input: 5.0,
+            output: 25.0,
+        }
     } else if m.contains("haiku") {
-        ModelPricing { input: 1.0, output: 5.0 }
+        ModelPricing {
+            input: 1.0,
+            output: 5.0,
+        }
     } else {
-        ModelPricing { input: 3.0, output: 15.0 }
+        ModelPricing {
+            input: 3.0,
+            output: 15.0,
+        }
     }
 }

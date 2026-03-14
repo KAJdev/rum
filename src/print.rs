@@ -524,6 +524,9 @@ impl PrintMode {
             AgentEvent::CompactDone(msg) => {
                 eprintln!("{msg}");
             }
+            AgentEvent::UserMessage(msg) => {
+                eprintln!("\n{msg}");
+            }
         }
 
         false

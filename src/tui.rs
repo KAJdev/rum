@@ -540,6 +540,10 @@ impl App {
                     }
                 }
             }
+            AgentEvent::UserMessage(msg) => {
+                self.activity.push(ActivityItem::UserMessage(msg));
+                self.auto_scroll = true;
+            }
             AgentEvent::Status(msg) => {
                 self.activity.push(ActivityItem::System(SystemKind::Info, msg));
             }
@@ -604,6 +608,10 @@ impl App {
     // queue a slash command to be dispatched when the current turn finishes
     pub fn queue_command(&mut self, cmd: &str) {
         self.queued_messages.push(QueuedItem::Command(cmd.to_string()));
+    }
+
+    pub fn next_queued_is_message(&self) -> bool {
+        matches!(self.queued_messages.first(), Some(QueuedItem::Message(_)))
     }
 
     // queue an explicit message string (used by background jobs like CI watch)

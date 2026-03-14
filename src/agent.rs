@@ -64,6 +64,8 @@ pub enum AgentEvent {
     // status messages (retries, etc.) rendered distinctly from model output
     Status(String),
     TurnComplete,
+    // a queued user message was injected mid-turn (after tool calls)
+    UserMessage(String),
     Error(String),
     // compact lifecycle events for the dedicated animated feed item
     CompactStart,
@@ -332,6 +334,7 @@ impl Agent {
     pub async fn send_message(
         &mut self,
         user_message: &str,
+        inject_rx: &std::sync::Mutex<mpsc::UnboundedReceiver<String>>,
         event_tx: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<()> {
         let pre_len = self.messages.len();
@@ -341,7 +344,7 @@ impl Agent {
             content: MessageContent::Text(user_message.to_string()),
         });
 
-        let result = self.run_turn(event_tx).await;
+        let result = self.run_turn(inject_rx, event_tx).await;
 
         // if cancelled before any response was produced, remove the
         // dangling user message to maintain valid alternation.
@@ -357,6 +360,7 @@ impl Agent {
 
     async fn run_turn(
         &mut self,
+        inject_rx: &std::sync::Mutex<mpsc::UnboundedReceiver<String>>,
         event_tx: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<()> {
         let mut retries = 0u32;
@@ -739,6 +743,22 @@ impl Agent {
                         tool_use_id: id.clone(),
                         content,
                         is_error,
+                    });
+                }
+            }
+
+            // drain any user messages that were queued mid-turn and
+            // append them as text blocks alongside the tool results
+            if let Ok(mut rx) = inject_rx.lock() {
+                let mut injected = Vec::new();
+                while let Ok(msg) = rx.try_recv() {
+                    injected.push(msg);
+                }
+                if !injected.is_empty() {
+                    let combined = injected.join("\n\n");
+                    let _ = event_tx.send(AgentEvent::UserMessage(combined.clone()));
+                    result_blocks.push(ContentBlock::Text {
+                        text: combined,
                     });
                 }
             }

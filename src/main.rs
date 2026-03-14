@@ -165,7 +165,9 @@ async fn run_print_mode(
             };
             let cancel = agent::CancelToken::new();
             let mut agent = agent::Agent::new(&rebuilt_cfg, api_client, cwd, cancel);
-            let result = agent.send_message(&msg, tx.clone()).await;
+            let (_inject_tx, inject_rx) = mpsc::unbounded_channel::<String>();
+            let inject_rx = std::sync::Mutex::new(inject_rx);
+            let result = agent.send_message(&msg, &inject_rx, tx.clone()).await;
             if let Err(e) = result {
                 let _ = tx.send(AgentEvent::Error(e.to_string()));
                 let _ = tx.send(AgentEvent::TurnComplete);
@@ -213,6 +215,7 @@ async fn run_tui_mode(
     let cancel = agent::CancelToken::new();
 
     let (user_tx, user_rx) = mpsc::unbounded_channel::<String>();
+    let (inject_tx, inject_rx) = mpsc::unbounded_channel::<String>();
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let (control_tx, control_rx) = mpsc::unbounded_channel::<agent::ControlMessage>();
     let (login_tx, mut login_rx) = mpsc::unbounded_channel::<Result<(), String>>();
@@ -253,7 +256,7 @@ async fn run_tui_mode(
     }
 
     tokio::spawn(async move {
-        agent_loop(agent, user_rx, control_rx, agent_tx).await;
+        agent_loop(agent, user_rx, inject_rx, control_rx, agent_tx).await;
     });
 
     tokio::spawn(async move {
@@ -354,6 +357,18 @@ async fn run_tui_mode(
                 tag,
                 env!("CARGO_PKG_VERSION"),
             ));
+        }
+
+        // inject queued messages mid-turn so the agent sees them at
+        // the next natural break point (after tool calls finish)
+        if app.is_running && app.has_queued_items() {
+            // drain only Message items; stop at the first Command
+            // (commands like /compact need to wait for the turn to finish)
+            while app.has_queued_items() && app.next_queued_is_message() {
+                if let Some(tui::QueuedAction::SendMessage(msg)) = app.drain_next_queued() {
+                    let _ = inject_tx.send(msg);
+                }
+            }
         }
 
         // process queued items when the current turn finishes
@@ -983,15 +998,20 @@ fn read_clipboard_image_to_path(_path: &str) -> bool {
 async fn agent_loop(
     mut agent: agent::Agent,
     mut user_rx: mpsc::UnboundedReceiver<String>,
+    inject_rx: mpsc::UnboundedReceiver<String>,
     mut control_rx: mpsc::UnboundedReceiver<agent::ControlMessage>,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
 ) {
+    // wrap in a mutex so run_turn can borrow it without holding a mutable
+    // ref to the receiver across await points
+    let inject_rx = std::sync::Mutex::new(inject_rx);
+
     loop {
         tokio::select! {
             msg = user_rx.recv() => {
                 match msg {
                     Some(message) => {
-                        let result = agent.send_message(&message, event_tx.clone()).await;
+                        let result = agent.send_message(&message, &inject_rx, event_tx.clone()).await;
                         if let Err(e) = result {
                             let _ = event_tx.send(AgentEvent::Error(e.to_string()));
                             let _ = event_tx.send(AgentEvent::TurnComplete);
