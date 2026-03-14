@@ -481,8 +481,7 @@ impl Agent {
                     StreamEvent::CompactionStart => {
                         in_compaction = true;
                         current_compaction.clear();
-                        let _ =
-                            event_tx.send(AgentEvent::Status("compacting context...".to_string()));
+                        let _ = event_tx.send(AgentEvent::CompactStart);
                     }
                     StreamEvent::CompactionDelta(c) => {
                         if in_compaction {
@@ -723,6 +722,9 @@ impl Agent {
             // if the api paused for compaction (pause_after_compaction=true), continue
             // the loop so the next request resumes from the compacted context
             if stop_reason.as_deref() == Some("compaction") {
+                let _ = event_tx.send(AgentEvent::CompactDone(
+                    "context auto-compacted".to_string(),
+                ));
                 continue;
             }
 

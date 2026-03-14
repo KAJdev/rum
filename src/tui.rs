@@ -2421,30 +2421,9 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     let max_w = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
 
-    // header
-    let header_text = if app.follow_mode {
-        let pos = if app.agent_edits.is_empty() {
-            String::new()
-        } else {
-            format!(" {}/{}", app.agent_edit_index + 1, app.agent_edits.len())
-        };
-        format!(" follow{}", pos)
-    } else if app.is_running {
-        " running".to_string()
-    } else {
-        " activity".to_string()
-    };
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{:<w$}", header_text, w = max_w + 1),
-            Style::default().fg(if app.follow_mode { GREEN } else { MUTED }).add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
     // render activity items bottom-up (most recent first),
     // fitting as many as the sidebar height allows
-    let avail = area.height.saturating_sub(2) as usize;
+    let avail = area.height as usize;
     let mut item_lines: Vec<Line> = Vec::new();
 
     for item in app.activity.iter().rev() {
@@ -2539,7 +2518,7 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         height: area.height,
     };
     let sep_lines: Vec<Line> = (0..area.height)
-        .map(|_| Line::from(Span::styled("\u{2502}", Style::default().fg(DIM))))
+        .map(|_| Line::from(Span::styled("\u{2502}", Style::default().fg(Color::Rgb(40, 44, 52)))))
         .collect();
     frame.render_widget(Paragraph::new(sep_lines), sep_area);
 
