@@ -337,6 +337,11 @@ impl Agent {
         inject_rx: &std::sync::Mutex<mpsc::UnboundedReceiver<String>>,
         event_tx: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<()> {
+        // flush any stale injections from a previous turn
+        if let Ok(mut rx) = inject_rx.lock() {
+            while rx.try_recv().is_ok() {}
+        }
+
         let pre_len = self.messages.len();
 
         self.messages.push(Message {
