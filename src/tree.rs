@@ -43,10 +43,20 @@ impl TreeView {
             .iter()
             .rposition(|n| n.branch_idx == active)
             .unwrap_or(0);
+        // start scroll so cursor is visible
+        let h = crossterm::terminal::size()
+            .map(|(_, h)| h)
+            .unwrap_or(24) as usize;
+        let viewport = h.saturating_sub(2);
+        let scroll = if cursor >= viewport {
+            cursor + 1 - viewport
+        } else {
+            0
+        };
         Self {
             nodes,
             cursor,
-            scroll: 0,
+            scroll,
         }
     }
 
@@ -228,6 +238,21 @@ fn render_branch(
         pipes.push(depth - 1);
     }
 
+    // if this branch has no unique messages past the start, show a stub
+    if start_msg_idx >= branch.messages.len() && depth > 0 {
+        out.push(TreeNode {
+            kind: NodeKind::AssistantText,
+            text: "(waiting for input)".to_string(),
+            branch_idx,
+            msg_idx: branch.messages.len().saturating_sub(1),
+            depth,
+            is_last_child: is_last,
+            active_pipes: pipes.clone(),
+            branch_head: true,
+        });
+        return;
+    }
+
     for msg_idx in start_msg_idx..branch.messages.len() {
         let msg = &branch.messages[msg_idx];
         let display_nodes = nodes_from_message(msg, branch_idx, msg_idx);
@@ -255,7 +280,6 @@ fn render_branch(
         // branch and all forked branches as siblings
         if !children.is_empty() {
             let remaining = msg_idx + 1 < branch.messages.len();
-            let _total_siblings = children.len() + if remaining { 1 } else { 0 };
 
             // render continuation of current branch first
             if remaining {
@@ -274,10 +298,7 @@ fn render_branch(
 
             // render forked branches
             for (ci, &child_branch) in children.iter().enumerate() {
-                let _child_is_last = ci == children.len() - 1 && !remaining;
                 let child_start = msg_idx + 1;
-                // only render messages that are unique to this branch
-                let child_start = child_start.min(tree.branches[child_branch].messages.len());
                 render_branch(
                     tree,
                     child_branch,
@@ -290,7 +311,6 @@ fn render_branch(
                 );
             }
 
-            // we've handled everything from msg_idx onward
             return;
         }
     }
