@@ -1,6 +1,7 @@
 mod agent;
 mod api;
 mod auth;
+mod autocomplete;
 mod config;
 mod editor;
 mod markdown;

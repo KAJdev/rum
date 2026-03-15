@@ -387,6 +387,7 @@ pub struct App {
     pub view_mode: ViewMode,
     pub editor_buffer: Option<EditorBuffer>,
     pub editor_search: Option<SearchState>,
+    pub editor_autocomplete: Option<crate::autocomplete::AutocompleteState>,
     pub follow_mode: bool,
     pub agent_edits: Vec<AgentEdit>,
     pub agent_edit_index: usize,
@@ -445,6 +446,7 @@ impl App {
             view_mode: ViewMode::Chat,
             editor_buffer: None,
             editor_search: None,
+            editor_autocomplete: None,
             follow_mode: false,
             agent_edits: Vec::new(),
             agent_edit_index: 0,
@@ -1945,6 +1947,50 @@ fn handle_editor_key(
         return handle_search_key(key, app, ctrl);
     }
 
+    // autocomplete menu intercepts navigation keys
+    if app.editor_autocomplete.is_some() {
+        match key.code {
+            KeyCode::Tab | KeyCode::Enter => {
+                // accept the selected completion
+                if let Some(ac) = app.editor_autocomplete.take() {
+                    if let Some(candidate) = ac.candidates.get(ac.selected) {
+                        if let Some(ref mut buf) = app.editor_buffer {
+                            let line = &mut buf.lines[buf.cursor_row];
+                            let end = buf.cursor_col.min(line.len());
+                            line.replace_range(ac.word_start..end, &candidate.label);
+                            buf.cursor_col = ac.word_start + candidate.label.len();
+                            buf.dirty = true;
+                            buf.generation += 1;
+                        }
+                    }
+                }
+                return InputAction::None;
+            }
+            KeyCode::Up => {
+                if let Some(ref mut ac) = app.editor_autocomplete {
+                    ac.select_up();
+                }
+                return InputAction::None;
+            }
+            KeyCode::Down => {
+                if let Some(ref mut ac) = app.editor_autocomplete {
+                    ac.select_down();
+                }
+                return InputAction::None;
+            }
+            KeyCode::Esc => {
+                app.editor_autocomplete = None;
+                return InputAction::None;
+            }
+            // any other key dismisses and falls through to normal handling
+            _ => {
+                if !matches!(key.code, KeyCode::Char(_)) {
+                    app.editor_autocomplete = None;
+                }
+            }
+        }
+    }
+
     match key.code {
         // ctrl+c: quit from editor
         KeyCode::Char('c') if ctrl => {
@@ -2116,6 +2162,7 @@ fn handle_editor_key(
                     }
                 }
             }
+            app.editor_autocomplete = None;
         }
         KeyCode::Backspace => {
             if let Some(ref mut buf) = app.editor_buffer {
@@ -2138,6 +2185,15 @@ fn handle_editor_key(
                     }
                 }
                 buf.backspace();
+            }
+            // re-trigger autocomplete with updated prefix
+            if let Some(ref buf) = app.editor_buffer {
+                app.editor_autocomplete = crate::autocomplete::compute_completions(
+                    &buf.lines,
+                    buf.cursor_row,
+                    buf.cursor_col,
+                    &buf.path,
+                );
             }
         }
         KeyCode::Delete => {
@@ -2185,8 +2241,29 @@ fn handle_editor_key(
                     buf.insert_char(c);
                 }
             }
+            // trigger or update autocomplete on identifier chars
+            if c.is_alphanumeric() || c == '_' {
+                if let Some(ref buf) = app.editor_buffer {
+                    app.editor_autocomplete = crate::autocomplete::compute_completions(
+                        &buf.lines,
+                        buf.cursor_row,
+                        buf.cursor_col,
+                        &buf.path,
+                    );
+                }
+            } else {
+                app.editor_autocomplete = None;
+            }
         }
         _ => {}
+    }
+
+    // dismiss autocomplete on movement keys
+    if matches!(key.code,
+        KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End |
+        KeyCode::PageUp | KeyCode::PageDown
+    ) {
+        app.editor_autocomplete = None;
     }
 
     // keep cursor visible after any action
@@ -2321,6 +2398,7 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
 
     if app.editor_buffer.is_some() {
         render_editor_content(frame, app, left_chunks[1]);
+        render_autocomplete_menu(frame, app, left_chunks[1]);
     }
 
     if has_search {
@@ -2626,6 +2704,104 @@ fn wrap_spans(spans: &[(Style, String)], max_cols: usize) -> Vec<Vec<Span<'stati
     }
 
     rows
+}
+
+fn render_autocomplete_menu(frame: &mut Frame, app: &App, area: Rect) {
+    use unicode_width::UnicodeWidthStr;
+
+    let ac = match &app.editor_autocomplete {
+        Some(ac) if !ac.candidates.is_empty() => ac,
+        _ => return,
+    };
+    let buf = match &app.editor_buffer {
+        Some(b) => b,
+        None => return,
+    };
+
+    let gutter_width = (buf.line_count().max(1).to_string().len() + 2) as u16;
+    let content_cols = (area.width as usize).saturating_sub(gutter_width as usize);
+
+    // find cursor screen position relative to editor area
+    let line = &buf.lines[buf.cursor_row];
+    let word_start_visual = {
+        let safe = ac.word_start.min(line.len());
+        let pos = (0..=safe).rev().find(|&i| line.is_char_boundary(i)).unwrap_or(0);
+        UnicodeWidthStr::width(&line[..pos])
+    };
+
+    // account for wrapping
+    let wrap_row = word_start_visual / content_cols.max(1);
+    let wrap_col = word_start_visual % content_cols.max(1);
+
+    // compute screen row of cursor line (accounting for wrapped lines above)
+    let mut screen_row = 0usize;
+    for i in buf.scroll_row..buf.cursor_row {
+        if i >= buf.lines.len() { break; }
+        let lw = UnicodeWidthStr::width(buf.lines[i].as_str());
+        screen_row += if lw == 0 || content_cols == 0 { 1 } else { (lw + content_cols - 1) / content_cols };
+    }
+    screen_row += wrap_row;
+
+    // position the menu below the cursor line
+    let menu_y = area.y + screen_row as u16 + 1;
+    let menu_x = area.x + gutter_width + wrap_col as u16;
+    let max_label = ac.candidates.iter().map(|c| c.label.len()).max().unwrap_or(10);
+    let menu_w = (max_label + 4).min(40) as u16;
+    let menu_h = ac.candidates.len().min(8) as u16;
+
+    // flip above if not enough room below
+    let available_below = area.y + area.height - menu_y;
+    let (final_y, final_h) = if available_below >= menu_h {
+        (menu_y, menu_h.min(available_below))
+    } else {
+        let above = screen_row as u16;
+        let h = menu_h.min(above);
+        (area.y + screen_row as u16 - h, h)
+    };
+
+    // clamp to area bounds
+    let final_x = menu_x.min(area.x + area.width - menu_w.min(area.width));
+    let final_w = menu_w.min(area.x + area.width - final_x);
+
+    if final_h == 0 || final_w == 0 {
+        return;
+    }
+
+    let menu_area = Rect::new(final_x, final_y, final_w, final_h);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, candidate) in ac.candidates.iter().take(final_h as usize).enumerate() {
+        let is_selected = i == ac.selected;
+
+        let kind_icon = match candidate.kind {
+            crate::autocomplete::CompletionKind::Keyword => "k",
+            crate::autocomplete::CompletionKind::Identifier => "i",
+        };
+
+        let (label_style, icon_style) = if is_selected {
+            (
+                Style::default().fg(BG).bg(ACCENT),
+                Style::default().fg(BG).bg(ACCENT),
+            )
+        } else {
+            (
+                Style::default().fg(FG).bg(INPUT_BG),
+                Style::default().fg(MUTED).bg(INPUT_BG),
+            )
+        };
+
+        let label: String = candidate.label.chars().take(final_w as usize - 3).collect();
+        let pad = (final_w as usize).saturating_sub(label.len() + 3);
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {} ", kind_icon), icon_style),
+            Span::styled(label, label_style),
+            Span::styled(" ".repeat(pad), label_style),
+        ]));
+    }
+
+    let widget = Paragraph::new(lines).style(Style::default().bg(INPUT_BG));
+    frame.render_widget(ratatui::widgets::Clear, menu_area);
+    frame.render_widget(widget, menu_area);
 }
 
 fn render_search_overlay(frame: &mut Frame, app: &App, area: Rect) {
