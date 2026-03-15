@@ -243,16 +243,7 @@ impl EditorBuffer {
             }
             return;
         }
-        let line = &self.lines[self.cursor_row];
-        let bytes = line.as_bytes();
-        let mut pos = self.cursor_col.min(bytes.len());
-        while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
-            pos -= 1;
-        }
-        while pos > 0 && !bytes[pos - 1].is_ascii_whitespace() {
-            pos -= 1;
-        }
-        self.cursor_col = pos;
+        self.cursor_col = word_boundary_left(&self.lines[self.cursor_row], self.cursor_col);
     }
 
     pub fn move_word_right(&mut self) {
@@ -266,15 +257,51 @@ impl EditorBuffer {
             }
             return;
         }
-        let bytes = line.as_bytes();
-        let mut pos = self.cursor_col.min(len);
-        while pos < len && !bytes[pos].is_ascii_whitespace() {
-            pos += 1;
+        self.cursor_col = word_boundary_right(line, self.cursor_col);
+    }
+
+    pub fn delete_word_backward(&mut self) {
+        if self.cursor_col == 0 {
+            self.backspace();
+            return;
         }
-        while pos < len && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
+        self.save_undo();
+        let target = word_boundary_left(&self.lines[self.cursor_row], self.cursor_col);
+        self.lines[self.cursor_row].drain(target..self.cursor_col);
+        self.cursor_col = target;
+        self.dirty = true;
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        let len = self.lines[self.cursor_row].len();
+        if self.cursor_col >= len {
+            self.delete();
+            return;
         }
-        self.cursor_col = pos;
+        self.save_undo();
+        let target = word_boundary_right(&self.lines[self.cursor_row], self.cursor_col);
+        self.lines[self.cursor_row].drain(self.cursor_col..target);
+        self.dirty = true;
+    }
+
+    pub fn delete_to_line_start(&mut self) {
+        if self.cursor_col == 0 {
+            return;
+        }
+        self.save_undo();
+        self.lines[self.cursor_row].drain(..self.cursor_col);
+        self.cursor_col = 0;
+        self.dirty = true;
+    }
+
+    pub fn delete_to_line_end(&mut self) {
+        let len = self.lines[self.cursor_row].len();
+        if self.cursor_col >= len {
+            return;
+        }
+        self.save_undo();
+        self.lines[self.cursor_row].truncate(self.cursor_col);
+        self.dirty = true;
     }
 
     pub fn page_up(&mut self, viewport_height: usize) {
@@ -716,4 +743,61 @@ pub fn search_text(root: &Path, query: &str, max_results: usize) -> Vec<SearchRe
     }
 
     results
+}
+
+// classify a byte for word-boundary detection.
+// groups: whitespace, identifier (alphanumeric or _), punctuation/symbols.
+fn char_class(c: char) -> u8 {
+    if c.is_whitespace() {
+        0
+    } else if c.is_alphanumeric() || c == '_' {
+        1
+    } else {
+        2
+    }
+}
+
+// find the byte offset of the previous word boundary (for Option+Left behavior).
+// skips whitespace, then skips the preceding word/symbol group.
+fn word_boundary_left(line: &str, col: usize) -> usize {
+    let safe = col.min(line.len());
+    let before: Vec<char> = line[..safe].chars().collect();
+    let mut i = before.len();
+
+    // skip whitespace
+    while i > 0 && before[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    if i == 0 {
+        return 0;
+    }
+    // skip same-class chars
+    let cls = char_class(before[i - 1]);
+    while i > 0 && char_class(before[i - 1]) == cls {
+        i -= 1;
+    }
+    before[..i].iter().map(|c| c.len_utf8()).sum()
+}
+
+// find the byte offset of the next word boundary (for Option+Right behavior).
+// skips the current word/symbol group, then skips trailing whitespace.
+fn word_boundary_right(line: &str, col: usize) -> usize {
+    let safe = col.min(line.len());
+    let after: Vec<char> = line[safe..].chars().collect();
+    let mut i = 0;
+    let len = after.len();
+
+    if i >= len {
+        return line.len();
+    }
+    // skip same-class chars
+    let cls = char_class(after[i]);
+    while i < len && char_class(after[i]) == cls {
+        i += 1;
+    }
+    // skip whitespace
+    while i < len && after[i].is_whitespace() {
+        i += 1;
+    }
+    safe + after[..i].iter().map(|c| c.len_utf8()).sum::<usize>()
 }

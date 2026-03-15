@@ -1943,7 +1943,7 @@ fn handle_editor_key(
     ctrl: bool,
     alt: bool,
     shift: bool,
-    _super_key: bool,
+    super_key: bool,
 ) -> InputAction {
     // search overlay intercepts input when active
     if app.editor_search.is_some() {
@@ -2074,22 +2074,22 @@ fn handle_editor_key(
                 buf.move_down();
             }
         }
-        KeyCode::Left if ctrl => {
+        KeyCode::Left if super_key => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_home();
+            }
+        }
+        KeyCode::Right if super_key => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.move_end();
+            }
+        }
+        KeyCode::Left if ctrl || alt => {
             if let Some(ref mut buf) = app.editor_buffer {
                 buf.move_word_left();
             }
         }
-        KeyCode::Right if ctrl => {
-            if let Some(ref mut buf) = app.editor_buffer {
-                buf.move_word_right();
-            }
-        }
-        KeyCode::Left if alt => {
-            if let Some(ref mut buf) = app.editor_buffer {
-                buf.move_word_left();
-            }
-        }
-        KeyCode::Right if alt => {
+        KeyCode::Right if ctrl || alt => {
             if let Some(ref mut buf) = app.editor_buffer {
                 buf.move_word_right();
             }
@@ -2167,6 +2167,25 @@ fn handle_editor_key(
             }
             app.editor_autocomplete = None;
         }
+        KeyCode::Backspace if super_key => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.delete_to_line_start();
+            }
+            app.editor_autocomplete = None;
+        }
+        KeyCode::Backspace if alt || ctrl => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.delete_word_backward();
+            }
+            if let Some(ref buf) = app.editor_buffer {
+                app.editor_autocomplete = crate::autocomplete::compute_completions(
+                    &buf.lines,
+                    buf.cursor_row,
+                    buf.cursor_col,
+                    &buf.path,
+                );
+            }
+        }
         KeyCode::Backspace => {
             if let Some(ref mut buf) = app.editor_buffer {
                 // delete matching closing char when backspacing an empty pair
@@ -2197,6 +2216,11 @@ fn handle_editor_key(
                     buf.cursor_col,
                     &buf.path,
                 );
+            }
+        }
+        KeyCode::Delete if alt || ctrl => {
+            if let Some(ref mut buf) = app.editor_buffer {
+                buf.delete_word_forward();
             }
         }
         KeyCode::Delete => {
@@ -4183,8 +4207,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let super_key = key.modifiers.contains(KeyModifiers::SUPER);
 
-    // ctrl+e: toggle editor mode
-    if ctrl && key.code == KeyCode::Char('e') {
+    // ctrl+e: toggle editor mode (only when no other modifiers)
+    if ctrl && !super_key && !alt && key.code == KeyCode::Char('e') {
         app.view_mode = match app.view_mode {
             ViewMode::Chat => ViewMode::Editor,
             ViewMode::Editor => {
