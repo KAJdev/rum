@@ -2,7 +2,7 @@
 
 a coding agent and editor fused into one terminal UI. built in rust.
 
-rum is a dual-pane TUI where one side is an AI agent that can read, write, and run commands across your codebase, and the other side is a full editor with syntax highlighting. follow mode links the two together: as the agent works through files, the editor tracks every read and edit in real time, jumping to each change with inline diff markers.
+rum is a dual-pane TUI where one side is an AI agent that can read, write, and run commands across your codebase, and the other side is a full editor. follow mode links the two together: as the agent works through files, the editor tracks every read and edit in real time, jumping to each change with inline diff markers.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -35,7 +35,7 @@ cargo install --path .
 
 ## getting started
 
-run `rum` in any project directory. if you don't have credentials, it will open your browser to log in with your Anthropic account automatically -- paste the code back and you're in.
+run `rum` in any project directory. if you don't have credentials, it will open your browser to log in with your Anthropic account automatically -> paste the code back and you're in.
 
 you can also set `ANTHROPIC_API_KEY` in your environment if you prefer API key auth.
 
@@ -60,30 +60,13 @@ rum -C /path/to/project
 
 ## the editor
 
-`Ctrl+E` switches between chat and editor. the editor has syntax highlighting (syntect), undo/redo, and file saving. `Ctrl+P` opens a fuzzy file finder, `Ctrl+/` searches text across the project.
+`Ctrl+E` switches between chat and editor. `Ctrl+P` opens a fuzzy file finder, `Ctrl+/` searches text across the project.
 
 ### follow mode
 
-`Ctrl+F` turns on follow mode, which is the core of how rum connects the agent to the editor. every file the agent touches (reads or edits) is tracked. the editor automatically opens each file and jumps to the relevant line:
-
-- edits get diff markers in the gutter -- green for insertions, red for deletions
-- reads jump to the offset the agent requested
-- `Alt+Up/Down` walks through the full history of file operations
-- the status bar shows your position (e.g. `follow 3/7`)
+`Ctrl+F` turns on follow mode, which is the core of how rum connects the agent to the editor. every file the agent touches (reads or edits) is tracked. the editor automatically opens each file and jumps to the relevant line, `Alt+Up/Down` walks through the full history of file operations.
 
 a condensed activity sidebar on the right side of the editor shows agent progress without needing to switch back to chat.
-
-## tools
-
-| tool | what it does |
-|------|-------------|
-| **read** | read file contents (with optional line offset/limit) |
-| **write** | create or overwrite files |
-| **edit** | surgical find-and-replace (exact match) |
-| **bash** | run shell commands (streams in real time) |
-| **explore** | spawn a read-only sub-agent to investigate a topic |
-| **web_search** | search the web via DuckDuckGo |
-| **view_file** | view and describe an image file |
 
 ## keybindings
 
