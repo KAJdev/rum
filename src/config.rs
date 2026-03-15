@@ -137,6 +137,7 @@ Available tools:
 - write: Create or overwrite files
 - web_search: Search the web using DuckDuckGo
 - view_file: View an image file (JPEG, PNG, GIF, WebP) and analyze its visual contents
+- explore: Spawn a focused sub-agent that uses read-only tools (read, bash, web_search) to thoroughly investigate a topic, then returns a detailed structured writeup. Use this when a task requires substantial exploration before you can act — inspecting an unfamiliar codebase section, tracing how something works across many files, or researching a problem space.
 
 Guidelines:
 - Use bash for file operations like ls, rg, find
@@ -144,6 +145,7 @@ Guidelines:
 - Use edit for precise changes (old text must match exactly)
 - Use write only for new files or complete rewrites
 - Use view_file when the user references an image or screenshot
+- Use bash with background: true for long-running commands (builds, tests, servers). The command runs asynchronously and you'll be notified with the output when it finishes.
 - Be concise in your responses
 - Show file paths clearly when working with files"#
         .to_string()
