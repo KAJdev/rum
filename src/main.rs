@@ -469,7 +469,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
             }
         }
 
-        // after agent turn completes, check for LSP diagnostics and inject errors
+        // after agent turn completes, check for LSP diagnostics and queue errors
         if let Some(check_at) = app.diag_check_at {
             if std::time::Instant::now() >= check_at && !app.is_running {
                 app.diag_check_at = None;
@@ -496,9 +496,15 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                                 if error_lines.len() == 1 { "" } else { "s" },
                                 error_lines.join("\n")
                             );
-                            cancel.reset();
-                            app.start_new_message("[LSP errors detected]");
-                            let _ = user_tx.send(msg);
+                            // queue instead of sending immediately so it
+                            // waits for any active turn to finish and
+                            // doesn't clobber the user's input
+                            app.push_system_message(format!(
+                                "lsp: {} error{} detected, fixing...",
+                                error_lines.len(),
+                                if error_lines.len() == 1 { "" } else { "s" },
+                            ));
+                            app.queued_messages.push(tui::QueuedItem::Message(msg));
                         }
                     }
                 }

@@ -223,7 +223,7 @@ pub enum SystemKind {
 }
 
 #[derive(Debug, Clone)]
-enum QueuedItem {
+pub enum QueuedItem {
     // a regular follow-up message waiting to be sent
     Message(String),
     // a slash command waiting to be dispatched when the current turn finishes
@@ -333,7 +333,7 @@ pub struct App {
     // wipe login messages on success so only the result remains
     login_activity_start: Option<usize>,
     pub current_message: Option<String>,
-    queued_messages: Vec<QueuedItem>,
+    pub queued_messages: Vec<QueuedItem>,
     // summed across all api calls (for cost calculation)
     total_input: u32,
     total_output: u32,

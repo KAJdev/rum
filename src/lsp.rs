@@ -35,6 +35,37 @@ struct ServerConfig {
     root_markers: &'static [&'static str],
     extensions: &'static [&'static str],
     language_id: &'static str,
+    // how to auto-install this server if not found on PATH
+    install: InstallMethod,
+}
+
+#[derive(Clone, Copy)]
+enum InstallMethod {
+    // no auto-install, must be on PATH
+    None,
+    // download a binary from a github release
+    GithubRelease {
+        repo: &'static str,
+        // maps (os, arch) to asset name pattern. {tag} is replaced with the version tag.
+        asset_pattern: fn(&str, &str) -> Option<String>,
+        // the binary name inside the archive (or the downloaded file itself)
+        binary_name: &'static str,
+    },
+    // fall back to running via npx if the binary is not found
+    Npx {
+        package: &'static str,
+        args: &'static [&'static str],
+    },
+}
+
+fn ra_asset(os: &str, arch: &str) -> Option<String> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some("rust-analyzer-aarch64-apple-darwin.gz".to_string()),
+        ("macos", "x86_64") => Some("rust-analyzer-x86_64-apple-darwin.gz".to_string()),
+        ("linux", "x86_64") => Some("rust-analyzer-x86_64-unknown-linux-gnu.gz".to_string()),
+        ("linux", "aarch64") => Some("rust-analyzer-aarch64-unknown-linux-gnu.gz".to_string()),
+        _ => None,
+    }
 }
 
 const SERVERS: &[ServerConfig] = &[
@@ -45,6 +76,11 @@ const SERVERS: &[ServerConfig] = &[
         root_markers: &["Cargo.toml"],
         extensions: &["rs"],
         language_id: "rust",
+        install: InstallMethod::GithubRelease {
+            repo: "rust-lang/rust-analyzer",
+            asset_pattern: ra_asset,
+            binary_name: "rust-analyzer",
+        },
     },
     ServerConfig {
         name: "typescript-language-server",
@@ -53,6 +89,10 @@ const SERVERS: &[ServerConfig] = &[
         root_markers: &["tsconfig.json", "jsconfig.json", "package.json"],
         extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
         language_id: "typescript",
+        install: InstallMethod::Npx {
+            package: "typescript-language-server",
+            args: &["--stdio"],
+        },
     },
     ServerConfig {
         name: "pyright",
@@ -61,6 +101,10 @@ const SERVERS: &[ServerConfig] = &[
         root_markers: &["pyproject.toml", "setup.py", "requirements.txt", "pyrightconfig.json"],
         extensions: &["py", "pyi"],
         language_id: "python",
+        install: InstallMethod::Npx {
+            package: "pyright",
+            args: &["--langserver", "--stdio"],
+        },
     },
     ServerConfig {
         name: "gopls",
@@ -69,6 +113,7 @@ const SERVERS: &[ServerConfig] = &[
         root_markers: &["go.mod"],
         extensions: &["go"],
         language_id: "go",
+        install: InstallMethod::None,
     },
     ServerConfig {
         name: "clangd",
@@ -77,12 +122,168 @@ const SERVERS: &[ServerConfig] = &[
         root_markers: &["compile_commands.json", "CMakeLists.txt", "Makefile"],
         extensions: &["c", "cpp", "cc", "cxx", "h", "hpp", "hxx"],
         language_id: "c",
+        install: InstallMethod::None,
     },
 ];
 
-// check if a command is available on PATH
+// check if a command is available on PATH or in our managed bin dir
 fn command_exists(cmd: &str) -> bool {
     which::which(cmd).is_ok()
+}
+
+// directory where rum stores auto-downloaded LSP binaries
+fn lsp_bin_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("rum")
+        .join("lsp")
+        .join("bin")
+}
+
+// check if we have a managed binary for the given server
+fn managed_binary_path(name: &str) -> Option<PathBuf> {
+    let path = lsp_bin_dir().join(name);
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+// resolve the command to run for a server: system PATH first, then managed binary
+fn resolve_command(config: &ServerConfig) -> Option<ResolvedCommand> {
+    // system PATH
+    if command_exists(config.command) {
+        return Some(ResolvedCommand {
+            program: config.command.to_string(),
+            args: config.args.iter().map(|s| s.to_string()).collect(),
+        });
+    }
+
+    // managed binary dir
+    if let Some(path) = managed_binary_path(config.command) {
+        return Some(ResolvedCommand {
+            program: path.to_string_lossy().to_string(),
+            args: config.args.iter().map(|s| s.to_string()).collect(),
+        });
+    }
+
+    // npx fallback
+    if let InstallMethod::Npx { package, args } = &config.install {
+        if command_exists("npx") {
+            let mut full_args: Vec<String> = vec![
+                "--yes".to_string(),
+                package.to_string(),
+            ];
+            full_args.extend(args.iter().map(|s| s.to_string()));
+            return Some(ResolvedCommand {
+                program: "npx".to_string(),
+                args: full_args,
+            });
+        }
+    }
+
+    None
+}
+
+struct ResolvedCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+// download a language server binary from a github release.
+// returns the path to the installed binary on success.
+async fn download_github_release(
+    repo: &str,
+    asset_pattern: fn(&str, &str) -> Option<String>,
+    binary_name: &str,
+    event_tx: &mpsc::UnboundedSender<LspEvent>,
+) -> Option<PathBuf> {
+    let os = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        return None;
+    };
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        return None;
+    };
+
+    let asset_name = asset_pattern(os, arch)?;
+
+    // fetch latest release tag
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .ok()?;
+
+    let release_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    let resp = client
+        .get(&release_url)
+        .header("User-Agent", "rum")
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let release: serde_json::Value = resp.json().await.ok()?;
+    let tag = release.get("tag_name")?.as_str()?;
+
+    let download_url = format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        repo, tag, asset_name,
+    );
+
+    let _ = event_tx.send(LspEvent::ServerStarted(
+        format!("downloading {} {}...", binary_name, tag),
+    ));
+
+    let resp = client
+        .get(&download_url)
+        .header("User-Agent", "rum")
+        .send()
+        .await
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let bytes = resp.bytes().await.ok()?;
+
+    let bin_dir = lsp_bin_dir();
+    std::fs::create_dir_all(&bin_dir).ok()?;
+    let dest = bin_dir.join(binary_name);
+
+    // handle .gz compressed files
+    if asset_name.ends_with(".gz") && !asset_name.ends_with(".tar.gz") {
+        use std::io::Read;
+        let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).ok()?;
+        std::fs::write(&dest, &decompressed).ok()?;
+    } else {
+        std::fs::write(&dest, &bytes).ok()?;
+    }
+
+    // make executable on unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dest).ok()?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&dest, perms).ok()?;
+    }
+
+    Some(dest)
 }
 
 // find the project root by searching upward for root marker files
@@ -199,11 +400,12 @@ pub struct LspClient {
 impl LspClient {
     pub async fn start(
         config: &ServerConfig,
+        resolved: &ResolvedCommand,
         root_path: &Path,
         event_tx: mpsc::UnboundedSender<LspEvent>,
     ) -> anyhow::Result<Self> {
-        let mut process = Command::new(config.command)
-            .args(config.args)
+        let mut process = Command::new(&resolved.program)
+            .args(&resolved.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -675,18 +877,41 @@ impl LspManager {
     // detect and start appropriate language servers for the project
     pub async fn start_servers(&mut self) {
         for config in SERVERS {
-            // check if the server command is available
-            if !command_exists(config.command) {
-                continue;
-            }
-
             // check if the project uses this language
             let root = match find_project_root(&self.cwd, config.root_markers) {
                 Some(r) => r,
                 None => continue,
             };
 
-            match LspClient::start(config, &root, self.event_tx.clone()).await {
+            // try to resolve the command (system PATH, managed binary, npx)
+            let resolved = match resolve_command(config) {
+                Some(r) => r,
+                None => {
+                    // try auto-downloading if a github release is available
+                    if let InstallMethod::GithubRelease { repo, asset_pattern, binary_name } = &config.install {
+                        match download_github_release(repo, *asset_pattern, binary_name, &self.event_tx).await {
+                            Some(_path) => {
+                                // retry resolution after download
+                                match resolve_command(config) {
+                                    Some(r) => r,
+                                    None => continue,
+                                }
+                            }
+                            None => {
+                                let _ = self.event_tx.send(LspEvent::ServerError(format!(
+                                    "{}: not found, auto-download failed",
+                                    config.name,
+                                )));
+                                continue;
+                            }
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+            };
+
+            match LspClient::start(config, &resolved, &root, self.event_tx.clone()).await {
                 Ok(client) => {
                     let _ = self.event_tx.send(LspEvent::ServerStarted(
                         config.name.to_string(),

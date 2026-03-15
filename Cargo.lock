@@ -1497,6 +1497,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "flate2",
  "futures",
  "lsp-types",
  "rand 0.8.5",
