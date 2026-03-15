@@ -2080,7 +2080,41 @@ fn handle_editor_key(
         // editing
         KeyCode::Enter => {
             if let Some(ref mut buf) = app.editor_buffer {
-                buf.insert_newline();
+                let line = buf.lines[buf.cursor_row].clone();
+                let col = buf.cursor_col.min(line.len());
+                let prev = line[..col].chars().last();
+                let next = line[col..].chars().next();
+
+                // detect leading whitespace for auto-indent
+                let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+
+                if prev == Some('{') && next == Some('}') {
+                    // expand braces: {|} becomes:
+                    //   {
+                    //       |
+                    //   }
+                    let uses_tabs = indent.contains('\t');
+                    let extra = if uses_tabs { "\t".to_string() } else { "    ".to_string() };
+                    let inner_indent = format!("{}{}", indent, extra);
+
+                    buf.save_undo();
+                    let before = &line[..col];
+                    let after = &line[col..];
+                    buf.lines[buf.cursor_row] = before.to_string();
+                    buf.lines.insert(buf.cursor_row + 1, inner_indent.clone());
+                    buf.lines.insert(buf.cursor_row + 2, format!("{}{}", indent, after));
+                    buf.cursor_row += 1;
+                    buf.cursor_col = inner_indent.len();
+                    buf.dirty = true;
+                } else {
+                    buf.insert_newline();
+                    // auto-indent: carry over leading whitespace from previous line
+                    if !indent.is_empty() {
+                        let new_line = &mut buf.lines[buf.cursor_row];
+                        *new_line = format!("{}{}", indent, new_line);
+                        buf.cursor_col = indent.len();
+                    }
+                }
             }
         }
         KeyCode::Backspace => {

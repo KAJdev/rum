@@ -73,7 +73,7 @@ impl EditorBuffer {
         Ok(())
     }
 
-    fn save_undo(&mut self) {
+    pub fn save_undo(&mut self) {
         self.undo_stack.push(UndoEntry {
             lines: self.lines.clone(),
             cursor_row: self.cursor_row,
