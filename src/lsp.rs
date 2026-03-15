@@ -131,6 +131,34 @@ fn command_exists(cmd: &str) -> bool {
     which::which(cmd).is_ok()
 }
 
+// verify a command actually runs (not just exists on PATH).
+// catches broken shims like rustup proxies without the component installed.
+async fn command_works(program: &str) -> bool {
+    let result = Command::new(program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+
+    let mut child = match result {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        child.wait(),
+    ).await {
+        Ok(Ok(status)) => status.success(),
+        _ => {
+            child.kill().await.ok();
+            false
+        }
+    }
+}
+
 // directory where rum stores auto-downloaded LSP binaries
 fn lsp_bin_dir() -> PathBuf {
     dirs::config_dir()
@@ -442,13 +470,6 @@ impl LspClient {
             .current_dir(root_path)
             .kill_on_drop(true)
             .spawn()?;
-
-        // check if the process died immediately (e.g. rustup proxy shim
-        // without the component installed)
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if let Ok(Some(status)) = process.try_wait() {
-            anyhow::bail!("process exited immediately with {}", status);
-        }
 
         let stdin = process.stdin.take().expect("stdin");
         let stdout = process.stdout.take().expect("stdout");
@@ -929,33 +950,18 @@ impl LspManager {
                 None => continue,
             };
 
-            // try to resolve the command (system PATH, managed binary, npx)
+            // resolve the command and verify it actually works
             let mut resolved = resolve_command(config);
-
-            // try starting with the resolved command
-            let mut started = false;
+            // verify the resolved command actually works (catches broken
+            // shims like rustup proxies without the component installed).
+            // skip for npx since `npx --version` just checks npx itself.
             if let Some(ref r) = resolved {
-                match LspClient::start(config, r, &root, self.event_tx.clone()).await {
-                    Ok(client) => {
-                        let _ = self.event_tx.send(LspEvent::ServerStarted(
-                            config.name.to_string(),
-                        ));
-                        self.clients.insert(config.name.to_string(), Arc::new(client));
-                        started = true;
-                    }
-                    Err(_) => {
-                        // command exists but failed (e.g. rustup proxy shim
-                        // without the component installed). clear so we fall
-                        // through to auto-install.
-                        resolved = None;
-                    }
+                if r.program != "npx" && !command_works(&r.program).await {
+                    resolved = None;
                 }
             }
-            if started {
-                continue;
-            }
 
-            // auto-install if not found or if the system binary failed
+            // auto-install if not found or broken
             if resolved.is_none() {
                 match &config.install {
                     InstallMethod::GithubRelease { repo, asset_pattern, binary_name } => {
@@ -972,7 +978,9 @@ impl LspManager {
                         }
                     }
                     InstallMethod::Npx { .. } => {
-                        // npx fallback is already handled by resolve_command
+                        // npx fallback is already handled by resolve_command,
+                        // skip the version check for npx (it's slow)
+                        resolved = resolve_command(config);
                     }
                     InstallMethod::None => {}
                 }
