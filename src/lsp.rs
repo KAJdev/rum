@@ -496,34 +496,19 @@ impl LspClient {
             event_tx.clone(),
         ));
 
-        // discard stderr from the language server
-        let server_name = config.name.to_string();
-        let name_clone = server_name.clone();
-        let evt_tx = event_tx.clone();
+        // drain stderr from the language server (discard it)
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
-            let mut line = String::new();
+            let mut buf = [0u8; 4096];
             loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        // only surface fatal-looking messages to the UI
-                        if trimmed.contains("FATAL")
-                            || trimmed.contains("panicked")
-                            || trimmed.contains("error:")
-                        {
-                            let _ = evt_tx.send(LspEvent::ServerError(
-                                format!("{}: {}", name_clone, trimmed),
-                            ));
-                        }
-                    }
-                    Err(_) => break,
+                match tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
                 }
             }
         });
 
+        let server_name = config.name.to_string();
         let root_uri = path_to_uri(root_path)
             .unwrap_or_else(|| "file:///".parse().unwrap());
 
