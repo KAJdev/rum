@@ -395,6 +395,13 @@ impl Highlighter {
         }
     }
 
+    pub fn invalidate(&mut self) {
+        self.checkpoints.clear();
+        self.render_cache = None;
+        self.cache_path = None;
+        self.cache_generation = 0;
+    }
+
     pub fn highlight_lines(
         &mut self,
         path: &Path,

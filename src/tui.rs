@@ -1792,6 +1792,7 @@ impl App {
             Ok(buf) => {
                 self.editor_buffer = Some(buf);
                 self.diff_markers.clear();
+                if let Some(ref mut hl) = self.highlighter { hl.invalidate(); }
                 self.view_mode = ViewMode::Editor;
             }
             Err(_) => {}
@@ -1861,6 +1862,7 @@ impl App {
                     buf.ensure_cursor_visible(h.saturating_sub(2));
                 }
                 self.editor_buffer = Some(buf);
+                if let Some(ref mut hl) = self.highlighter { hl.invalidate(); }
             }
             Err(_) => {}
         }
@@ -2129,6 +2131,7 @@ fn handle_search_key(key: KeyEvent, app: &mut App, ctrl: bool) -> InputAction {
                             }
                             app.editor_buffer = Some(buf);
                             app.diff_markers.clear();
+                            if let Some(ref mut hl) = app.highlighter { hl.invalidate(); }
                         }
                         Err(_) => {}
                     }
