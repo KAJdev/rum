@@ -143,11 +143,43 @@ impl EditorBuffer {
     }
 
     pub fn ensure_cursor_visible(&mut self, viewport_height: usize) {
+        self.ensure_cursor_visible_wrap(viewport_height, None);
+    }
+
+    // accounts for soft-wrapped lines when content_cols is provided
+    pub fn ensure_cursor_visible_wrap(&mut self, viewport_height: usize, content_cols: Option<usize>) {
         if self.cursor_row < self.scroll_row {
             self.scroll_row = self.cursor_row;
         }
+
+        // simple check: cursor file line must be within scroll range
         if self.cursor_row >= self.scroll_row + viewport_height {
             self.scroll_row = self.cursor_row - viewport_height + 1;
+        }
+
+        // with wrapping, verify the cursor screen row actually fits
+        if let Some(cols) = content_cols {
+            if cols > 0 {
+                loop {
+                    let mut screen_rows = 0usize;
+                    let mut cursor_end_row = 0usize;
+                    for i in self.scroll_row..=self.cursor_row.min(self.lines.len().saturating_sub(1)) {
+                        let line_w = unicode_width::UnicodeWidthStr::width(self.lines[i].as_str());
+                        let rows = if line_w == 0 { 1 } else { (line_w + cols - 1) / cols };
+                        if i == self.cursor_row {
+                            cursor_end_row = screen_rows + rows;
+                        }
+                        screen_rows += rows;
+                    }
+                    if cursor_end_row <= viewport_height {
+                        break;
+                    }
+                    self.scroll_row += 1;
+                    if self.scroll_row > self.cursor_row {
+                        break;
+                    }
+                }
+            }
         }
     }
 

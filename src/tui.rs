@@ -2313,6 +2313,8 @@ fn render_editor_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
+    use unicode_width::UnicodeWidthStr;
+
     let buf = match &app.editor_buffer {
         Some(b) => b,
         None => return,
@@ -2320,24 +2322,31 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let viewport_h = area.height as usize;
     let gutter_width: u16 = (buf.line_count().max(1).to_string().len() + 2) as u16;
+    let content_cols = (area.width as usize).saturating_sub(gutter_width as usize);
 
     // initialize highlighter lazily
     if app.highlighter.is_none() {
         app.highlighter = Some(editor::Highlighter::new());
     }
 
+    // request enough highlighted lines to fill the viewport even with wrapping.
+    // worst case every line wraps, but typically we need fewer.
+    let hl_request = viewport_h;
     let highlighted = if let Some(ref mut hl) = app.highlighter {
-        hl.highlight_lines(&buf.path, &buf.lines, buf.generation, buf.scroll_row, viewport_h)
+        hl.highlight_lines(&buf.path, &buf.lines, buf.generation, buf.scroll_row, hl_request)
     } else {
         Vec::new()
     };
 
     let mut lines: Vec<Line> = Vec::with_capacity(viewport_h);
+    // track which screen row the cursor lands on
+    let mut cursor_screen_row: Option<usize> = None;
+    let mut cursor_screen_col: Option<usize> = None;
+    let mut line_idx = buf.scroll_row;
+    let mut hl_idx: usize = 0;
 
-    for vi in 0..viewport_h {
-        let line_idx = buf.scroll_row + vi;
+    while lines.len() < viewport_h {
         if line_idx >= buf.lines.len() {
-            // empty line beyond file end
             let spans = vec![
                 Span::styled(
                     format!("{:>width$} ", "~", width = gutter_width as usize - 1),
@@ -2345,14 +2354,12 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
                 ),
             ];
             lines.push(Line::from(spans));
-            continue;
+            continue; // will hit viewport_h and exit
         }
 
-        let line_num = format!("{:>width$} ", line_idx + 1, width = gutter_width as usize - 1);
         let is_cursor_line = line_idx == buf.cursor_row;
         let diff_marker = if app.follow_mode { app.diff_markers.get(&line_idx) } else { None };
 
-        // gutter coloring: diff markers override normal styling
         let gutter_style = match diff_marker {
             Some(DiffMarker::Insert) => Style::default().fg(GREEN),
             Some(DiffMarker::DeleteBoundary) => Style::default().fg(RED),
@@ -2360,32 +2367,33 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
             _ => Style::default().fg(DIM),
         };
 
-        // subtle background tint for changed lines
         let line_bg = match diff_marker {
             Some(DiffMarker::Insert) => Some(Color::Rgb(20, 40, 20)),
             Some(DiffMarker::DeleteBoundary) => Some(Color::Rgb(40, 20, 20)),
             _ => None,
         };
 
-        let mut spans = vec![Span::styled(line_num, gutter_style)];
+        let cursor_bg = Color::Rgb(30, 33, 40);
 
-        // add syntax-highlighted content
-        if vi < highlighted.len() {
-            for (style, text) in &highlighted[vi] {
-                let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
-                let mut s = Style::default().fg(fg);
-                if is_cursor_line {
-                    s = s.bg(Color::Rgb(30, 33, 40));
-                } else if let Some(bg) = line_bg {
-                    s = s.bg(bg);
-                }
-                spans.push(Span::styled(text.clone(), s));
-            }
+        // build the content spans for this file line
+        let content_spans: Vec<(Style, String)> = if hl_idx < highlighted.len() {
+            highlighted[hl_idx]
+                .iter()
+                .map(|(style, text)| {
+                    let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+                    let mut s = Style::default().fg(fg);
+                    if is_cursor_line {
+                        s = s.bg(cursor_bg);
+                    } else if let Some(bg) = line_bg {
+                        s = s.bg(bg);
+                    }
+                    (s, text.clone())
+                })
+                .collect()
         } else {
-            // fallback: no highlighting
             let text = &buf.lines[line_idx];
             let mut s = if is_cursor_line {
-                Style::default().fg(FG).bg(Color::Rgb(30, 33, 40))
+                Style::default().fg(FG).bg(cursor_bg)
             } else {
                 Style::default().fg(FG)
             };
@@ -2394,50 +2402,150 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
                     s = s.bg(bg);
                 }
             }
-            spans.push(Span::styled(text.clone(), s));
+            vec![(s, text.clone())]
+        };
+
+        // compute cursor visual column within this line
+        let cursor_vcol = if is_cursor_line {
+            let line = &buf.lines[buf.cursor_row];
+            let byte_pos = buf.cursor_col.min(line.len());
+            let safe_pos = (0..=byte_pos).rev().find(|&i| line.is_char_boundary(i)).unwrap_or(0);
+            Some(UnicodeWidthStr::width(&line[..safe_pos]))
+        } else {
+            None
+        };
+
+        // split content spans into wrapped screen rows
+        let wrap_rows = wrap_spans(&content_spans, content_cols);
+        let num_wraps = wrap_rows.len().max(1);
+
+        for (wrap_i, row_spans) in wrap_rows.iter().enumerate() {
+            if lines.len() >= viewport_h {
+                break;
+            }
+
+            let mut spans: Vec<Span> = Vec::new();
+
+            // gutter: show line number on first wrap row, blank on continuation
+            if wrap_i == 0 {
+                let line_num = format!("{:>width$} ", line_idx + 1, width = gutter_width as usize - 1);
+                spans.push(Span::styled(line_num, gutter_style));
+            } else {
+                let blank = format!("{:>width$} ", "·", width = gutter_width as usize - 1);
+                spans.push(Span::styled(blank, Style::default().fg(DIM)));
+            }
+
+            spans.extend(row_spans.iter().cloned());
+
+            // pad to edge
+            let pad_bg = if is_cursor_line {
+                Some(cursor_bg)
+            } else {
+                line_bg
+            };
+            if let Some(bg) = pad_bg {
+                let row_width: usize = row_spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+                let remaining = content_cols.saturating_sub(row_width);
+                if remaining > 0 {
+                    spans.push(Span::styled(
+                        " ".repeat(remaining),
+                        Style::default().bg(bg),
+                    ));
+                }
+            }
+
+            // track cursor screen position
+            if let Some(vcol) = cursor_vcol {
+                let row_start_col = wrap_i * content_cols;
+                let row_end_col = row_start_col + content_cols;
+                if vcol >= row_start_col && vcol < row_end_col {
+                    cursor_screen_row = Some(lines.len());
+                    cursor_screen_col = Some(vcol - row_start_col);
+                } else if wrap_i == num_wraps - 1 && cursor_screen_row.is_none() {
+                    // cursor past end of last wrap row
+                    cursor_screen_row = Some(lines.len());
+                    let row_width: usize = row_spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+                    cursor_screen_col = Some(row_width.min(vcol.saturating_sub(row_start_col)));
+                }
+            }
+
+            lines.push(Line::from(spans));
         }
 
-        // pad line background to edge
-        let pad_bg = if is_cursor_line {
-            Some(Color::Rgb(30, 33, 40))
-        } else {
-            line_bg
-        };
-        if let Some(bg) = pad_bg {
-            use unicode_width::UnicodeWidthStr;
-            let content_width: usize = spans.iter().skip(1).map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
-            let remaining = (area.width as usize).saturating_sub(gutter_width as usize + content_width);
-            if remaining > 0 {
-                spans.push(Span::styled(
-                    " ".repeat(remaining),
-                    Style::default().bg(bg),
-                ));
+        // empty line (no content) still needs one row
+        if wrap_rows.is_empty() {
+            if lines.len() < viewport_h {
+                let line_num = format!("{:>width$} ", line_idx + 1, width = gutter_width as usize - 1);
+                let mut spans = vec![Span::styled(line_num, gutter_style)];
+                let pad_bg = if is_cursor_line { Some(cursor_bg) } else { line_bg };
+                if let Some(bg) = pad_bg {
+                    spans.push(Span::styled(
+                        " ".repeat(content_cols),
+                        Style::default().bg(bg),
+                    ));
+                }
+                if is_cursor_line {
+                    cursor_screen_row = Some(lines.len());
+                    cursor_screen_col = Some(0);
+                }
+                lines.push(Line::from(spans));
             }
         }
 
-        lines.push(Line::from(spans));
+        line_idx += 1;
+        hl_idx += 1;
     }
 
     let widget = Paragraph::new(lines).style(Style::default().bg(BG));
     frame.render_widget(widget, area);
 
-    // set cursor position - convert byte offset to visual column width
-    let cursor_visual_row = buf.cursor_row.saturating_sub(buf.scroll_row) as u16;
-    let visual_col = if buf.cursor_row < buf.lines.len() {
-        use unicode_width::UnicodeWidthStr;
-        let line = &buf.lines[buf.cursor_row];
-        let byte_pos = buf.cursor_col.min(line.len());
-        // find the char boundary at or before byte_pos
-        let safe_pos = (0..=byte_pos).rev().find(|&i| line.is_char_boundary(i)).unwrap_or(0);
-        UnicodeWidthStr::width(&line[..safe_pos])
-    } else {
-        0
-    };
-    let cursor_x = area.x + gutter_width + visual_col as u16;
-    let cursor_y = area.y + cursor_visual_row;
-    if cursor_y < area.y + area.height && cursor_x < area.x + area.width {
-        frame.set_cursor_position((cursor_x, cursor_y));
+    // set cursor position
+    if let (Some(row), Some(col)) = (cursor_screen_row, cursor_screen_col) {
+        let cursor_x = area.x + gutter_width + col as u16;
+        let cursor_y = area.y + row as u16;
+        if cursor_y < area.y + area.height && cursor_x < area.x + area.width {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
     }
+}
+
+// split a sequence of styled spans into rows that fit within `max_cols` visual columns
+fn wrap_spans(spans: &[(Style, String)], max_cols: usize) -> Vec<Vec<Span<'static>>> {
+    use unicode_width::UnicodeWidthChar;
+
+    if max_cols == 0 {
+        return vec![];
+    }
+
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current_row: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
+
+    for (style, text) in spans {
+        let mut segment = String::new();
+        for ch in text.chars() {
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col + w > max_cols && col > 0 {
+                // wrap: push current segment, start new row
+                if !segment.is_empty() {
+                    current_row.push(Span::styled(segment.clone(), *style));
+                    segment.clear();
+                }
+                rows.push(std::mem::take(&mut current_row));
+                col = 0;
+            }
+            segment.push(ch);
+            col += w;
+        }
+        if !segment.is_empty() {
+            current_row.push(Span::styled(segment, *style));
+        }
+    }
+    if !current_row.is_empty() {
+        rows.push(current_row);
+    }
+
+    rows
 }
 
 fn render_search_overlay(frame: &mut Frame, app: &App, area: Rect) {
