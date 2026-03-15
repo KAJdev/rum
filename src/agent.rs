@@ -94,6 +94,8 @@ pub struct Agent {
     thinking_level: String,
     cwd: PathBuf,
     cancel: CancelToken,
+    pub job_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::tui::JobEvent>>,
+    pub next_job_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Agent {
@@ -115,6 +117,8 @@ impl Agent {
             thinking_level: config.thinking_level.clone(),
             cwd,
             cancel,
+            job_tx: None,
+            next_job_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -184,6 +188,8 @@ impl Agent {
             auth: crate::api::AuthMethod::ApiKey(String::new()),
             base_url: String::new(),
             cancel: Some(cancel_arc),
+            job_tx: None,
+            next_job_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         let result =
             tools::execute_tool("bash", &input, &self.cwd, Some(stream_tx), Some(&api_ctx)).await;
@@ -572,6 +578,8 @@ impl Agent {
                         auth: tool_auth.clone(),
                         base_url: tool_base_url.clone(),
                         cancel: Some(self.cancel.arc()),
+                        job_tx: self.job_tx.clone(),
+                        next_job_id: self.next_job_id.clone(),
                     };
 
                     // each tool gets its own output forwarding channel

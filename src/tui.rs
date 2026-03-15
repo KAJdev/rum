@@ -380,7 +380,7 @@ pub struct App {
     inject_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     // background jobs shown in the bottom status bar
     pub background_jobs: Vec<BackgroundJob>,
-    next_job_id: u64,
+    pub next_job_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
     // set when a git push is detected; main.rs reads and clears this to spawn CI watch
     pub pending_ci_watch: Option<String>,
     // editor mode state
@@ -440,7 +440,7 @@ impl App {
             paste_handled: false,
             inject_tx: None,
             background_jobs: Vec::new(),
-            next_job_id: 0,
+            next_job_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pending_ci_watch: None,
             view_mode: ViewMode::Chat,
             editor_buffer: None,
@@ -851,8 +851,7 @@ impl App {
     }
 
     pub fn start_background_job(&mut self, label: String, detail: String) -> u64 {
-        let id = self.next_job_id;
-        self.next_job_id += 1;
+        let id = self.next_job_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.background_jobs.push(BackgroundJob {
             id,
             label,
@@ -869,6 +868,16 @@ impl App {
             JobEvent::Show { id } => {
                 if let Some(job) = self.background_jobs.iter_mut().find(|j| j.id == id) {
                     job.visible = true;
+                } else {
+                    // job created externally (e.g. background bash tool)
+                    self.background_jobs.push(BackgroundJob {
+                        id,
+                        label: "bash".to_string(),
+                        detail: String::new(),
+                        status: JobStatus::Running,
+                        started_at: Instant::now(),
+                        visible: true,
+                    });
                 }
             }
             JobEvent::Update { id, detail } => {

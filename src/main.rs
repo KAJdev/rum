@@ -230,7 +230,9 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
     let agent_cancel = cancel.clone();
 
     // construct the agent before spawning so we can read the loaded history length
-    let agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
+    let mut agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
+    agent.job_tx = Some(job_tx.clone());
+    agent.next_job_id = app.next_job_id.clone();
     let history_len = agent.loaded_history_len();
 
     // show startup info: loaded config files and session state
@@ -309,28 +311,29 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
 
         // drain background job events
         while let Ok(evt) = job_rx.try_recv() {
-            // when CI fails with logs, send the failure to the agent as a new turn
-            let should_trigger = matches!(
-                &evt,
-                tui::JobEvent::Complete { status: tui::JobStatus::Failed(_), summary, .. }
-                if summary.contains("---")
-            );
-            let trigger_msg = if should_trigger {
-                if let tui::JobEvent::Complete { ref summary, .. } = evt {
+            // detect completions that should be sent to the agent:
+            // - CI failures with logs (contain "---")
+            // - background bash completions (contain "background `")
+            let trigger_msg = match &evt {
+                tui::JobEvent::Complete { summary, .. }
+                    if summary.contains("---") || summary.starts_with("background `") =>
+                {
                     Some(summary.clone())
-                } else {
-                    None
                 }
-            } else {
-                None
+                _ => None,
             };
             // always show the job event in the activity feed
             app.handle_job_event(evt);
-            // on CI failure with logs, also send the output to the agent
+            // send the output to the agent
             if let Some(msg) = trigger_msg {
                 if !app.is_running {
                     cancel.reset();
-                    app.start_new_message("[CI failed]");
+                    let label = if msg.starts_with("background") {
+                        "[background command finished]"
+                    } else {
+                        "[CI failed]"
+                    };
+                    app.start_new_message(label);
                     let _ = user_tx.send(msg);
                 } else {
                     app.queue_message_str(msg);
