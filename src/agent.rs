@@ -67,6 +67,8 @@ pub enum AgentEvent {
     // status messages (retries, etc.) rendered distinctly from model output
     Status(String),
     TurnComplete,
+    // sent after each save so the TUI can sync the session tree
+    MessagesUpdated(Vec<Message>),
     // a queued user message was injected mid-turn (after tool calls)
     UserMessage(String),
     Error(String),
@@ -85,6 +87,8 @@ pub enum ControlMessage {
     Compact,
     // user-initiated bash command via `!` prefix; output is injected into context
     UserBash(String),
+    // switch the agent's message history to a different branch
+    SwitchBranch(Vec<Message>),
 }
 
 pub struct Agent {
@@ -146,6 +150,11 @@ impl Agent {
     pub fn clear_history(&mut self) {
         self.messages.clear();
         let _ = crate::persistence::clear_history(&self.cwd);
+    }
+
+    // replace the in-memory message history (used for branch switching)
+    pub fn set_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
     }
 
     pub fn set_cwd(&mut self, cwd: std::path::PathBuf) {
@@ -223,6 +232,7 @@ impl Agent {
         });
 
         let _ = crate::persistence::save_history(&self.cwd, &self.messages);
+        let _ = event_tx.send(AgentEvent::MessagesUpdated(self.messages.clone()));
         let _ = event_tx.send(AgentEvent::TurnComplete);
     }
 
@@ -329,6 +339,7 @@ impl Agent {
         ];
 
         let _ = crate::persistence::save_history(&self.cwd, &self.messages);
+        let _ = event_tx.send(AgentEvent::MessagesUpdated(self.messages.clone()));
         let _ = event_tx.send(AgentEvent::CompactDone(format!(
             "context compacted  ({prev_count} → 2 messages)"
         )));
@@ -354,7 +365,7 @@ impl Agent {
             content: MessageContent::Text(user_message.to_string()),
         });
 
-        let result = self.run_turn(inject_rx, event_tx).await;
+        let result = self.run_turn(inject_rx, event_tx.clone()).await;
 
         // if cancelled before any response was produced, remove the
         // dangling user message to maintain valid alternation.
@@ -364,6 +375,7 @@ impl Agent {
         }
 
         let _ = crate::persistence::save_history(&self.cwd, &self.messages);
+        let _ = event_tx.send(AgentEvent::MessagesUpdated(self.messages.clone()));
 
         result
     }

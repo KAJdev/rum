@@ -31,6 +31,7 @@ const GREEN: Color = Color::Rgb(170, 217, 76);
 const RED: Color = Color::Rgb(240, 113, 120);
 const YELLOW: Color = Color::Rgb(255, 180, 84);
 const DIM: Color = Color::Rgb(86, 91, 102);
+const SURFACE: Color = Color::Rgb(22, 27, 36);
 const BAR_COLOR: Color = Color::Rgb(60, 65, 75);
 
 const THINKING_COLOR: Color = Color::Rgb(180, 140, 255);
@@ -92,6 +93,11 @@ const SLASH_COMMANDS: &[SlashDef] = &[
         name: "/quit",
         args: "",
         description: "Quit",
+    },
+    SlashDef {
+        name: "/tree",
+        args: "",
+        description: "View and branch conversation tree",
     },
 ];
 
@@ -394,6 +400,9 @@ pub struct App {
     // maps line number (0-indexed) to diff tag for follow mode highlighting
     diff_markers: std::collections::HashMap<usize, DiffMarker>,
     highlighter: Option<editor::Highlighter>,
+    // session tree for conversation branching
+    pub session_tree: crate::persistence::SessionTree,
+    pub tree_view: Option<crate::tree::TreeView>,
 }
 
 impl App {
@@ -452,6 +461,8 @@ impl App {
             agent_edit_index: 0,
             diff_markers: std::collections::HashMap::new(),
             highlighter: None,
+            session_tree: crate::persistence::SessionTree::new(),
+            tree_view: None,
         }
     }
 
@@ -678,6 +689,14 @@ impl App {
                 {
                     *s = CompactStatus::Done(msg);
                 }
+            }
+            AgentEvent::MessagesUpdated(messages) => {
+                // sync the active branch in the session tree
+                self.session_tree.branches[self.session_tree.active].messages = messages;
+                let _ = crate::persistence::save_session(
+                    std::path::Path::new(self.cwd()),
+                    &self.session_tree,
+                );
             }
         }
     }
@@ -2373,6 +2392,10 @@ fn handle_search_key(key: KeyEvent, app: &mut App, ctrl: bool) -> InputAction {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    if app.tree_view.is_some() {
+        render_tree_view(frame, app);
+        return;
+    }
     match app.view_mode {
         ViewMode::Chat => render_chat(frame, app),
         ViewMode::Editor => render_editor(frame, app),
@@ -3012,6 +3035,135 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         height: area.height,
     };
     frame.render_widget(Paragraph::new(lines), content_area);
+}
+
+fn render_tree_view(frame: &mut Frame, app: &mut App) {
+    use crate::tree::NodeKind;
+
+    let tv = match app.tree_view.as_ref() {
+        Some(tv) => tv,
+        None => return,
+    };
+
+    let size = frame.area();
+    frame.render_widget(
+        ratatui::widgets::Block::default().style(Style::default().bg(BG)),
+        size,
+    );
+
+    // header
+    let header_area = Rect::new(0, 0, size.width, 1);
+    let branch_count = app.session_tree.branches.len();
+    let header_text = format!(
+        " session tree  {} branch{}  (↑↓ navigate, ⇧↑↓ jump user msgs, enter fork, space switch, esc close)",
+        branch_count,
+        if branch_count == 1 { "" } else { "es" }
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(header_text, Style::default().fg(MUTED)),
+        ]))
+        .style(Style::default().bg(SURFACE)),
+        header_area,
+    );
+
+    // tree content area
+    let content_area = Rect::new(0, 1, size.width, size.height.saturating_sub(1));
+    let viewport_h = content_area.height as usize;
+
+    if tv.nodes.is_empty() {
+        frame.render_widget(
+            Paragraph::new("  (empty session)")
+                .style(Style::default().fg(MUTED).bg(BG)),
+            content_area,
+        );
+        return;
+    }
+
+    let active_branch = app.session_tree.active;
+
+    for (vi, node_idx) in (tv.scroll..).take(viewport_h).enumerate() {
+        if node_idx >= tv.nodes.len() {
+            break;
+        }
+        let node = &tv.nodes[node_idx];
+        let is_selected = node_idx == tv.cursor;
+        let is_active_branch = node.branch_idx == active_branch;
+        let y = content_area.y + vi as u16;
+        let row_area = Rect::new(0, y, size.width, 1);
+
+        let mut spans: Vec<Span> = Vec::new();
+
+        // indentation + tree connectors
+        let indent_w = node.depth * 3;
+        if indent_w > 0 {
+            let mut indent = String::new();
+            for d in 0..node.depth {
+                if d == node.depth - 1 {
+                    if node.branch_head {
+                        if node.is_last_child {
+                            indent.push_str(" └─");
+                        } else {
+                            indent.push_str(" ├─");
+                        }
+                    } else if node.active_pipes.contains(&d) {
+                        indent.push_str(" │ ");
+                    } else {
+                        indent.push_str("   ");
+                    }
+                } else if node.active_pipes.contains(&d) {
+                    indent.push_str(" │ ");
+                } else {
+                    indent.push_str("   ");
+                }
+            }
+            spans.push(Span::styled(indent, Style::default().fg(DIM)));
+        }
+
+        // node icon
+        let (icon, icon_color) = match node.kind {
+            NodeKind::UserMessage => ("● ", ACCENT),
+            NodeKind::AssistantText => ("○ ", FG),
+            NodeKind::ToolCall => ("◆ ", YELLOW),
+            NodeKind::Thinking => ("◇ ", DIM),
+            NodeKind::Compact => ("◈ ", GREEN),
+        };
+        spans.push(Span::styled(icon, Style::default().fg(icon_color)));
+
+        // node text
+        let max_text = (size.width as usize)
+            .saturating_sub(indent_w + 2 + 8); // icon + branch tag
+        let text = if node.text.len() > max_text && max_text > 3 {
+            format!("{}...", &node.text[..max_text - 3])
+        } else {
+            node.text.clone()
+        };
+
+        let text_color = if is_active_branch { FG } else { MUTED };
+        spans.push(Span::styled(text, Style::default().fg(text_color)));
+
+        // branch indicator for fork heads
+        if node.branch_head {
+            let tag = if is_active_branch {
+                " ◀"
+            } else {
+                ""
+            };
+            if !tag.is_empty() {
+                spans.push(Span::styled(
+                    tag.to_string(),
+                    Style::default().fg(ACCENT),
+                ));
+            }
+        }
+
+        let bg = if is_selected { SURFACE } else { BG };
+        let line = Line::from(spans);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(bg)),
+            row_area,
+        );
+    }
 }
 
 fn render_chat(frame: &mut Frame, app: &mut App) {

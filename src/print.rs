@@ -527,6 +527,7 @@ impl PrintMode {
             AgentEvent::UserMessage(msg) => {
                 eprintln!("\n{msg}");
             }
+            AgentEvent::MessagesUpdated(_) => {}
         }
 
         false

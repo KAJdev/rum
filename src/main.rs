@@ -8,6 +8,7 @@ mod markdown;
 mod persistence;
 mod print;
 mod tools;
+mod tree;
 mod tui;
 
 use anyhow::{bail, Result};
@@ -29,6 +30,7 @@ enum SlashCommand {
     Logout,
     Help,
     Quit,
+    Tree,
 }
 
 fn parse_slash_command(text: &str) -> Option<SlashCommand> {
@@ -54,6 +56,7 @@ fn parse_slash_command(text: &str) -> Option<SlashCommand> {
         "/logout" => Some(SlashCommand::Logout),
         "/help" => Some(SlashCommand::Help),
         "/quit" => Some(SlashCommand::Quit),
+        "/tree" => Some(SlashCommand::Tree),
         _ => None,
     }
 }
@@ -231,9 +234,11 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
     let agent_cancel = cancel.clone();
 
     // construct the agent before spawning so we can read the loaded history length
+    let session_tree = crate::persistence::load_session(&agent_cwd);
     let mut agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
     agent.job_tx = Some(job_tx.clone());
     agent.next_job_id = app.next_job_id.clone();
+    app.session_tree = session_tree;
     let history_len = agent.loaded_history_len();
 
     // show startup info: loaded config files and session state
@@ -388,6 +393,11 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) => {
+                    // tree view intercepts all key events
+                    if app.tree_view.is_some() {
+                        handle_tree_key(key, &mut app, &control_tx);
+                        continue;
+                    }
                     match tui::handle_key_event(key, &mut app) {
                         tui::InputAction::Submit(msg) => {
                             if let Some(verifier) = login_pending.take() {
@@ -598,6 +608,7 @@ fn handle_slash_command(
         }
         SlashCommand::New => {
             app.reset_session();
+            app.session_tree = crate::persistence::SessionTree::new();
             let _ = control_tx.send(agent::ControlMessage::ClearHistory);
             app.push_success("conversation cleared".to_string());
         }
@@ -656,6 +667,7 @@ available commands:\n\
   /thinking [level]   set thinking level (off, minimal, low, medium, high, xhigh)\n\
   /new                start a new conversation\n\
   /compact            summarize conversation history to free up context\n\
+  /tree               view and branch the conversation tree\n\
   /cd <path>          change working directory\n\
   /login              log in with anthropic oauth\n\
   /logout             log out\n\
@@ -666,6 +678,93 @@ available commands:\n\
         SlashCommand::Quit => {
             app.should_quit = true;
         }
+        SlashCommand::Tree => {
+            let tv = crate::tree::TreeView::build(&app.session_tree);
+            app.tree_view = Some(tv);
+        }
+    }
+}
+
+fn handle_tree_key(
+    key: crossterm::event::KeyEvent,
+    app: &mut tui::App,
+    control_tx: &mpsc::UnboundedSender<agent::ControlMessage>,
+) {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    let tv = match app.tree_view.as_mut() {
+        Some(tv) => tv,
+        None => return,
+    };
+
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.tree_view = None;
+        }
+        KeyCode::Up if shift => {
+            tv.jump_prev_user();
+        }
+        KeyCode::Down if shift => {
+            tv.jump_next_user();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            tv.move_up();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            tv.move_down();
+        }
+        // enter: fork a new branch from the selected node
+        KeyCode::Enter => {
+            if let Some((branch_idx, msg_idx)) = tv.selected() {
+                let new_branch = app.session_tree.fork(branch_idx, msg_idx);
+                let messages = app.session_tree.active_messages().to_vec();
+                let _ = control_tx.send(agent::ControlMessage::SwitchBranch(messages.clone()));
+                let _ = crate::persistence::save_session(
+                    std::path::Path::new(app.cwd()),
+                    &app.session_tree,
+                );
+                // rehydrate activity feed from new branch
+                app.reset_session();
+                app.hydrate_from_history(&messages);
+                app.push_system_message(format!(
+                    "forked new branch {} from branch {} at message {}",
+                    new_branch, branch_idx, msg_idx
+                ));
+                app.tree_view = None;
+            }
+        }
+        // space or tab: switch to the branch at the selected node
+        KeyCode::Char(' ') | KeyCode::Tab => {
+            if let Some(branch_idx) = tv.selected_branch() {
+                if branch_idx != app.session_tree.active {
+                    app.session_tree.switch(branch_idx);
+                    let messages = app.session_tree.active_messages().to_vec();
+                    let _ = control_tx.send(agent::ControlMessage::SwitchBranch(messages.clone()));
+                    let _ = crate::persistence::save_session(
+                        std::path::Path::new(app.cwd()),
+                        &app.session_tree,
+                    );
+                    app.reset_session();
+                    app.hydrate_from_history(&messages);
+                    app.push_system_message(format!(
+                        "switched to branch {} ({} messages)",
+                        branch_idx,
+                        app.session_tree.branches[branch_idx].messages.len()
+                    ));
+                    app.tree_view = None;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // keep cursor in view
+    if let Some(tv) = app.tree_view.as_mut() {
+        let h = crossterm::terminal::size()
+            .map(|(_, h)| h)
+            .unwrap_or(24) as usize;
+        tv.ensure_visible(h.saturating_sub(2));
     }
 }
 
@@ -1118,6 +1217,9 @@ async fn agent_loop(
                     }
                     Some(agent::ControlMessage::UserBash(cmd)) => {
                         agent.run_user_bash(&cmd, event_tx.clone()).await;
+                    }
+                    Some(agent::ControlMessage::SwitchBranch(messages)) => {
+                        agent.set_messages(messages);
                     }
                     None => break,
                 }
