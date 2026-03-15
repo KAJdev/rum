@@ -172,7 +172,8 @@ async fn run_print_mode(
                 loaded_sources: vec![],
             };
             let cancel = agent::CancelToken::new();
-            let mut agent = agent::Agent::new(&rebuilt_cfg, api_client, cwd, cancel);
+            let messages = crate::persistence::load_history(&cwd);
+            let mut agent = agent::Agent::new(&rebuilt_cfg, api_client, cwd, cancel, messages);
             let (_inject_tx, inject_rx) = mpsc::unbounded_channel::<String>();
             let inject_rx = std::sync::Mutex::new(inject_rx);
             let result = agent.send_message(&msg, &inject_rx, tx.clone()).await;
@@ -235,7 +236,8 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
 
     // construct the agent before spawning so we can read the loaded history length
     let session_tree = crate::persistence::load_session(&agent_cwd);
-    let mut agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel);
+    let initial_messages = session_tree.active_messages().to_vec();
+    let mut agent = agent::Agent::new(&cfg, api_client, agent_cwd, agent_cancel, initial_messages);
     agent.job_tx = Some(job_tx.clone());
     agent.next_job_id = app.next_job_id.clone();
     app.session_tree = session_tree;

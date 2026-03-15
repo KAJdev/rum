@@ -103,7 +103,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(config: &Config, client: ApiClient, cwd: PathBuf, cancel: CancelToken) -> Self {
+    pub fn new(config: &Config, client: ApiClient, cwd: PathBuf, cancel: CancelToken, messages: Vec<Message>) -> Self {
         let mut system = config.system_prompt.clone();
         for ctx in &config.context_files {
             system.push_str("\n\n");
@@ -111,8 +111,6 @@ impl Agent {
         }
 
         system.push_str(&format!("\n\nCurrent working directory: {}", cwd.display()));
-
-        let messages = crate::persistence::load_history(&cwd);
 
         Self {
             client,
