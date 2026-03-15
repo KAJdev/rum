@@ -160,12 +160,22 @@ fn resolve_command(config: &ServerConfig) -> Option<ResolvedCommand> {
         });
     }
 
-    // managed binary dir
+    // managed binary dir (check both the command name and the install binary name)
     if let Some(path) = managed_binary_path(config.command) {
         return Some(ResolvedCommand {
             program: path.to_string_lossy().to_string(),
             args: config.args.iter().map(|s| s.to_string()).collect(),
         });
+    }
+    if let InstallMethod::GithubRelease { binary_name, .. } = &config.install {
+        if *binary_name != config.command {
+            if let Some(path) = managed_binary_path(binary_name) {
+                return Some(ResolvedCommand {
+                    program: path.to_string_lossy().to_string(),
+                    args: config.args.iter().map(|s| s.to_string()).collect(),
+                });
+            }
+        }
     }
 
     // npx fallback
@@ -199,43 +209,60 @@ async fn download_github_release(
     binary_name: &str,
     event_tx: &mpsc::UnboundedSender<LspEvent>,
 ) -> Option<PathBuf> {
+    match download_github_release_inner(repo, asset_pattern, binary_name, event_tx).await {
+        Ok(path) => Some(path),
+        Err(e) => {
+            let _ = event_tx.send(LspEvent::ServerError(
+                format!("{}: download failed: {}", binary_name, e),
+            ));
+            None
+        }
+    }
+}
+
+async fn download_github_release_inner(
+    repo: &str,
+    asset_pattern: fn(&str, &str) -> Option<String>,
+    binary_name: &str,
+    event_tx: &mpsc::UnboundedSender<LspEvent>,
+) -> anyhow::Result<PathBuf> {
     let os = if cfg!(target_os = "macos") {
         "macos"
     } else if cfg!(target_os = "linux") {
         "linux"
     } else {
-        return None;
+        anyhow::bail!("unsupported os");
     };
     let arch = if cfg!(target_arch = "aarch64") {
         "aarch64"
     } else if cfg!(target_arch = "x86_64") {
         "x86_64"
     } else {
-        return None;
+        anyhow::bail!("unsupported arch");
     };
 
-    let asset_name = asset_pattern(os, arch)?;
+    let asset_name = asset_pattern(os, arch)
+        .ok_or_else(|| anyhow::anyhow!("no binary for {}/{}", os, arch))?;
 
-    // fetch latest release tag
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .ok()?;
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
 
     let release_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
     let resp = client
         .get(&release_url)
         .header("User-Agent", "rum")
         .send()
-        .await
-        .ok()?;
+        .await?;
 
     if !resp.status().is_success() {
-        return None;
+        anyhow::bail!("github api returned {}", resp.status());
     }
 
-    let release: serde_json::Value = resp.json().await.ok()?;
-    let tag = release.get("tag_name")?.as_str()?;
+    let release: serde_json::Value = resp.json().await?;
+    let tag = release.get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no tag_name in release"))?;
 
     let download_url = format!(
         "https://github.com/{}/releases/download/{}/{}",
@@ -250,17 +277,16 @@ async fn download_github_release(
         .get(&download_url)
         .header("User-Agent", "rum")
         .send()
-        .await
-        .ok()?;
+        .await?;
 
     if !resp.status().is_success() {
-        return None;
+        anyhow::bail!("download returned {}", resp.status());
     }
 
-    let bytes = resp.bytes().await.ok()?;
+    let bytes = resp.bytes().await?;
 
     let bin_dir = lsp_bin_dir();
-    std::fs::create_dir_all(&bin_dir).ok()?;
+    std::fs::create_dir_all(&bin_dir)?;
     let dest = bin_dir.join(binary_name);
 
     // handle .gz compressed files
@@ -268,22 +294,26 @@ async fn download_github_release(
         use std::io::Read;
         let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
         let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed).ok()?;
-        std::fs::write(&dest, &decompressed).ok()?;
+        decoder.read_to_end(&mut decompressed)?;
+        std::fs::write(&dest, &decompressed)?;
     } else {
-        std::fs::write(&dest, &bytes).ok()?;
+        std::fs::write(&dest, &bytes)?;
     }
 
     // make executable on unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&dest).ok()?.permissions();
+        let mut perms = std::fs::metadata(&dest)?.permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&dest, perms).ok()?;
+        std::fs::set_permissions(&dest, perms)?;
     }
 
-    Some(dest)
+    let _ = event_tx.send(LspEvent::ServerStarted(
+        format!("installed {} {}", binary_name, tag),
+    ));
+
+    Ok(dest)
 }
 
 // find the project root by searching upward for root marker files
@@ -893,31 +923,34 @@ impl LspManager {
             };
 
             // try to resolve the command (system PATH, managed binary, npx)
-            let resolved = match resolve_command(config) {
-                Some(r) => r,
-                None => {
-                    // try auto-downloading if a github release is available
-                    if let InstallMethod::GithubRelease { repo, asset_pattern, binary_name } = &config.install {
+            let mut resolved = resolve_command(config);
+
+            // auto-install if not found
+            if resolved.is_none() {
+                match &config.install {
+                    InstallMethod::GithubRelease { repo, asset_pattern, binary_name } => {
+                        let _ = self.event_tx.send(LspEvent::ServerStarted(
+                            format!("{} not found, downloading...", config.name),
+                        ));
                         match download_github_release(repo, *asset_pattern, binary_name, &self.event_tx).await {
-                            Some(_path) => {
-                                // retry resolution after download
-                                match resolve_command(config) {
-                                    Some(r) => r,
-                                    None => continue,
-                                }
+                            Some(_) => {
+                                resolved = resolve_command(config);
                             }
                             None => {
-                                let _ = self.event_tx.send(LspEvent::ServerError(format!(
-                                    "{}: not found, auto-download failed",
-                                    config.name,
-                                )));
                                 continue;
                             }
                         }
-                    } else {
-                        continue;
                     }
+                    InstallMethod::Npx { .. } => {
+                        // npx fallback is already handled by resolve_command
+                    }
+                    InstallMethod::None => {}
                 }
+            }
+
+            let resolved = match resolved {
+                Some(r) => r,
+                None => continue,
             };
 
             match LspClient::start(config, &resolved, &root, self.event_tx.clone()).await {
