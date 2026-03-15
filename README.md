@@ -1,20 +1,25 @@
 # rum
 
-a fast coding agent for the terminal. built in rust.
+a coding agent and editor fused into one terminal UI. built in rust.
+
+rum is a dual-pane TUI where one side is an AI agent that can read, write, and run commands across your codebase, and the other side is a full editor with syntax highlighting. follow mode links the two together: as the agent works through files, the editor tracks every read and edit in real time, jumping to each change with inline diff markers.
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│ rum  ~/dev/project  (main)  claude-sonnet-4    ▂▃▅▂ 120 tok/s  $0.04   │
-├────────────────────────────────────────────────────────────────────────┤
-│ › refactor the auth module to use jose                                 │
-│                                                                        │
-│   Read src/auth/jwt.ts                                                 │
-│   Read src/auth/middleware.ts                                          │
-│   Edit src/auth/jwt.ts          +84 -67                                │
-│   Edit src/auth/middleware.ts   +12 -18                                │
-│ ◌ editing src/auth/refresh.ts...                                       │
-│                                                                        │
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ rum  ~/dev/project  (main)  claude-sonnet-4   ▂▃▅▂ 120 tok/s   $0.04  │
+├────────────────────────────────────────┬────────────────────────────────┤
+│  1  use std::path::Path;              │ › refactor auth to use jose    │
+│  2  use std::time::Instant;           │                                │
+│  3                                    │   Read src/auth/jwt.ts         │
+│  4+ use jose::jwt::JwtClaims;         │   Read src/auth/middleware.ts  │
+│  5+ use jose::jws::JsonWebSignature;  │   Edit src/auth/jwt.ts  +84   │
+│  6                                    │ ◌ editing middleware.ts...      │
+│  7  pub fn verify(token: &str) {      │                                │
+│  8      let claims = JwtClaims::new() │                                │
+│                                       │                                │
+├───────────────────────────────────────┴─────────────────────────────────┤
+│ >                                                                      │
+└────────────────────────────────────────────────────────────────────────-┘
 ```
 
 ## install
@@ -45,7 +50,7 @@ rum
 # start with a message
 rum "add error handling to the api routes"
 
-# print mode — no TUI, streams to stdout
+# print mode -- streams to stdout, no TUI
 rum -p "explain this codebase"
 
 # override model or thinking level
@@ -55,9 +60,69 @@ rum --model opus --thinking high "refactor the auth module"
 rum -C /path/to/project
 ```
 
-### slash commands
+## the editor
 
-type these in the input box:
+`Ctrl+E` switches between chat and editor. the editor has syntax highlighting (syntect), undo/redo, and file saving. `Ctrl+P` opens a fuzzy file finder, `Ctrl+/` searches text across the project.
+
+### follow mode
+
+`Ctrl+F` turns on follow mode, which is the core of how rum connects the agent to the editor. every file the agent touches (reads or edits) is tracked. the editor automatically opens each file and jumps to the relevant line:
+
+- edits get diff markers in the gutter -- green for insertions, red for deletions
+- reads jump to the offset the agent requested
+- `Alt+Up/Down` walks through the full history of file operations
+- the status bar shows your position (e.g. `follow 3/7`)
+
+a condensed activity sidebar on the right side of the editor shows agent progress without needing to switch back to chat.
+
+## tools
+
+seven tools, executed in parallel when possible:
+
+| tool | what it does |
+|------|-------------|
+| **read** | read file contents (with optional line offset/limit) |
+| **write** | create or overwrite files |
+| **edit** | surgical find-and-replace (exact match) |
+| **bash** | run shell commands (streams in real time) |
+| **explore** | spawn a read-only sub-agent to investigate a topic |
+| **web_search** | search the web via DuckDuckGo |
+| **view_file** | view and describe an image file |
+
+edits and writes show inline diffs in the chat feed. click to expand/collapse.
+
+## keybindings
+
+### chat
+
+| key | action |
+|-----|--------|
+| **Enter** | send message (queues if agent is running) |
+| **Shift+Enter** | newline |
+| **Ctrl+C** | cancel agent / clear input / quit |
+| **Escape** | cancel agent / clear input |
+| **Up/Down** | input history |
+| **Shift+Up/Down** | scroll feed |
+| **PageUp/PageDown** | scroll by page |
+| **Ctrl+O** | toggle diff expansion |
+| **Tab** | autocomplete slash commands |
+
+### editor
+
+| key | action |
+|-----|--------|
+| **Ctrl+E** | toggle chat / editor |
+| **Ctrl+F** | toggle follow mode |
+| **Ctrl+P** | fuzzy file finder |
+| **Ctrl+/** | text search across files |
+| **Ctrl+S** | save |
+| **Ctrl+Z / Ctrl+Y** | undo / redo |
+| **Ctrl+K** | delete line |
+| **Alt+Up/Down** | previous / next agent edit (follow mode) |
+| **Shift+Up/Down** | half-page scroll |
+| **PageUp/PageDown** | full page scroll |
+
+### slash commands
 
 | command | description |
 |---------|-------------|
@@ -73,110 +138,29 @@ type these in the input box:
 
 ### `!` bash commands
 
-prefix any input with `!` to run a shell command inline. the output streams to the feed and is injected into context so the model can see what you ran.
+prefix any input with `!` to run a shell command inline. output streams to the feed and is injected into context.
 
 ```
 !git status
 !cargo test --lib
-!cat src/main.rs | head -20
 ```
 
-### keybindings
+## sessions
 
-#### chat view
-
-| key | action |
-|-----|--------|
-| **Enter** | send message (queues if agent is running) |
-| **Shift+Enter** | newline |
-| **Ctrl+C** | cancel agent / clear input / quit |
-| **Escape** | cancel agent / clear input |
-| **Up/Down** | input history |
-| **Shift+Up/Down** | scroll activity feed |
-| **Mouse scroll** | scroll activity feed |
-| **PageUp/PageDown** | scroll by page |
-| **Ctrl+O** | toggle diff expansion |
-| **Tab** | autocomplete slash commands |
-
-#### editor view
-
-| key | action |
-|-----|--------|
-| **Ctrl+E** | toggle between chat and editor |
-| **Ctrl+F** | toggle follow mode (auto-tracks agent file operations) |
-| **Ctrl+P** | fuzzy file finder |
-| **Ctrl+/** | text search across files |
-| **Ctrl+S** | save file |
-| **Ctrl+Z** | undo |
-| **Ctrl+Y** | redo |
-| **Ctrl+K** | delete line |
-| **Alt+Up/Down** | navigate between agent edits (follow mode) |
-| **Shift+Up/Down** | half-page scroll |
-| **PageUp/PageDown** | full page scroll |
-| **Arrow keys** | cursor movement |
-| **Mouse scroll** | scroll (3 lines per tick) |
-
-## editor
-
-`Ctrl+E` opens a built-in editor with syntax highlighting (via syntect). you can browse, edit, and save project files without leaving the TUI.
-
-### follow mode
-
-`Ctrl+F` enables follow mode, which tracks every file the agent reads or edits and automatically opens the file in the editor, jumping to the relevant location:
-
-- **edits** show inline diff markers: green gutter and background for insertions, red for deletions
-- **reads** jump to the line offset the agent requested
-- **Alt+Up/Down** navigates through the full history of agent file operations
-
-the status bar shows your position in the edit history (e.g. `follow 3/7`).
-
-an activity sidebar on the right side of the editor shows a condensed live feed of agent activity so you can watch progress without switching back to chat.
-
-## tools
-
-the agent has seven tools, executed in parallel when possible:
-
-| tool | what it does |
-|------|-------------|
-| **read** | read file contents (with optional line offset/limit) |
-| **write** | create or overwrite files |
-| **edit** | surgical find-and-replace (exact match of old text) |
-| **bash** | run shell commands |
-| **explore** | spawn a read-only sub-agent to investigate a topic |
-| **web_search** | search the web via DuckDuckGo |
-| **view_file** | view an image file and describe its contents |
-
-edits and writes show inline diffs. bash output streams in real time.
-
-## session persistence
-
-conversations are saved per-directory and restored on restart. the full activity feed (user messages, assistant responses, tool calls with output) is reconstructed when you reopen a project. input history (up-arrow) is also restored from the loaded session.
-
-use `/compact` to summarize long conversations and free up context window space. the context usage bar in the header shows how full your context is.
+conversations are saved per-directory and restored on restart, including the full activity feed and input history. use `/compact` to summarize long conversations and free up context. the header shows context usage.
 
 ## context files
 
-rum loads `AGENTS.md` and `CLAUDE.md` files from every directory between the filesystem root and your cwd, as well as from the global config dirs (`~/.config/rum/`, `~/.pi/agent/`, `~/.claude/`). use these to give the agent project-specific instructions.
+rum loads `AGENTS.md` and `CLAUDE.md` from every directory between the filesystem root and your cwd, plus global config dirs (`~/.config/rum/`, `~/.pi/agent/`, `~/.claude/`).
 
-custom system prompts are checked in priority order:
+custom system prompts are checked in order: `.rum/SYSTEM.md`, `.pi/SYSTEM.md`, `.claude/SYSTEM.md`, `~/.config/rum/SYSTEM.md`, `~/.pi/agent/SYSTEM.md`, then the built-in default. `APPEND_SYSTEM.md` files from all locations are appended.
 
-1. `.rum/SYSTEM.md` in the project
-2. `.pi/SYSTEM.md` in the project
-3. `.claude/SYSTEM.md` in the project
-4. `~/.config/rum/SYSTEM.md`
-5. `~/.pi/agent/SYSTEM.md`
-6. built-in default
-
-`APPEND_SYSTEM.md` files from all locations (`~/.config/rum/`, `~/.pi/agent/`, `.rum/`, `.pi/`, `.claude/`) are appended.
-
-settings (default model, thinking level) are merged from `~/.config/rum/config.json` and `~/.pi/agent/settings.json`, with rum's config taking priority.
-
-on startup rum shows which config files it loaded so you know exactly what's in context.
+settings (default model, thinking level) merge from `~/.config/rum/config.json` and `~/.pi/agent/settings.json`.
 
 ## notifications
 
-a terminal bell (`BEL`) fires when the agent finishes a turn. most terminals can be configured to show a system notification, bounce the dock icon, or play a sound when they receive a bell.
+a terminal bell fires when the agent finishes a turn. configure your terminal to show a notification, bounce the dock icon, or play a sound on bell.
 
 ## print mode
 
-`rum -p` streams output to stdout without the TUI. tool calls and thinking go to stderr. prints a summary with tokens, cost, and timing when done. useful for scripting or piping into other tools.
+`rum -p` streams to stdout without the TUI. tool calls and thinking go to stderr. prints a summary with tokens, cost, and timing at the end.
