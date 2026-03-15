@@ -327,63 +327,7 @@ async fn exec_read(input: &serde_json::Value, cwd: &Path) -> ToolResult {
 }
 
 // strip ANSI escape sequences and normalize carriage returns.
-// handles CSI (colors, cursor, erase), OSC/DCS/APC string sequences,
-// character set designations (e.g. ESC ( B), and other escape sequences.
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\x1b' => {
-                match chars.peek() {
-                    Some(&'[') => {
-                        // CSI: ESC [ <params> <final>  where final is 0x40-0x7E
-                        chars.next();
-                        for c in chars.by_ref() {
-                            if c as u32 >= 0x40 && c as u32 <= 0x7E {
-                                break;
-                            }
-                        }
-                    }
-                    Some(&']') | Some(&'P') | Some(&'X') | Some(&'^') | Some(&'_') => {
-                        // OSC and other string sequences terminated by BEL or ST (ESC \)
-                        chars.next();
-                        let mut prev = '\0';
-                        for c in chars.by_ref() {
-                            if c == '\x07' {
-                                break;
-                            }
-                            if prev == '\x1b' && c == '\\' {
-                                break;
-                            }
-                            prev = c;
-                        }
-                    }
-                    Some(&'(' | &')' | &'*' | &'+') => {
-                        // character set designation: ESC ( F, ESC ) F, etc.
-                        // three bytes total, skip the intermediate and final
-                        chars.next();
-                        chars.next();
-                    }
-                    Some(_) => {
-                        // two-character sequence (e.g. ESC M reverse index)
-                        chars.next();
-                    }
-                    None => {}
-                }
-            }
-            '\r' => {
-                // \r\n -> keep as \n (consumed on the next iteration)
-                // bare \r -> newline so overwritten content stays readable
-                if chars.peek() != Some(&'\n') {
-                    out.push('\n');
-                }
-            }
-            _ => out.push(ch),
-        }
-    }
-    out
-}
+use crate::util::strip_ansi;
 
 async fn exec_bash(
     input: &serde_json::Value,

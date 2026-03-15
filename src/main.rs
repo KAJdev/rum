@@ -13,6 +13,7 @@ mod print;
 mod tools;
 mod tree;
 mod tui;
+mod util;
 
 use anyhow::{bail, Result};
 use clap::Parser;
@@ -295,7 +296,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
     });
 
     tokio::spawn(async move {
-        if let Some(tag) = check_for_update().await {
+        if let Some(tag) = util::check_for_update().await {
             let _ = update_tx.send(tag);
         }
     });
@@ -1067,40 +1068,6 @@ fn run_logout_command() -> Result<()> {
     Ok(())
 }
 
-async fn check_for_update() -> Option<String> {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("rum/", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .ok()?;
-
-    let resp = client
-        .get("https://api.github.com/repos/KAJdev/rum/releases/latest")
-        .send()
-        .await
-        .ok()?;
-
-    let json: serde_json::Value = resp.json().await.ok()?;
-    let tag = json.get("tag_name")?.as_str()?;
-    let latest = tag.trim_start_matches('v');
-    let current = env!("CARGO_PKG_VERSION");
-
-    if parse_semver(latest) > parse_semver(current) {
-        Some(tag.to_string())
-    } else {
-        None
-    }
-}
-
-fn parse_semver(v: &str) -> (u32, u32, u32) {
-    let parts: Vec<u32> = v.split('.').filter_map(|p| p.parse().ok()).collect();
-    (
-        parts.first().copied().unwrap_or(0),
-        parts.get(1).copied().unwrap_or(0),
-        parts.get(2).copied().unwrap_or(0),
-    )
-}
-
 async fn agent_loop(
     mut agent: agent::Agent,
     mut user_rx: mpsc::UnboundedReceiver<String>,
@@ -1338,7 +1305,7 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
                                         }
                                         let content =
                                             content.strip_prefix("##[error]").unwrap_or(content);
-                                        let clean = tui::strip_ansi(content);
+                                        let clean = crate::util::strip_ansi(content);
                                         if clean.is_empty() {
                                             return None;
                                         }

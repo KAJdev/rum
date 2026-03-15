@@ -1657,61 +1657,7 @@ fn last_paragraph(text: &str) -> &str {
 // remove ansi escape sequences and other terminal control codes from tool output.
 // covers CSI sequences (\x1b[...X), OSC sequences (\x1b]...ST), character set
 // designations (\x1b(F), and bare \x1b.
-pub fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    // CSI: consume until final byte (0x40-0x7E)
-                    while let Some(&ch) = chars.peek() {
-                        chars.next();
-                        if ch as u32 >= 0x40 && ch as u32 <= 0x7E {
-                            break;
-                        }
-                    }
-                }
-                Some(']') | Some('P') | Some('X') | Some('^') | Some('_') => {
-                    chars.next();
-                    // OSC/DCS/APC: consume until ST (\x1b\\) or BEL (\x07)
-                    let mut prev = '\0';
-                    while let Some(&ch) = chars.peek() {
-                        chars.next();
-                        if ch == '\x07' {
-                            break;
-                        }
-                        if prev == '\x1b' && ch == '\\' {
-                            break;
-                        }
-                        prev = ch;
-                    }
-                }
-                Some('(' | ')' | '*' | '+') => {
-                    // character set designation: ESC ( F, ESC ) F, etc.
-                    chars.next();
-                    chars.next();
-                }
-                Some(_) => {
-                    // two-char sequence, skip next char
-                    chars.next();
-                }
-                _ => {}
-            }
-        } else if c == '\r' {
-            // carriage return: overwrite the current line
-            if let Some(pos) = out.rfind('\n') {
-                out.truncate(pos + 1);
-            } else {
-                out.clear();
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
+use crate::util::strip_ansi;
 
 // strip the "[exit code: N]\n" prefix from bash output for display
 fn strip_exit_prefix(s: &str) -> &str {
