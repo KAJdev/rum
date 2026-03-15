@@ -2085,6 +2085,24 @@ fn handle_editor_key(
         }
         KeyCode::Backspace => {
             if let Some(ref mut buf) = app.editor_buffer {
+                // delete matching closing char when backspacing an empty pair
+                if buf.cursor_col > 0 {
+                    let line = &buf.lines[buf.cursor_row];
+                    let prev = line[..buf.cursor_col].chars().last();
+                    let next = line[buf.cursor_col..].chars().next();
+                    let is_empty_pair = matches!(
+                        (prev, next),
+                        (Some('('), Some(')'))
+                        | (Some('['), Some(']'))
+                        | (Some('{'), Some('}'))
+                        | (Some('"'), Some('"'))
+                        | (Some('\''), Some('\''))
+                        | (Some('`'), Some('`'))
+                    );
+                    if is_empty_pair {
+                        buf.delete();
+                    }
+                }
                 buf.backspace();
             }
         }
@@ -2103,7 +2121,35 @@ fn handle_editor_key(
         }
         KeyCode::Char(c) => {
             if let Some(ref mut buf) = app.editor_buffer {
-                buf.insert_char(c);
+                let closing = match c {
+                    '(' => Some(')'),
+                    '[' => Some(']'),
+                    '{' => Some('}'),
+                    '"' => Some('"'),
+                    '\'' => Some('\''),
+                    '`' => Some('`'),
+                    _ => None,
+                };
+                // typing a closing char that's already under the cursor: skip over it
+                let char_at_cursor = buf.lines.get(buf.cursor_row)
+                    .and_then(|l| l[buf.cursor_col..].chars().next());
+                let is_quote = matches!(c, '"' | '\'' | '`');
+                if is_quote && char_at_cursor == Some(c) {
+                    buf.cursor_col += c.len_utf8();
+                } else if !is_quote && matches!(c, ')' | ']' | '}') && char_at_cursor == Some(c) {
+                    buf.cursor_col += c.len_utf8();
+                } else if let Some(close) = closing {
+                    buf.insert_char(c);
+                    // insert the closing char without moving cursor
+                    let line = &mut buf.lines[buf.cursor_row];
+                    if buf.cursor_col >= line.len() {
+                        line.push(close);
+                    } else {
+                        line.insert(buf.cursor_col, close);
+                    }
+                } else {
+                    buf.insert_char(c);
+                }
             }
         }
         _ => {}
