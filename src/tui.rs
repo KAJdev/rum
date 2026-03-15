@@ -1,7 +1,8 @@
 use crate::agent::AgentEvent;
 use crate::api::{ContentBlock, Message, MessageContent};
 use crate::editor::{self, AgentEdit, EditorBuffer, SearchMode, SearchState};
-use crate::tools::{DiffInfo, DiffLineTag, ToolResult};
+use crate::diff::{DiffInfo, DiffLineTag};
+use crate::tools::ToolResult;
 use crossterm::{
     event::{
         DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -1890,7 +1891,7 @@ impl App {
                         let mut pending_delete = false;
                         for dl in &hunk.lines {
                             match dl.tag {
-                                crate::tools::DiffLineTag::Equal => {
+                                DiffLineTag::Equal => {
                                     if pending_delete {
                                         self.diff_markers.entry(new_line)
                                             .or_insert(DiffMarker::DeleteBoundary);
@@ -1898,7 +1899,7 @@ impl App {
                                     }
                                     new_line += 1;
                                 }
-                                crate::tools::DiffLineTag::Insert => {
+                                DiffLineTag::Insert => {
                                     if first_change_line.is_none() {
                                         first_change_line = Some(new_line);
                                     }
@@ -1907,7 +1908,7 @@ impl App {
                                     pending_delete = false;
                                     new_line += 1;
                                 }
-                                crate::tools::DiffLineTag::Delete => {
+                                DiffLineTag::Delete => {
                                     if first_change_line.is_none() {
                                         first_change_line = Some(new_line);
                                     }

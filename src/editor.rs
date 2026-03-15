@@ -4,7 +4,7 @@ use std::time::Instant;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 
-use crate::tools::DiffInfo;
+use crate::diff::DiffInfo;
 
 // tracks an agent file operation (edit or read) for follow mode navigation
 #[derive(Debug, Clone)]

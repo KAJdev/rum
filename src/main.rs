@@ -3,6 +3,7 @@ mod api;
 mod auth;
 mod autocomplete;
 mod config;
+mod diff;
 mod editor;
 mod lsp;
 mod markdown;

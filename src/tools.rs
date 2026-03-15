@@ -1,6 +1,6 @@
 use crate::api::{AuthMethod, ContentBlock, Message, MessageContent, StreamEvent};
+use crate::diff::{self, DiffInfo};
 use serde::Serialize;
-use similar::{ChangeTag, TextDiff};
 use std::path::{Path, PathBuf};
 
 // passed down from the agent so tools can make api calls and send background job events
@@ -31,12 +31,6 @@ pub struct ToolDef {
 }
 
 #[derive(Debug, Clone)]
-pub struct DiffStat {
-    pub additions: usize,
-    pub deletions: usize,
-}
-
-#[derive(Debug, Clone)]
 pub enum ToolResult {
     Success {
         output: String,
@@ -58,32 +52,6 @@ pub struct ReadInfo {
     pub path: String,
     // 1-indexed line offset
     pub offset: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiffInfo {
-    pub path: String,
-    pub stat: DiffStat,
-    pub hunks: Vec<DiffHunk>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiffHunk {
-    pub new_start: usize,
-    pub lines: Vec<DiffLine>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiffLine {
-    pub tag: DiffLineTag,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum DiffLineTag {
-    Equal,
-    Insert,
-    Delete,
 }
 
 pub fn tool_definitions() -> Vec<ToolDef> {
@@ -856,7 +824,7 @@ async fn exec_edit(input: &serde_json::Value, cwd: &Path) -> ToolResult {
         .to_string_lossy()
         .to_string();
 
-    let diff_info = compute_diff(&display_path, &content, &new_content);
+    let diff_info = diff::compute_diff(&display_path, &content, &new_content);
 
     if let Err(e) = std::fs::write(&path, &new_content) {
         return ToolResult::Error(format!("failed to write {}: {}", path.display(), e));
@@ -907,57 +875,13 @@ async fn exec_write(input: &serde_json::Value, cwd: &Path) -> ToolResult {
         .to_string_lossy()
         .to_string();
 
-    let diff_info = compute_diff(&display_path, &old_content, content);
+    let diff_info = diff::compute_diff(&display_path, &old_content, content);
 
     let action = if existed { "wrote" } else { "created" };
     ToolResult::Success {
         output: format!("{} {} ({} bytes)", action, display_path, content.len()),
         diff: Some(diff_info),
         read: None,
-    }
-}
-
-pub fn compute_diff(path: &str, old: &str, new: &str) -> DiffInfo {
-    let text_diff = TextDiff::from_lines(old, new);
-    let mut additions = 0;
-    let mut deletions = 0;
-    let mut hunks = Vec::new();
-
-    for group in text_diff.grouped_ops(3) {
-        // the first op's new range start gives us the line number in the new file
-        let new_start = group.first().map(|op| op.new_range().start).unwrap_or(0);
-        let mut hunk = DiffHunk { new_start, lines: Vec::new() };
-        for op in &group {
-            for change in text_diff.iter_changes(op) {
-                let tag = match change.tag() {
-                    ChangeTag::Equal => DiffLineTag::Equal,
-                    ChangeTag::Insert => {
-                        additions += 1;
-                        DiffLineTag::Insert
-                    }
-                    ChangeTag::Delete => {
-                        deletions += 1;
-                        DiffLineTag::Delete
-                    }
-                };
-                hunk.lines.push(DiffLine {
-                    tag,
-                    content: change.value().to_string(),
-                });
-            }
-        }
-        if !hunk.lines.is_empty() {
-            hunks.push(hunk);
-        }
-    }
-
-    DiffInfo {
-        path: path.to_string(),
-        stat: DiffStat {
-            additions,
-            deletions,
-        },
-        hunks,
     }
 }
 
