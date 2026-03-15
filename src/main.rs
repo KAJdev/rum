@@ -4,6 +4,7 @@ mod auth;
 mod autocomplete;
 mod config;
 mod editor;
+mod lsp;
 mod markdown;
 mod persistence;
 mod print;
@@ -15,6 +16,7 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use crossterm::event::{self, Event, MouseEventKind};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -243,6 +245,19 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
     app.session_tree = session_tree;
     let history_len = agent.loaded_history_len();
 
+    // start LSP servers for detected languages
+    let (lsp_event_tx, mut lsp_event_rx) = mpsc::unbounded_channel::<lsp::LspEvent>();
+    let lsp_manager = Arc::new(tokio::sync::Mutex::new(
+        lsp::LspManager::new(cwd.clone(), lsp_event_tx),
+    ));
+    {
+        let lsp = lsp_manager.clone();
+        tokio::spawn(async move {
+            lsp.lock().await.start_servers().await;
+        });
+    }
+    app.lsp = Some(lsp_manager.clone());
+
     // show startup info: loaded config files and session state
     if !cfg.loaded_sources.is_empty() {
         let home = dirs::home_dir().unwrap_or_default();
@@ -349,6 +364,95 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
             }
         }
         app.gc_background_jobs(std::time::Duration::from_secs(15));
+
+        // drain LSP events
+        while let Ok(evt) = lsp_event_rx.try_recv() {
+            match &evt {
+                lsp::LspEvent::ServerStarted(name) => {
+                    app.push_system_message(format!("lsp: {name}"));
+                }
+                lsp::LspEvent::ServerError(msg) => {
+                    app.push_system_message(format!("lsp error: {msg}"));
+                }
+                lsp::LspEvent::Diagnostics { .. } => {
+                    let lsp = lsp_manager.clone();
+                    let evt_clone = evt.clone();
+                    tokio::spawn(async move {
+                        lsp.lock().await.handle_event(&evt_clone).await;
+                    });
+                }
+            }
+        }
+
+        // process pending LSP notifications from the editor
+        let pending_lsp: Vec<tui::LspNotify> = app.lsp_pending.drain(..).collect();
+        if !pending_lsp.is_empty() {
+            let lsp = lsp_manager.clone();
+            tokio::spawn(async move {
+                let mgr = lsp.lock().await;
+                for notify in pending_lsp {
+                    match notify {
+                        tui::LspNotify::Open(path) => {
+                            let text = std::fs::read_to_string(&path).unwrap_or_default();
+                            mgr.notify_open(&path, &text).await;
+                        }
+                        tui::LspNotify::Change(path, text) => {
+                            mgr.notify_change(&path, &text).await;
+                        }
+                        tui::LspNotify::Save(path) => {
+                            let text = std::fs::read_to_string(&path).ok();
+                            mgr.notify_save(&path, text.as_deref()).await;
+                        }
+                    }
+                }
+            });
+        }
+
+        // refresh diagnostics for the currently open file
+        if let Some(ref buf) = app.editor_buffer {
+            let key = buf.path.to_string_lossy().to_string();
+            if let Ok(mgr) = lsp_manager.try_lock() {
+                if let Ok(d) = mgr.diagnostics.try_lock() {
+                    app.lsp_diagnostics = d.get(&key).cloned().unwrap_or_default();
+                }
+            }
+        }
+
+        // after agent turn completes, check for LSP diagnostics and inject errors
+        if let Some(check_at) = app.diag_check_at {
+            if std::time::Instant::now() >= check_at && !app.is_running {
+                app.diag_check_at = None;
+                if let Ok(mgr) = lsp_manager.try_lock() {
+                    if let Ok(diags) = mgr.diagnostics.try_lock() {
+                        let mut error_lines = Vec::new();
+                        for (path, file_diags) in diags.iter() {
+                            for d in file_diags {
+                                if matches!(d.severity, lsp::DiagSeverity::Error) {
+                                    error_lines.push(format!(
+                                        "{}:{}:{}: error: {}",
+                                        path,
+                                        d.line + 1,
+                                        d.col + 1,
+                                        d.message
+                                    ));
+                                }
+                            }
+                        }
+                        if !error_lines.is_empty() {
+                            let msg = format!(
+                                "[LSP diagnostics: {} error{}]\n{}",
+                                error_lines.len(),
+                                if error_lines.len() == 1 { "" } else { "s" },
+                                error_lines.join("\n")
+                            );
+                            cancel.reset();
+                            app.start_new_message("[LSP errors detected]");
+                            let _ = user_tx.send(msg);
+                        }
+                    }
+                }
+            }
+        }
 
         // drain completed login attempts
         while let Ok(result) = login_rx.try_recv() {

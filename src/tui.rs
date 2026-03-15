@@ -403,6 +403,20 @@ pub struct App {
     // session tree for conversation branching
     pub session_tree: crate::persistence::SessionTree,
     pub tree_view: Option<crate::tree::TreeView>,
+    pub lsp: Option<std::sync::Arc<tokio::sync::Mutex<crate::lsp::LspManager>>>,
+    // diagnostics for the currently open file, cached from LspManager
+    pub lsp_diagnostics: Vec<crate::lsp::DiagnosticInfo>,
+    // queued LSP notifications (processed async in main loop)
+    pub lsp_pending: Vec<LspNotify>,
+    // timestamp to check for LSP diagnostics after agent turn completes
+    pub diag_check_at: Option<std::time::Instant>,
+}
+
+#[derive(Debug)]
+pub enum LspNotify {
+    Open(std::path::PathBuf),
+    Change(std::path::PathBuf, String),
+    Save(std::path::PathBuf),
 }
 
 impl App {
@@ -463,6 +477,10 @@ impl App {
             highlighter: None,
             session_tree: crate::persistence::SessionTree::new(),
             tree_view: None,
+            lsp: None,
+            lsp_diagnostics: Vec::new(),
+            lsp_pending: Vec::new(),
+            diag_check_at: None,
         }
     }
 
@@ -644,6 +662,10 @@ impl App {
                 self.new_turn = true;
                 // BEL character triggers terminal/OS notification
                 print!("\x07");
+                // schedule LSP diagnostic check after a short delay
+                self.diag_check_at = Some(
+                    std::time::Instant::now() + std::time::Duration::from_secs(3),
+                );
                 // cancel any in-progress compact animation
                 for item in self.activity.iter_mut().rev() {
                     match item {
@@ -1820,8 +1842,10 @@ impl App {
     pub fn open_file(&mut self, path: &std::path::Path) {
         match EditorBuffer::open(path) {
             Ok(buf) => {
+                self.lsp_pending.push(LspNotify::Open(path.to_path_buf()));
                 self.editor_buffer = Some(buf);
                 self.diff_markers.clear();
+                self.lsp_diagnostics.clear();
                 if let Some(ref mut hl) = self.highlighter { hl.invalidate(); }
                 self.view_mode = ViewMode::Editor;
             }
@@ -1902,6 +1926,9 @@ impl App {
     }
 
     pub fn track_agent_edit(&mut self, path: String, diff: Option<DiffInfo>, line: Option<usize>) {
+        // notify LSP that the file changed on disk
+        self.lsp_pending.push(LspNotify::Open(std::path::PathBuf::from(&path)));
+
         let edit = AgentEdit {
             path,
             diff,
@@ -2022,6 +2049,8 @@ fn handle_editor_key(
         KeyCode::Char('s') if ctrl => {
             if let Some(ref mut buf) = app.editor_buffer {
                 let _ = buf.save();
+                let path = buf.path.clone();
+                app.lsp_pending.push(LspNotify::Save(path));
             }
         }
         // ctrl+z: undo
@@ -2437,10 +2466,17 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
         ])
         .split(size);
 
+    // show diagnostic message if cursor is on a line with diagnostics
+    let has_diag = app.editor_buffer.as_ref().map_or(false, |buf| {
+        app.lsp_diagnostics.iter().any(|d| d.line as usize == buf.cursor_row)
+    });
+    let diag_h: u16 = if has_diag { 1 } else { 0 };
+
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                   // status bar
+            Constraint::Length(diag_h),               // diagnostic message
             Constraint::Min(3),                      // editor content
             Constraint::Length(search_h),             // search overlay
         ])
@@ -2448,13 +2484,34 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
 
     render_editor_status(frame, app, left_chunks[0]);
 
+    if has_diag {
+        if let Some(ref buf) = app.editor_buffer {
+            if let Some(diag) = app.lsp_diagnostics.iter().find(|d| d.line as usize == buf.cursor_row) {
+                let (icon, color) = match diag.severity {
+                    crate::lsp::DiagSeverity::Error => ("✗", Color::Rgb(255, 100, 100)),
+                    crate::lsp::DiagSeverity::Warning => ("⚠", YELLOW),
+                    crate::lsp::DiagSeverity::Info => ("ℹ", Color::Rgb(100, 180, 255)),
+                    crate::lsp::DiagSeverity::Hint => ("·", MUTED),
+                };
+                let msg = format!(" {} {}", icon, diag.message);
+                let max = left_chunks[1].width as usize;
+                let display = if msg.len() > max { &msg[..max] } else { &msg };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(display, Style::default().fg(color)))
+                        .style(Style::default().bg(BG)),
+                    left_chunks[1],
+                );
+            }
+        }
+    }
+
     if app.editor_buffer.is_some() {
-        render_editor_content(frame, app, left_chunks[1]);
-        render_autocomplete_menu(frame, app, left_chunks[1]);
+        render_editor_content(frame, app, left_chunks[2]);
+        render_autocomplete_menu(frame, app, left_chunks[2]);
     }
 
     if has_search {
-        render_search_overlay(frame, app, left_chunks[2]);
+        render_search_overlay(frame, app, left_chunks[3]);
     }
 
     render_editor_sidebar(frame, app, hsplit[1]);
@@ -2570,6 +2627,10 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
         let is_cursor_line = line_idx == buf.cursor_row;
         let diff_marker = if app.follow_mode { app.diff_markers.get(&line_idx) } else { None };
 
+        // check for LSP diagnostics on this line
+        let line_diag = app.lsp_diagnostics.iter().find(|d| d.line as usize == line_idx);
+        let diag_severity = line_diag.map(|d| d.severity);
+
         let gutter_style = match diff_marker {
             Some(DiffMarker::Insert) => Style::default().fg(GREEN),
             Some(DiffMarker::DeleteBoundary) => Style::default().fg(RED),
@@ -2580,7 +2641,11 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
         let line_bg = match diff_marker {
             Some(DiffMarker::Insert) => Some(Color::Rgb(20, 40, 20)),
             Some(DiffMarker::DeleteBoundary) => Some(Color::Rgb(40, 20, 20)),
-            _ => None,
+            _ => match diag_severity {
+                Some(crate::lsp::DiagSeverity::Error) => Some(Color::Rgb(40, 15, 15)),
+                Some(crate::lsp::DiagSeverity::Warning) => Some(Color::Rgb(40, 30, 10)),
+                _ => None,
+            },
         };
 
         let cursor_bg = Color::Rgb(30, 33, 40);
