@@ -257,6 +257,13 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         });
     }
     app.lsp = Some(lsp_manager.clone());
+    agent.lsp = Some(lsp_manager.clone());
+
+    // channels for async LSP completion and goto-definition results
+    let (lsp_comp_tx, mut lsp_comp_rx) =
+        mpsc::unbounded_channel::<Vec<lsp_types::CompletionItem>>();
+    let (lsp_goto_tx, mut lsp_goto_rx) =
+        mpsc::unbounded_channel::<Vec<lsp_types::Location>>();
 
     // show startup info: loaded config files and session state
     if !cfg.loaded_sources.is_empty() {
@@ -406,6 +413,50 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                     }
                 }
             });
+        }
+
+        // fire async LSP completion request
+        if let Some((path, line, character)) = app.lsp_completion_request.take() {
+            let lsp = lsp_manager.clone();
+            let tx = lsp_comp_tx.clone();
+            tokio::spawn(async move {
+                let mgr = lsp.lock().await;
+                if let Some(items) = mgr.completion(&path, line, character).await {
+                    let _ = tx.send(items);
+                }
+            });
+        }
+
+        // receive LSP completion results and merge into autocomplete
+        while let Ok(items) = lsp_comp_rx.try_recv() {
+            if let Some(ref mut ac) = app.editor_autocomplete {
+                crate::autocomplete::merge_lsp_completions(ac, items);
+            }
+        }
+
+        // fire async LSP goto-definition request
+        if let Some((path, line, character)) = app.lsp_goto_request.take() {
+            let lsp = lsp_manager.clone();
+            let tx = lsp_goto_tx.clone();
+            tokio::spawn(async move {
+                let mgr = lsp.lock().await;
+                if let Some(locs) = mgr.goto_definition(&path, line, character).await {
+                    let _ = tx.send(locs);
+                }
+            });
+        }
+
+        // receive goto-definition results and navigate
+        while let Ok(locations) = lsp_goto_rx.try_recv() {
+            if let Some(loc) = locations.first() {
+                let uri_str = loc.uri.as_str();
+                if let Some(path) = lsp::uri_to_path(uri_str) {
+                    app.open_file(&path);
+                    if let Some(ref mut buf) = app.editor_buffer {
+                        buf.goto_line(loc.range.start.line as usize);
+                    }
+                }
+            }
         }
 
         // refresh diagnostics for the currently open file

@@ -100,6 +100,7 @@ pub struct Agent {
     cancel: CancelToken,
     pub job_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::tui::JobEvent>>,
     pub next_job_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub lsp: Option<std::sync::Arc<tokio::sync::Mutex<crate::lsp::LspManager>>>,
 }
 
 impl Agent {
@@ -121,6 +122,7 @@ impl Agent {
             cancel,
             job_tx: None,
             next_job_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            lsp: None,
         }
     }
 
@@ -197,6 +199,7 @@ impl Agent {
             cancel: Some(cancel_arc),
             job_tx: None,
             next_job_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            lsp: self.lsp.clone(),
         };
         let result =
             tools::execute_tool("bash", &input, &self.cwd, Some(stream_tx), Some(&api_ctx)).await;
@@ -593,6 +596,7 @@ impl Agent {
                         cancel: Some(self.cancel.arc()),
                         job_tx: self.job_tx.clone(),
                         next_job_id: self.next_job_id.clone(),
+                        lsp: self.lsp.clone(),
                     };
 
                     // each tool gets its own output forwarding channel
@@ -819,6 +823,8 @@ fn to_cc_name(name: &str) -> &str {
         "bash" => "Bash",
         "web_search" => "WebSearch",
         "view_file" => "ViewFile",
+        "goto_definition" => "GotoDefinition",
+        "diagnostics" => "Diagnostics",
         _ => name,
     }
 }
@@ -831,6 +837,8 @@ pub fn from_cc_name(name: &str) -> &str {
         "Bash" => "bash",
         "WebSearch" => "web_search",
         "ViewFile" => "view_file",
+        "GotoDefinition" => "goto_definition",
+        "Diagnostics" => "diagnostics",
         _ => name,
     }
 }

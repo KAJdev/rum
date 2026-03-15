@@ -6,12 +6,56 @@ use std::path::Path;
 pub struct Completion {
     pub label: String,
     pub kind: CompletionKind,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompletionKind {
     Keyword,
     Identifier,
+    Function,
+    Method,
+    Field,
+    Variable,
+    Class,
+    Interface,
+    Module,
+    Property,
+    Snippet,
+    Constant,
+    Enum,
+    EnumMember,
+    Struct,
+    TypeParameter,
+    // catch-all for other LSP kinds
+    Lsp,
+}
+
+impl CompletionKind {
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Keyword => "k",
+            Self::Identifier => "i",
+            Self::Function => "f",
+            Self::Method => "m",
+            Self::Field => ".",
+            Self::Variable => "v",
+            Self::Class | Self::Struct => "C",
+            Self::Interface => "I",
+            Self::Module => "M",
+            Self::Property => "p",
+            Self::Snippet => "s",
+            Self::Constant => "c",
+            Self::Enum => "E",
+            Self::EnumMember => "e",
+            Self::TypeParameter => "T",
+            Self::Lsp => "l",
+        }
+    }
+
+    pub fn is_lsp(&self) -> bool {
+        !matches!(self, Self::Keyword | Self::Identifier)
+    }
 }
 
 // active autocomplete session state
@@ -94,6 +138,7 @@ pub fn compute_completions(
                 candidates.push((score, Completion {
                     label: keyword.to_string(),
                     kind: CompletionKind::Keyword,
+                    detail: None,
                 }));
             }
         }
@@ -112,6 +157,7 @@ pub fn compute_completions(
                 candidates.push((score, Completion {
                     label: word.to_string(),
                     kind: CompletionKind::Identifier,
+                    detail: None,
                 }));
             }
         }
@@ -271,5 +317,75 @@ fn keywords_for_file(path: &Path) -> &'static [&'static str] {
             "cout", "cerr", "cin", "endl", "std",
         ],
         _ => &[],
+    }
+}
+
+// convert an lsp_types CompletionItemKind to our CompletionKind
+pub fn from_lsp_kind(kind: Option<lsp_types::CompletionItemKind>) -> CompletionKind {
+    match kind {
+        Some(lsp_types::CompletionItemKind::FUNCTION) => CompletionKind::Function,
+        Some(lsp_types::CompletionItemKind::METHOD) => CompletionKind::Method,
+        Some(lsp_types::CompletionItemKind::FIELD) => CompletionKind::Field,
+        Some(lsp_types::CompletionItemKind::VARIABLE) => CompletionKind::Variable,
+        Some(lsp_types::CompletionItemKind::CLASS) => CompletionKind::Class,
+        Some(lsp_types::CompletionItemKind::INTERFACE) => CompletionKind::Interface,
+        Some(lsp_types::CompletionItemKind::MODULE) => CompletionKind::Module,
+        Some(lsp_types::CompletionItemKind::PROPERTY) => CompletionKind::Property,
+        Some(lsp_types::CompletionItemKind::SNIPPET) => CompletionKind::Snippet,
+        Some(lsp_types::CompletionItemKind::CONSTANT) => CompletionKind::Constant,
+        Some(lsp_types::CompletionItemKind::ENUM) => CompletionKind::Enum,
+        Some(lsp_types::CompletionItemKind::ENUM_MEMBER) => CompletionKind::EnumMember,
+        Some(lsp_types::CompletionItemKind::STRUCT) => CompletionKind::Struct,
+        Some(lsp_types::CompletionItemKind::TYPE_PARAMETER) => CompletionKind::TypeParameter,
+        Some(lsp_types::CompletionItemKind::KEYWORD) => CompletionKind::Keyword,
+        _ => CompletionKind::Lsp,
+    }
+}
+
+// merge LSP completion results into an existing autocomplete state.
+// LSP items are prioritized over keyword/identifier matches.
+pub fn merge_lsp_completions(
+    state: &mut AutocompleteState,
+    items: Vec<lsp_types::CompletionItem>,
+) {
+    let mut seen: HashSet<String> = state.candidates.iter().map(|c| c.label.clone()).collect();
+
+    let mut lsp_candidates: Vec<Completion> = Vec::new();
+    for item in items {
+        let label = item.label.clone();
+        if seen.contains(&label) {
+            // upgrade existing keyword/identifier match to the LSP kind
+            if let Some(existing) = state.candidates.iter_mut().find(|c| c.label == label) {
+                if !existing.kind.is_lsp() {
+                    existing.kind = from_lsp_kind(item.kind);
+                    existing.detail = item.detail.clone();
+                }
+            }
+            continue;
+        }
+        // filter by prefix
+        if !state.prefix.is_empty() {
+            let prefix_lower = state.prefix.to_lowercase();
+            let label_lower = label.to_lowercase();
+            if !label_lower.starts_with(&prefix_lower)
+                && crate::editor::fuzzy_match(&state.prefix, &label).is_none()
+            {
+                continue;
+            }
+        }
+        seen.insert(label.clone());
+        lsp_candidates.push(Completion {
+            label,
+            kind: from_lsp_kind(item.kind),
+            detail: item.detail,
+        });
+    }
+
+    // prepend LSP results (they're generally more relevant than identifier scan)
+    if !lsp_candidates.is_empty() {
+        lsp_candidates.append(&mut state.candidates);
+        state.candidates = lsp_candidates;
+        state.candidates.truncate(12);
+        state.selected = state.selected.min(state.candidates.len().saturating_sub(1));
     }
 }

@@ -410,6 +410,10 @@ pub struct App {
     pub lsp_pending: Vec<LspNotify>,
     // timestamp to check for LSP diagnostics after agent turn completes
     pub diag_check_at: Option<std::time::Instant>,
+    // pending LSP completion request (path, line, character)
+    pub lsp_completion_request: Option<(std::path::PathBuf, u32, u32)>,
+    // pending goto-definition request (path, line, character)
+    pub lsp_goto_request: Option<(std::path::PathBuf, u32, u32)>,
 }
 
 #[derive(Debug)]
@@ -481,11 +485,26 @@ impl App {
             lsp_diagnostics: Vec::new(),
             lsp_pending: Vec::new(),
             diag_check_at: None,
+            lsp_completion_request: None,
+            lsp_goto_request: None,
         }
     }
 
     pub fn set_inject_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
         self.inject_tx = Some(tx);
+    }
+
+    // fire an async LSP completion request for the current cursor position
+    pub fn request_lsp_completion(&mut self) {
+        if self.lsp.is_some() {
+            if let Some(ref buf) = self.editor_buffer {
+                self.lsp_completion_request = Some((
+                    buf.path.clone(),
+                    buf.cursor_row as u32,
+                    buf.cursor_col as u32,
+                ));
+            }
+        }
     }
 
     pub fn tick_rate(&mut self) {
@@ -2080,6 +2099,16 @@ fn handle_editor_key(
             app.editor_search = Some(SearchState::new(SearchMode::Files));
             app.update_file_search();
         }
+        // F12: goto definition (LSP)
+        KeyCode::F(12) => {
+            if let Some(ref buf) = app.editor_buffer {
+                app.lsp_goto_request = Some((
+                    buf.path.clone(),
+                    buf.cursor_row as u32,
+                    buf.cursor_col as u32,
+                ));
+            }
+        }
         // ctrl+k: delete line
         KeyCode::Char('k') if ctrl => {
             if let Some(ref mut buf) = app.editor_buffer {
@@ -2233,6 +2262,7 @@ fn handle_editor_key(
                     &buf.path,
                 );
             }
+            app.request_lsp_completion();
         }
         KeyCode::Backspace => {
             if let Some(ref mut buf) = app.editor_buffer {
@@ -2265,6 +2295,7 @@ fn handle_editor_key(
                     &buf.path,
                 );
             }
+            app.request_lsp_completion();
         }
         KeyCode::Delete if alt || ctrl => {
             if let Some(ref mut buf) = app.editor_buffer {
@@ -2328,6 +2359,7 @@ fn handle_editor_key(
                         &buf.path,
                     );
                 }
+                app.request_lsp_completion();
             } else {
                 app.editor_autocomplete = None;
             }
@@ -2862,8 +2894,11 @@ fn render_autocomplete_menu(frame: &mut Frame, app: &App, area: Rect) {
     // position the menu below the cursor line
     let menu_y = area.y + screen_row as u16 + 1;
     let menu_x = area.x + gutter_width + wrap_col as u16;
-    let max_label = ac.candidates.iter().map(|c| c.label.len()).max().unwrap_or(10);
-    let menu_w = (max_label + 4).min(40) as u16;
+    let max_label = ac.candidates.iter().map(|c| {
+        let detail_len = c.detail.as_ref().map(|d| d.len() + 1).unwrap_or(0);
+        c.label.len() + detail_len
+    }).max().unwrap_or(10);
+    let menu_w = (max_label + 4).min(50) as u16;
     let menu_h = ac.candidates.len().min(8) as u16;
 
     // flip above if not enough room below
@@ -2890,13 +2925,11 @@ fn render_autocomplete_menu(frame: &mut Frame, app: &App, area: Rect) {
     for (i, candidate) in ac.candidates.iter().take(final_h as usize).enumerate() {
         let is_selected = i == ac.selected;
 
-        let kind_icon = match candidate.kind {
-            crate::autocomplete::CompletionKind::Keyword => "k",
-            crate::autocomplete::CompletionKind::Identifier => "i",
-        };
+        let kind_icon = candidate.kind.icon();
 
-        let (label_style, icon_style) = if is_selected {
+        let (label_style, icon_style, detail_style) = if is_selected {
             (
+                Style::default().fg(BG).bg(ACCENT),
                 Style::default().fg(BG).bg(ACCENT),
                 Style::default().fg(BG).bg(ACCENT),
             )
@@ -2904,14 +2937,29 @@ fn render_autocomplete_menu(frame: &mut Frame, app: &App, area: Rect) {
             (
                 Style::default().fg(FG).bg(INPUT_BG),
                 Style::default().fg(MUTED).bg(INPUT_BG),
+                Style::default().fg(MUTED).bg(INPUT_BG),
             )
         };
 
-        let label: String = candidate.label.chars().take(final_w as usize - 3).collect();
-        let pad = (final_w as usize).saturating_sub(label.len() + 3);
+        let max_label_len = (final_w as usize).saturating_sub(4);
+        let label: String = candidate.label.chars().take(max_label_len).collect();
+        // show detail (type info) if there's room
+        let detail_str = if let Some(ref d) = candidate.detail {
+            let avail = max_label_len.saturating_sub(label.len() + 1);
+            if avail > 3 {
+                let d: String = d.chars().take(avail).collect();
+                format!(" {}", d)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        let pad = (final_w as usize).saturating_sub(label.len() + detail_str.len() + 3);
         lines.push(Line::from(vec![
             Span::styled(format!(" {} ", kind_icon), icon_style),
             Span::styled(label, label_style),
+            Span::styled(detail_str, detail_style),
             Span::styled(" ".repeat(pad), label_style),
         ]));
     }

@@ -21,7 +21,7 @@ fn path_to_uri(path: &Path) -> Option<Uri> {
     s.parse().ok()
 }
 
-fn uri_to_path(uri: &str) -> Option<PathBuf> {
+pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let stripped = uri.strip_prefix("file://")?;
     Some(PathBuf::from(stripped))
 }
