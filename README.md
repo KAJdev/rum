@@ -32,7 +32,7 @@ cargo install --path .
 
 ## getting started
 
-run `rum` in any project directory. if you don't have credentials, it will open your browser to log in with your Anthropic account automatically — paste the code back and you're in.
+run `rum` in any project directory. if you don't have credentials, it will open your browser to log in with your Anthropic account automatically -- paste the code back and you're in.
 
 you can also set `ANTHROPIC_API_KEY` in your environment if you prefer API key auth.
 
@@ -83,18 +83,54 @@ prefix any input with `!` to run a shell command inline. the output streams to t
 
 ### keybindings
 
+#### chat view
+
 | key | action |
 |-----|--------|
 | **Enter** | send message (queues if agent is running) |
 | **Shift+Enter** | newline |
-| **Ctrl+C** | cancel agent → clear input → quit |
+| **Ctrl+C** | cancel agent / clear input / quit |
 | **Escape** | cancel agent / clear input |
-| **Up/Down** | input history / cursor movement / scroll |
+| **Up/Down** | input history |
 | **Shift+Up/Down** | scroll activity feed |
 | **Mouse scroll** | scroll activity feed |
 | **PageUp/PageDown** | scroll by page |
 | **Ctrl+O** | toggle diff expansion |
 | **Tab** | autocomplete slash commands |
+
+#### editor view
+
+| key | action |
+|-----|--------|
+| **Ctrl+E** | toggle between chat and editor |
+| **Ctrl+F** | toggle follow mode (auto-tracks agent file operations) |
+| **Ctrl+P** | fuzzy file finder |
+| **Ctrl+/** | text search across files |
+| **Ctrl+S** | save file |
+| **Ctrl+Z** | undo |
+| **Ctrl+Y** | redo |
+| **Ctrl+K** | delete line |
+| **Alt+Up/Down** | navigate between agent edits (follow mode) |
+| **Shift+Up/Down** | half-page scroll |
+| **PageUp/PageDown** | full page scroll |
+| **Arrow keys** | cursor movement |
+| **Mouse scroll** | scroll (3 lines per tick) |
+
+## editor
+
+`Ctrl+E` opens a built-in editor with syntax highlighting (via syntect). you can browse, edit, and save project files without leaving the TUI.
+
+### follow mode
+
+`Ctrl+F` enables follow mode, which tracks every file the agent reads or edits and automatically opens the file in the editor, jumping to the relevant location:
+
+- **edits** show inline diff markers: green gutter and background for insertions, red for deletions
+- **reads** jump to the line offset the agent requested
+- **Alt+Up/Down** navigates through the full history of agent file operations
+
+the status bar shows your position in the edit history (e.g. `follow 3/7`).
+
+an activity sidebar on the right side of the editor shows a condensed live feed of agent activity so you can watch progress without switching back to chat.
 
 ## tools
 
@@ -136,6 +172,10 @@ custom system prompts are checked in priority order:
 settings (default model, thinking level) are merged from `~/.config/rum/config.json` and `~/.pi/agent/settings.json`, with rum's config taking priority.
 
 on startup rum shows which config files it loaded so you know exactly what's in context.
+
+## notifications
+
+a terminal bell (`BEL`) fires when the agent finishes a turn. most terminals can be configured to show a system notification, bounce the dock icon, or play a sound when they receive a bell.
 
 ## print mode
 
