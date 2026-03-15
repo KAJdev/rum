@@ -506,6 +506,9 @@ impl Agent {
                                 content: current_compaction.clone(),
                             });
                             in_compaction = false;
+                            let _ = event_tx.send(AgentEvent::CompactDone(
+                                "context auto-compacted".to_string(),
+                            ));
                         } else if in_thinking {
                             let sig = if current_thinking_signature.is_empty() {
                                 None
@@ -628,6 +631,9 @@ impl Agent {
                     response_blocks.push(ContentBlock::Compaction {
                         content: current_compaction.clone(),
                     });
+                    let _ = event_tx.send(AgentEvent::CompactDone(
+                        "context auto-compacted".to_string(),
+                    ));
                 }
                 if in_thinking && !current_thinking.is_empty() {
                     let sig = if current_thinking_signature.is_empty() {
@@ -736,9 +742,6 @@ impl Agent {
             // if the api paused for compaction (pause_after_compaction=true), continue
             // the loop so the next request resumes from the compacted context
             if stop_reason.as_deref() == Some("compaction") {
-                let _ = event_tx.send(AgentEvent::CompactDone(
-                    "context auto-compacted".to_string(),
-                ));
                 continue;
             }
 
