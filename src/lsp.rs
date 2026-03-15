@@ -178,17 +178,9 @@ fn managed_binary_path(name: &str) -> Option<PathBuf> {
     }
 }
 
-// resolve the command to run for a server: system PATH first, then managed binary
+// resolve the command to run for a server: managed binary first, then system PATH
 fn resolve_command(config: &ServerConfig) -> Option<ResolvedCommand> {
-    // system PATH
-    if command_exists(config.command) {
-        return Some(ResolvedCommand {
-            program: config.command.to_string(),
-            args: config.args.iter().map(|s| s.to_string()).collect(),
-        });
-    }
-
-    // managed binary dir (check both the command name and the install binary name)
+    // managed binary dir first (known-good binaries we downloaded)
     if let Some(path) = managed_binary_path(config.command) {
         return Some(ResolvedCommand {
             program: path.to_string_lossy().to_string(),
@@ -204,6 +196,14 @@ fn resolve_command(config: &ServerConfig) -> Option<ResolvedCommand> {
                 });
             }
         }
+    }
+
+    // system PATH
+    if command_exists(config.command) {
+        return Some(ResolvedCommand {
+            program: config.command.to_string(),
+            args: config.args.iter().map(|s| s.to_string()).collect(),
+        });
     }
 
     // npx fallback
