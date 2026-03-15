@@ -443,6 +443,13 @@ impl LspClient {
             .kill_on_drop(true)
             .spawn()?;
 
+        // check if the process died immediately (e.g. rustup proxy shim
+        // without the component installed)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if let Ok(Some(status)) = process.try_wait() {
+            anyhow::bail!("process exited immediately with {}", status);
+        }
+
         let stdin = process.stdin.take().expect("stdin");
         let stdout = process.stdout.take().expect("stdout");
         let stderr = process.stderr.take().expect("stderr");
