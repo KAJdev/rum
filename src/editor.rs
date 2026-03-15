@@ -34,7 +34,7 @@ pub struct EditorBuffer {
     pub generation: u64,
     // tracks the desired column across vertical movements so the cursor
     // returns to its original column after passing through short lines
-    desired_col: Option<usize>,
+    pub desired_col: Option<usize>,
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
 }
@@ -296,6 +296,24 @@ impl EditorBuffer {
 
     pub fn goto_line(&mut self, line: usize) {
         self.cursor_row = line.min(self.lines.len().saturating_sub(1));
+        self.cursor_col = 0;
+    }
+
+    // scroll so that a line range is centered in the viewport.
+    // if the range is taller than the viewport, align the start to the top.
+    pub fn center_on_range(&mut self, first: usize, last: usize, viewport_height: usize) {
+        let first = first.min(self.lines.len().saturating_sub(1));
+        let last = last.min(self.lines.len().saturating_sub(1));
+        let range_height = last - first + 1;
+        if range_height >= viewport_height {
+            // range too tall, pin start at top
+            self.scroll_row = first;
+        } else {
+            // center the range
+            let mid = first + range_height / 2;
+            self.scroll_row = mid.saturating_sub(viewport_height / 2);
+        }
+        self.cursor_row = first;
         self.cursor_col = 0;
     }
 

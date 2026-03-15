@@ -1820,8 +1820,9 @@ impl App {
             Ok(mut buf) => {
                 self.diff_markers.clear();
                 if let Some(ref diff) = edit.diff {
-                    // build diff markers and jump to first change
+                    // build diff markers and track the changed line range
                     let mut first_change_line: Option<usize> = None;
+                    let mut last_change_line: Option<usize> = None;
                     for hunk in &diff.hunks {
                         let mut new_line = hunk.new_start;
                         let mut pending_delete = false;
@@ -1839,6 +1840,7 @@ impl App {
                                     if first_change_line.is_none() {
                                         first_change_line = Some(new_line);
                                     }
+                                    last_change_line = Some(new_line);
                                     self.diff_markers.insert(new_line, DiffMarker::Insert);
                                     pending_delete = false;
                                     new_line += 1;
@@ -1847,6 +1849,7 @@ impl App {
                                     if first_change_line.is_none() {
                                         first_change_line = Some(new_line);
                                     }
+                                    last_change_line = Some(new_line);
                                     pending_delete = true;
                                 }
                             }
@@ -1857,20 +1860,20 @@ impl App {
                                 .or_insert(DiffMarker::DeleteBoundary);
                         }
                     }
-                    if let Some(line) = first_change_line {
-                        buf.goto_line(line);
+                    if let Some(first) = first_change_line {
+                        let last = last_change_line.unwrap_or(first);
                         let h = crossterm::terminal::size()
                             .map(|(_, h)| h)
                             .unwrap_or(24) as usize;
-                        buf.ensure_cursor_visible(h.saturating_sub(2));
+                        buf.center_on_range(first, last, h.saturating_sub(2));
                     }
                 } else if let Some(line) = edit.line {
-                    // no diff (read tool) - jump to the requested line
-                    buf.goto_line(line.saturating_sub(1));
+                    // no diff (read tool) - center on the read offset
+                    let target = line.saturating_sub(1);
                     let h = crossterm::terminal::size()
                         .map(|(_, h)| h)
                         .unwrap_or(24) as usize;
-                    buf.ensure_cursor_visible(h.saturating_sub(2));
+                    buf.center_on_range(target, target, h.saturating_sub(2));
                 }
                 self.editor_buffer = Some(buf);
                 if let Some(ref mut hl) = self.highlighter { hl.invalidate(); }
@@ -2241,8 +2244,10 @@ fn handle_editor_key(
                     buf.insert_char(c);
                 }
             }
-            // trigger or update autocomplete on identifier chars
-            if c.is_alphanumeric() || c == '_' {
+            // trigger or update autocomplete
+            let is_trigger = c.is_alphanumeric() || c == '_'
+                || c == '.' || c == ':' || c == '-';
+            if is_trigger {
                 if let Some(ref buf) = app.editor_buffer {
                     app.editor_autocomplete = crate::autocomplete::compute_completions(
                         &buf.lines,

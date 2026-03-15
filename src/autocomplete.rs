@@ -40,9 +40,13 @@ impl AutocompleteState {
 }
 
 // extract the identifier prefix ending at byte position `col` in `line`
-pub fn word_at_cursor(line: &str, col: usize) -> (usize, String) {
+// extract the completing word and detect trigger context.
+// returns (byte offset where replacement starts, prefix to match, whether a trigger char precedes)
+pub fn word_at_cursor(line: &str, col: usize) -> (usize, String, bool) {
     let safe = col.min(line.len());
     let before = &line[..safe];
+
+    // collect trailing identifier chars
     let word: String = before
         .chars()
         .rev()
@@ -52,7 +56,15 @@ pub fn word_at_cursor(line: &str, col: usize) -> (usize, String) {
         .rev()
         .collect();
     let start = safe - word.len();
-    (start, word)
+
+    // check if a trigger character precedes the word (or is at cursor with no word)
+    let pre = &before[..start];
+    let has_trigger = pre.ends_with('.')
+        || pre.ends_with("::")
+        || pre.ends_with("->")
+        || pre.ends_with('-');
+
+    (start, word, has_trigger)
 }
 
 // build completions from identifiers in the current file + language keywords
@@ -63,9 +75,10 @@ pub fn compute_completions(
     file_path: &Path,
 ) -> Option<AutocompleteState> {
     let line = lines.get(cursor_row)?;
-    let (word_start, prefix) = word_at_cursor(line, cursor_col);
+    let (word_start, prefix, has_trigger) = word_at_cursor(line, cursor_col);
 
-    if prefix.is_empty() {
+    // need either a prefix or a trigger character
+    if prefix.is_empty() && !has_trigger {
         return None;
     }
 

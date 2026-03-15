@@ -508,6 +508,66 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                             app.scroll_offset = app.scroll_offset.saturating_add(3);
                         }
                     }
+                    MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                        if app.view_mode == tui::ViewMode::Editor {
+                            if let Some(ref mut buf) = app.editor_buffer {
+                                let size = crossterm::terminal::size().unwrap_or((80, 24));
+                                let sidebar_w: u16 = 30;
+                                let gutter_w = (buf.line_count().max(1).to_string().len() + 2) as u16;
+                                // status bar is 1 row at top
+                                let editor_y_start: u16 = 1;
+                                let editor_x_end = size.0.saturating_sub(sidebar_w);
+                                let content_cols = (editor_x_end as usize).saturating_sub(gutter_w as usize);
+
+                                if mouse.column >= gutter_w
+                                    && mouse.column < editor_x_end
+                                    && mouse.row >= editor_y_start
+                                {
+                                    let click_screen_row = (mouse.row - editor_y_start) as usize;
+                                    let click_col = (mouse.column - gutter_w) as usize;
+
+                                    // map screen row to file line, accounting for wrapping
+                                    let mut screen_row = 0usize;
+                                    let mut target_line = buf.scroll_row;
+                                    let mut wrap_offset = 0usize;
+                                    for i in buf.scroll_row..buf.lines.len() {
+                                        let lw = unicode_width::UnicodeWidthStr::width(buf.lines[i].as_str());
+                                        let rows = if lw == 0 || content_cols == 0 { 1 } else { (lw + content_cols - 1) / content_cols };
+                                        if click_screen_row < screen_row + rows {
+                                            target_line = i;
+                                            wrap_offset = click_screen_row - screen_row;
+                                            break;
+                                        }
+                                        screen_row += rows;
+                                        if screen_row > click_screen_row {
+                                            break;
+                                        }
+                                        target_line = i + 1;
+                                    }
+
+                                    if target_line < buf.lines.len() {
+                                        buf.cursor_row = target_line;
+                                        // convert visual column to byte offset
+                                        let visual_target = wrap_offset * content_cols + click_col;
+                                        let line = &buf.lines[target_line];
+                                        let mut byte_off = 0usize;
+                                        let mut vis_off = 0usize;
+                                        for ch in line.chars() {
+                                            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                                            if vis_off + w > visual_target {
+                                                break;
+                                            }
+                                            vis_off += w;
+                                            byte_off += ch.len_utf8();
+                                        }
+                                        buf.cursor_col = byte_off;
+                                        buf.desired_col = None;
+                                    }
+                                    app.editor_autocomplete = None;
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 },
                 _ => {}
