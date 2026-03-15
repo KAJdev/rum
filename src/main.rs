@@ -1094,7 +1094,7 @@ async fn ci_watch(job_id: u64, cwd: &str, tx: mpsc::UnboundedSender<tui::JobEven
 
     // wait for runs to appear (github can take a few seconds)
     let mut runs_found = false;
-    for attempt in 0..18 {
+    for attempt in 0..60 {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
