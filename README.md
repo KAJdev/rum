@@ -6,20 +6,18 @@ rum is a dual-pane TUI where one side is an AI agent that can read, write, and r
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ rum  ~/dev/project  (main)  claude-sonnet-4   ▂▃▅▂ 120 tok/s   $0.04  │
+│ rum  ~/dev/project  (main)  claude-sonnet-4   ▂▃▅▂ 120 tok/s   $0.04    │
 ├────────────────────────────────────────┬────────────────────────────────┤
-│  1  use std::path::Path;              │ › refactor auth to use jose    │
-│  2  use std::time::Instant;           │                                │
-│  3                                    │   Read src/auth/jwt.ts         │
-│  4+ use jose::jwt::JwtClaims;         │   Read src/auth/middleware.ts  │
-│  5+ use jose::jws::JsonWebSignature;  │   Edit src/auth/jwt.ts  +84   │
-│  6                                    │ ◌ editing middleware.ts...      │
-│  7  pub fn verify(token: &str) {      │                                │
-│  8      let claims = JwtClaims::new() │                                │
-│                                       │                                │
-├───────────────────────────────────────┴─────────────────────────────────┤
-│ >                                                                      │
-└────────────────────────────────────────────────────────────────────────-┘
+│  1  use std::path::Path;               │ › refactor auth to use jose    │
+│  2  use std::time::Instant;            │   Read src/auth/jwt.ts         │
+│  3                                     │   Read src/auth/middleware.ts  │
+│  4+ use jose::jwt::JwtClaims;          │   Edit src/auth/jwt.ts  +84    │
+│  5+ use jose::jws::JsonWebSignature;   │ ◌ editing middleware.ts...     │
+│  6                                     │                                │
+│  7  pub fn verify(token: &str) {       │                                │
+│  8      let claims = JwtClaims::new()  │                                │
+│                                        │                                │
+└────────────────────────────────────────┴───────────────────────────────-┘
 ```
 
 ## install
@@ -77,8 +75,6 @@ a condensed activity sidebar on the right side of the editor shows agent progres
 
 ## tools
 
-seven tools, executed in parallel when possible:
-
 | tool | what it does |
 |------|-------------|
 | **read** | read file contents (with optional line offset/limit) |
@@ -88,8 +84,6 @@ seven tools, executed in parallel when possible:
 | **explore** | spawn a read-only sub-agent to investigate a topic |
 | **web_search** | search the web via DuckDuckGo |
 | **view_file** | view and describe an image file |
-
-edits and writes show inline diffs in the chat feed. click to expand/collapse.
 
 ## keybindings
 
@@ -156,10 +150,6 @@ rum loads `AGENTS.md` and `CLAUDE.md` from every directory between the filesyste
 custom system prompts are checked in order: `.rum/SYSTEM.md`, `.pi/SYSTEM.md`, `.claude/SYSTEM.md`, `~/.config/rum/SYSTEM.md`, `~/.pi/agent/SYSTEM.md`, then the built-in default. `APPEND_SYSTEM.md` files from all locations are appended.
 
 settings (default model, thinking level) merge from `~/.config/rum/config.json` and `~/.pi/agent/settings.json`.
-
-## notifications
-
-a terminal bell fires when the agent finishes a turn. configure your terminal to show a notification, bounce the dock icon, or play a sound on bell.
 
 ## print mode
 
