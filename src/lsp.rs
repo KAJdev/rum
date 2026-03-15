@@ -925,7 +925,30 @@ impl LspManager {
             // try to resolve the command (system PATH, managed binary, npx)
             let mut resolved = resolve_command(config);
 
-            // auto-install if not found
+            // try starting with the resolved command
+            let mut started = false;
+            if let Some(ref r) = resolved {
+                match LspClient::start(config, r, &root, self.event_tx.clone()).await {
+                    Ok(client) => {
+                        let _ = self.event_tx.send(LspEvent::ServerStarted(
+                            config.name.to_string(),
+                        ));
+                        self.clients.insert(config.name.to_string(), Arc::new(client));
+                        started = true;
+                    }
+                    Err(_) => {
+                        // command exists but failed (e.g. rustup proxy shim
+                        // without the component installed). clear so we fall
+                        // through to auto-install.
+                        resolved = None;
+                    }
+                }
+            }
+            if started {
+                continue;
+            }
+
+            // auto-install if not found or if the system binary failed
             if resolved.is_none() {
                 match &config.install {
                     InstallMethod::GithubRelease { repo, asset_pattern, binary_name } => {
