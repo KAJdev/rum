@@ -2498,17 +2498,10 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
         ])
         .split(size);
 
-    // show diagnostic message if cursor is on a line with diagnostics
-    let has_diag = app.editor_buffer.as_ref().map_or(false, |buf| {
-        app.lsp_diagnostics.iter().any(|d| d.line as usize == buf.cursor_row)
-    });
-    let diag_h: u16 = if has_diag { 1 } else { 0 };
-
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                   // status bar
-            Constraint::Length(diag_h),               // diagnostic message
             Constraint::Min(3),                      // editor content
             Constraint::Length(search_h),             // search overlay
         ])
@@ -2516,34 +2509,13 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
 
     render_editor_status(frame, app, left_chunks[0]);
 
-    if has_diag {
-        if let Some(ref buf) = app.editor_buffer {
-            if let Some(diag) = app.lsp_diagnostics.iter().find(|d| d.line as usize == buf.cursor_row) {
-                let (icon, color) = match diag.severity {
-                    crate::lsp::DiagSeverity::Error => ("✗", Color::Rgb(255, 100, 100)),
-                    crate::lsp::DiagSeverity::Warning => ("⚠", YELLOW),
-                    crate::lsp::DiagSeverity::Info => ("ℹ", Color::Rgb(100, 180, 255)),
-                    crate::lsp::DiagSeverity::Hint => ("·", MUTED),
-                };
-                let msg = format!(" {} {}", icon, diag.message);
-                let max = left_chunks[1].width as usize;
-                let display = if msg.len() > max { &msg[..max] } else { &msg };
-                frame.render_widget(
-                    Paragraph::new(Span::styled(display, Style::default().fg(color)))
-                        .style(Style::default().bg(BG)),
-                    left_chunks[1],
-                );
-            }
-        }
-    }
-
     if app.editor_buffer.is_some() {
-        render_editor_content(frame, app, left_chunks[2]);
-        render_autocomplete_menu(frame, app, left_chunks[2]);
+        render_editor_content(frame, app, left_chunks[1]);
+        render_autocomplete_menu(frame, app, left_chunks[1]);
     }
 
     if has_search {
-        render_search_overlay(frame, app, left_chunks[3]);
+        render_search_overlay(frame, app, left_chunks[2]);
     }
 
     render_editor_sidebar(frame, app, hsplit[1]);
@@ -2744,6 +2716,32 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
 
             spans.extend(row_spans.iter().cloned());
 
+            let row_width: usize = row_spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+            let remaining = content_cols.saturating_sub(row_width);
+            let is_last_wrap = wrap_i == num_wraps - 1;
+
+            // inline diagnostic after end of line content (last wrap row only)
+            let mut diag_used = 0usize;
+            if is_last_wrap {
+                if let Some(d) = line_diag {
+                    let (icon, color) = match d.severity {
+                        crate::lsp::DiagSeverity::Error => (" ✗ ", Color::Rgb(255, 100, 100)),
+                        crate::lsp::DiagSeverity::Warning => (" ⚠ ", YELLOW),
+                        crate::lsp::DiagSeverity::Info => (" ℹ ", Color::Rgb(100, 180, 255)),
+                        crate::lsp::DiagSeverity::Hint => (" · ", MUTED),
+                    };
+                    if remaining > 5 {
+                        let icon_w = UnicodeWidthStr::width(icon);
+                        let msg_budget = remaining.saturating_sub(icon_w + 1);
+                        let msg: String = d.message.chars().take(msg_budget).collect();
+                        let msg_w = UnicodeWidthStr::width(msg.as_str());
+                        spans.push(Span::styled(icon, Style::default().fg(color)));
+                        spans.push(Span::styled(msg, Style::default().fg(color)));
+                        diag_used = icon_w + msg_w;
+                    }
+                }
+            }
+
             // pad to edge
             let pad_bg = if is_cursor_line {
                 Some(cursor_bg)
@@ -2751,11 +2749,10 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
                 line_bg
             };
             if let Some(bg) = pad_bg {
-                let row_width: usize = row_spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
-                let remaining = content_cols.saturating_sub(row_width);
-                if remaining > 0 {
+                let pad = remaining.saturating_sub(diag_used);
+                if pad > 0 {
                     spans.push(Span::styled(
-                        " ".repeat(remaining),
+                        " ".repeat(pad),
                         Style::default().bg(bg),
                     ));
                 }
