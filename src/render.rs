@@ -1,12 +1,14 @@
 use crate::diff::{DiffInfo, DiffLineTag};
+use crate::input::{
+    Suggestion, make_display_input, remap_cursor, slash_suggestions,
+};
 use crate::tui::{
-    self, ActivityItem, App, BackgroundJob, CachedRender, CompactStatus, DiffMarker,
-    EditorViewState, FeedState, InputState, JobStatus, LspState, QueuedItem, Suggestion,
-    SystemKind, TokenBucket, TokenState, ToolEntry, ToolStatus, ViewMode,
-    ACCENT, BAR_COLOR, BAR_STR, BAR_WIDTH, BG, BRANCH_COLOR, DIM, FG, GREEN, INPUT_BG, MUTED,
-    RED, SIDEBAR_WIDTH, SPINNER_FRAMES, SURFACE, THINKING_COLOR, TOOL_COLOR, YELLOW,
-    capitalize_tool, is_paste_placeholder, last_paragraph, make_display_input,
-    paste_display_str, paste_placeholder_index, remap_cursor, slash_suggestions,
+    ActivityItem, App, BackgroundJob, CachedRender, CompactStatus, DiffMarker,
+    JobStatus, QueuedItem,
+    SystemKind, TokenBucket, ToolEntry, ToolStatus, ViewMode,
+    ACCENT, BAR_COLOR, BG, BRANCH_COLOR, DIM, FG, GREEN, INPUT_BG, MUTED,
+    RED, SIDEBAR_WIDTH, SURFACE, THINKING_COLOR, TOOL_COLOR, YELLOW,
+    capitalize_tool, last_paragraph,
     spinner_char, strip_exit_prefix, tool_line, wrap_md_lines_with_bar, wrap_text_with_bar,
 };
 use ratatui::{
@@ -18,7 +20,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::editor::{self, EditorBuffer, SearchMode, SearchState};
+use crate::editor::{self, SearchMode};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     if app.tree_view.is_some() {

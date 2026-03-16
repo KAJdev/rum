@@ -7,6 +7,7 @@ mod commands;
 mod config;
 mod diff;
 mod editor;
+mod input;
 mod lsp;
 mod markdown;
 mod persistence;
@@ -525,8 +526,8 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                         commands::handle_tree_key(key, &mut app, &control_tx);
                         continue;
                     }
-                    match tui::handle_key_event(key, &mut app) {
-                        tui::InputAction::Submit(msg) => {
+                    match input::handle_key_event(key, &mut app) {
+                        input::InputAction::Submit(msg) => {
                             if let Some(verifier) = login_pending.take() {
                                 // the user pasted the auth code from the browser
                                 commands::handle_login_code(&msg, verifier, &mut app, login_tx.clone());
@@ -564,22 +565,22 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                                 let _ = user_tx.send(msg);
                             }
                         }
-                        tui::InputAction::Cancel => {
+                        input::InputAction::Cancel => {
                             cancel.cancel();
                             app.cancel_running();
                             // restore the last queued message to input, then drop the rest
                             app.pop_queued_message();
                             app.clear_queue();
                         }
-                        tui::InputAction::Quit => break,
-                        tui::InputAction::ScrollUp => {
+                        input::InputAction::Quit => break,
+                        input::InputAction::ScrollUp => {
                             app.feed.auto_scroll = false;
                             app.feed.scroll_offset = app.feed.scroll_offset.saturating_sub(1);
                         }
-                        tui::InputAction::ScrollDown => {
+                        input::InputAction::ScrollDown => {
                             app.feed.scroll_offset = app.feed.scroll_offset.saturating_add(1);
                         }
-                        tui::InputAction::ToggleDiff => {
+                        input::InputAction::ToggleDiff => {
                             app.toggle_diff();
                             let _ = persistence::save_settings(&persistence::RumSettings {
                                 model: Some(app.model_name().to_string()),
@@ -587,14 +588,14 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                                 diffs_expanded: Some(app.feed.diffs_expanded),
                             });
                         }
-                        tui::InputAction::PasteFromClipboard => {
+                        input::InputAction::PasteFromClipboard => {
                             if let Some(img_path) = clipboard::try_read_clipboard_image() {
                                 app.insert_text(img_path);
                                 app.input.paste_handled = true;
                             }
                             // if no image is on clipboard, bracketed paste will fire separately
                         }
-                        tui::InputAction::None => {}
+                        input::InputAction::None => {}
                     }
                 }
                 Event::Paste(text) => {
