@@ -1,24 +1,18 @@
 # rum
 
-a coding agent and editor fused into one terminal UI. built in rust.
+a coding agent you can watch think. built in rust.
 
-rum is a dual-pane TUI where one side is an AI agent that can read, write, and run commands across your codebase, and the other side is a full editor. follow mode links the two together: as the agent works through files, the editor tracks every read and edit in real time, jumping to each change with inline diff markers.
+```bash
+brew install KAJdev/rum/rum
+```
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│ rum  ~/dev/project  (main)  claude-sonnet-4   ▂▃▅▂ 120 tok/s   $0.04    │
-├────────────────────────────────────────┬────────────────────────────────┤
-│  1  use std::path::Path;               │ › refactor auth to use jose    │
-│  2  use std::time::Instant;            │   Read src/auth/jwt.ts         │
-│  3                                     │   Read src/auth/middleware.ts  │
-│  4+ use jose::jwt::JwtClaims;          │   Edit src/auth/jwt.ts  +84    │
-│  5+ use jose::jws::JsonWebSignature;   │ ◌ editing middleware.ts...     │
-│  6                                     │                                │
-│  7  pub fn verify(token: &str) {       │                                │
-│  8      let claims = JwtClaims::new()  │                                │
-│                                        │                                │
-└────────────────────────────────────────┴───────────────────────────────-┘
-```
+<!-- TODO: asciinema demo -->
+
+## why rum?
+
+rum fuses a coding agent and a code editor into one terminal. the left pane is a full editor with syntax highlighting, LSP, and fuzzy search. the right pane is the agent. follow mode links them: as the agent reads and edits files, the editor tracks every operation in real time, jumping to each change with inline diffs.
+
+you watch the agent work the way you'd watch a coworker's screen. except you can take the keyboard at any time.
 
 ## install
 
@@ -26,114 +20,52 @@ rum is a dual-pane TUI where one side is an AI agent that can read, write, and r
 # homebrew
 brew install KAJdev/rum/rum
 
-# cargo binstall (pre-built binary)
+# pre-built binary
 cargo binstall rum
 
-# cargo from source
+# from source
 cargo install --path .
 ```
 
 ## getting started
 
-run `rum` in any project directory. if you don't have credentials, it will open your browser to log in with your Anthropic account automatically -> paste the code back and you're in.
-
-you can also set `ANTHROPIC_API_KEY` in your environment if you prefer API key auth.
-
-## usage
+run `rum` in any project directory. first launch opens your browser to log in with Anthropic. you can also set `ANTHROPIC_API_KEY` if you prefer.
 
 ```bash
-# start the TUI
 rum
-
-# start with a message
 rum "add error handling to the api routes"
-
-# print mode -- streams to stdout, no TUI
 rum -p "explain this codebase"
-
-# override model or thinking level
 rum --model opus --thinking high "refactor the auth module"
-
-# different working directory
-rum -C /path/to/project
 ```
 
-## the editor
+## follow mode
 
-`Ctrl+E` switches between chat and editor. `Ctrl+P` opens a fuzzy file finder, `Ctrl+/` searches text across the project.
+`Ctrl+F`. the core of rum.
 
-### follow mode
+every file the agent touches is tracked. the editor opens each one automatically, jumps to the relevant section, and marks changes with inline diff markers. `Alt+Up/Down` walks the full history of file operations. a sidebar shows agent progress without leaving the editor.
 
-`Ctrl+F` turns on follow mode, which is the core of how rum connects the agent to the editor. every file the agent touches (reads or edits) is tracked. the editor automatically opens each file and jumps to the relevant line, `Alt+Up/Down` walks through the full history of file operations.
+## editor
 
-a condensed activity sidebar on the right side of the editor shows agent progress without needing to switch back to chat.
+`Ctrl+E` switches between chat and editor. syntax highlighting, undo/redo, mouse support. `Ctrl+P` for fuzzy file search, `Ctrl+/` for project-wide text search, `Ctrl+G` for go-to-definition.
 
-## keybindings
+LSP starts automatically for rust, typescript, python, go, and c/c++. if a server isn't installed, rum downloads it.
 
-### chat
+## tools
 
-| key | action |
-|-----|--------|
-| **Enter** | send message (queues if agent is running) |
-| **Shift+Enter** | newline |
-| **Ctrl+C** | cancel agent / clear input / quit |
-| **Escape** | cancel agent / clear input |
-| **Up/Down** | input history |
-| **Shift+Up/Down** | scroll feed |
-| **PageUp/PageDown** | scroll by page |
-| **Ctrl+O** | toggle diff expansion |
-| **Tab** | autocomplete slash commands |
-
-### editor
-
-| key | action |
-|-----|--------|
-| **Ctrl+E** | toggle chat / editor |
-| **Ctrl+F** | toggle follow mode |
-| **Ctrl+P** | fuzzy file finder |
-| **Ctrl+/** | text search across files |
-| **Ctrl+S** | save |
-| **Ctrl+Z / Ctrl+Y** | undo / redo |
-| **Ctrl+K** | delete line |
-| **Alt+Up/Down** | previous / next agent edit (follow mode) |
-| **Shift+Up/Down** | half-page scroll |
-| **PageUp/PageDown** | full page scroll |
-
-### slash commands
-
-| command | description |
-|---------|-------------|
-| `/model [name]` | switch model (opus, sonnet, haiku, etc.) |
-| `/thinking [level]` | set thinking (off, minimal, low, medium, high, xhigh) |
-| `/compact` | summarize and compress conversation context |
-| `/cd <path>` | change working directory |
-| `/new` | clear conversation and start fresh |
-| `/login` | log in with anthropic oauth |
-| `/logout` | log out |
-| `/help` | show all commands |
-| `/quit` | exit |
-
-### `!` bash commands
-
-prefix any input with `!` to run a shell command inline. output streams to the feed and is injected into context.
-
-```
-!git status
-!cargo test --lib
-```
+the agent can read, edit, write, and search files. run shell commands (foreground or background). search the web. view images. spawn read-only sub-agents for deep investigation. query LSP for definitions and diagnostics. tools run in parallel when possible.
 
 ## sessions
 
-conversations are saved per-directory and restored on restart, including the full activity feed and input history. use `/compact` to summarize long conversations and free up context. the header shows context usage.
+conversations persist per-directory and restore on restart. `/compact` summarizes long conversations to free context. `/tree` opens a conversation branch navigator for forking and exploring different approaches.
 
-## context files
+## context
 
-rum loads `AGENTS.md` and `CLAUDE.md` from every directory between the filesystem root and your cwd, plus global config dirs (`~/.config/rum/`, `~/.pi/agent/`, `~/.claude/`).
-
-custom system prompts are checked in order: `.rum/SYSTEM.md`, `.pi/SYSTEM.md`, `.claude/SYSTEM.md`, `~/.config/rum/SYSTEM.md`, `~/.pi/agent/SYSTEM.md`, then the built-in default. `APPEND_SYSTEM.md` files from all locations are appended.
-
-settings (default model, thinking level) merge from `~/.config/rum/config.json` and `~/.pi/agent/settings.json`.
+rum loads `AGENTS.md` and `CLAUDE.md` from every directory between the filesystem root and your cwd, plus `~/.config/rum/`, `~/.pi/agent/`, and `~/.claude/`. custom system prompts via `SYSTEM.md`. settings merge from config files.
 
 ## print mode
 
-`rum -p` streams to stdout without the TUI. tool calls and thinking go to stderr. prints a summary with tokens, cost, and timing at the end.
+`rum -p` streams to stdout without the TUI. tool calls and thinking go to stderr. summary with tokens, cost, and timing at the end. useful for scripts and CI.
+
+## license
+
+MIT
