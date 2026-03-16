@@ -3,7 +3,8 @@ use std::time::Instant;
 
 use crate::agent::AgentEvent;
 use crate::markdown::MarkdownRenderer;
-use crate::tools::{DiffInfo, DiffLineTag, ToolResult};
+use crate::diff::{DiffInfo, DiffLineTag};
+use crate::tools::ToolResult;
 
 const DIM: &str = "\x1b[38;5;242m";
 const RED: &str = "\x1b[31m";
