@@ -277,9 +277,36 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         let _ = user_tx.send(msg);
     }
 
+    // debounce LSP did_change notifications so we don't serialize the
+    // entire buffer on every keystroke. fires 200ms after the last edit.
+    let mut lsp_change_gen: u64 = 0;
+    let mut lsp_change_deadline: Option<std::time::Instant> = None;
+
     loop {
         app.tick_rate();
         terminal.draw(&mut app)?;
+
+        // send debounced LSP did_change if the deadline has passed
+        if let Some(deadline) = lsp_change_deadline {
+            if std::time::Instant::now() >= deadline {
+                lsp_change_deadline = None;
+                if let Some(ref buf) = app.editor.buffer {
+                    if buf.generation != lsp_change_gen {
+                        lsp_change_gen = buf.generation;
+                        let path = buf.path.clone();
+                        let text = buf.lines.join("\n");
+                        app.lsp.pending.push(tui::LspNotify::Change(path, text));
+                    }
+                }
+            }
+        }
+
+        // schedule LSP did_change when the buffer has been edited
+        if let Some(ref buf) = app.editor.buffer {
+            if buf.generation != lsp_change_gen {
+                lsp_change_deadline = Some(std::time::Instant::now() + Duration::from_millis(200));
+            }
+        }
 
         loop {
             match agent_rx.try_recv() {
