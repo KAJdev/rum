@@ -54,10 +54,6 @@ impl SessionTree {
         &self.branches[self.active].messages
     }
 
-    pub fn active_messages_mut(&mut self) -> &mut Vec<Message> {
-        &mut self.branches[self.active].messages
-    }
-
     // create a new branch forking from the given branch at the given message index.
     // copies messages[0..=msg_idx] into the new branch and switches to it.
     pub fn fork(&mut self, from_branch: usize, msg_idx: usize) -> usize {

@@ -518,7 +518,11 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
             }
         }
 
-        if event::poll(Duration::from_millis(16))? {
+        // drain all pending input events before the next render so
+        // rapid keystrokes are batched into a single frame
+        let mut poll_timeout = Duration::from_millis(16);
+        while event::poll(poll_timeout)? {
+            poll_timeout = Duration::ZERO;
             match event::read()? {
                 Event::Key(key) => {
                     // tree view intercepts all key events
@@ -572,7 +576,10 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                             app.pop_queued_message();
                             app.clear_queue();
                         }
-                        input::InputAction::Quit => break,
+                        input::InputAction::Quit => {
+                            app.should_quit = true;
+                            break;
+                        }
                         input::InputAction::ScrollUp => {
                             app.feed.auto_scroll = false;
                             app.feed.scroll_offset = app.feed.scroll_offset.saturating_sub(1);
@@ -715,6 +722,12 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         if app.should_quit {
             break;
         }
+    }
+
+    // graceful LSP shutdown before exiting
+    {
+        let mgr = lsp_manager.lock().await;
+        mgr.shutdown_all().await;
     }
 
     terminal.restore()?;

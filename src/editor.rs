@@ -305,15 +305,6 @@ impl EditorBuffer {
         self.dirty = true;
     }
 
-    pub fn delete_to_line_end(&mut self) {
-        let len = self.lines[self.cursor_row].len();
-        if self.cursor_col >= len {
-            return;
-        }
-        self.save_undo();
-        self.lines[self.cursor_row].truncate(self.cursor_col);
-        self.dirty = true;
-    }
 
     pub fn page_up(&mut self, viewport_height: usize) {
         if self.desired_col.is_none() {
@@ -610,7 +601,8 @@ impl Highlighter {
         // plain text to avoid blocking the frame. the frontier will catch
         // up within a few frames and subsequent renders will be highlighted.
         if start.saturating_sub(resume_line) > MAX_CATCHUP {
-            let plain_style = syntect::highlighting::Style::default();
+            let fg = self.theme.settings.foreground.unwrap_or(syntect::highlighting::Color { r: 204, g: 204, b: 204, a: 255 });
+            let plain_style = syntect::highlighting::Style { foreground: fg, ..syntect::highlighting::Style::default() };
             let syntax_name = syntax.name.clone();
             self.advance_frontier(lines, &syntax_name);
             return (start..end)
@@ -651,7 +643,8 @@ impl Highlighter {
                         .collect();
 
                     let line = if spans.is_empty() {
-                        vec![(syntect::highlighting::Style::default(), String::new())]
+                        let fg = self.theme.settings.foreground.unwrap_or(syntect::highlighting::Color { r: 204, g: 204, b: 204, a: 255 });
+                        vec![(syntect::highlighting::Style { foreground: fg, ..syntect::highlighting::Style::default() }, String::new())]
                     } else {
                         spans
                     };

@@ -34,7 +34,6 @@ struct ServerConfig {
     args: &'static [&'static str],
     root_markers: &'static [&'static str],
     extensions: &'static [&'static str],
-    language_id: &'static str,
     // how to auto-install this server if not found on PATH
     install: InstallMethod,
 }
@@ -75,7 +74,6 @@ const SERVERS: &[ServerConfig] = &[
         args: &[],
         root_markers: &["Cargo.toml"],
         extensions: &["rs"],
-        language_id: "rust",
         install: InstallMethod::GithubRelease {
             repo: "rust-lang/rust-analyzer",
             asset_pattern: ra_asset,
@@ -88,7 +86,6 @@ const SERVERS: &[ServerConfig] = &[
         args: &["--stdio"],
         root_markers: &["tsconfig.json", "jsconfig.json", "package.json"],
         extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
-        language_id: "typescript",
         install: InstallMethod::Npx {
             package: "typescript-language-server",
             args: &["--stdio"],
@@ -100,7 +97,6 @@ const SERVERS: &[ServerConfig] = &[
         args: &["--stdio"],
         root_markers: &["pyproject.toml", "setup.py", "requirements.txt", "pyrightconfig.json"],
         extensions: &["py", "pyi"],
-        language_id: "python",
         install: InstallMethod::Npx {
             package: "pyright",
             args: &["--langserver", "--stdio"],
@@ -112,7 +108,6 @@ const SERVERS: &[ServerConfig] = &[
         args: &["serve"],
         root_markers: &["go.mod"],
         extensions: &["go"],
-        language_id: "go",
         install: InstallMethod::None,
     },
     ServerConfig {
@@ -121,7 +116,6 @@ const SERVERS: &[ServerConfig] = &[
         args: &[],
         root_markers: &["compile_commands.json", "CMakeLists.txt", "Makefile"],
         extensions: &["c", "cpp", "cc", "cxx", "h", "hpp", "hxx"],
-        language_id: "c",
         install: InstallMethod::None,
     },
 ];
@@ -420,6 +414,7 @@ pub enum LspEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DiagnosticInfo {
     pub line: u32,
     pub col: u32,
@@ -452,12 +447,10 @@ pub struct LspClient {
     // document version tracker
     doc_versions: Arc<Mutex<HashMap<String, AtomicI32>>>,
     initialized: Arc<Notify>,
-    pub server_name: String,
 }
 
 impl LspClient {
-    pub async fn start(
-        config: &ServerConfig,
+    async fn start(
         resolved: &ResolvedCommand,
         root_path: &Path,
         event_tx: mpsc::UnboundedSender<LspEvent>,
@@ -508,7 +501,6 @@ impl LspClient {
             }
         });
 
-        let server_name = config.name.to_string();
         let root_uri = path_to_uri(root_path)
             .unwrap_or_else(|| "file:///".parse().unwrap());
 
@@ -521,7 +513,6 @@ impl LspClient {
             root_uri,
             doc_versions: Arc::new(Mutex::new(HashMap::new())),
             initialized,
-            server_name,
         };
 
         // perform initialization handshake
@@ -693,6 +684,7 @@ impl LspClient {
         .await;
     }
 
+    #[allow(dead_code)]
     pub async fn did_close(&self, uri: &Uri) {
         self.notify::<notification::DidCloseTextDocument>(DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -792,7 +784,7 @@ async fn writer_loop(
 async fn reader_loop(
     stdout: tokio::process::ChildStdout,
     pending: Arc<Mutex<HashMap<u64, PendingRequest>>>,
-    server_capabilities: Arc<tokio::sync::OnceCell<ServerCapabilities>>,
+    _server_capabilities: Arc<tokio::sync::OnceCell<ServerCapabilities>>,
     _initialized: Arc<Notify>,
     event_tx: mpsc::UnboundedSender<LspEvent>,
 ) {
@@ -976,7 +968,7 @@ impl LspManager {
                 None => continue,
             };
 
-            match LspClient::start(config, &resolved, &root, self.event_tx.clone()).await {
+            match LspClient::start(&resolved, &root, self.event_tx.clone()).await {
                 Ok(client) => {
                     let _ = self.event_tx.send(LspEvent::ServerStarted(
                         config.name.to_string(),

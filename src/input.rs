@@ -745,6 +745,8 @@ fn handle_editor_key(
     shift: bool,
     super_key: bool,
 ) -> InputAction {
+    let gen_before = app.editor.buffer.as_ref().map(|b| b.generation);
+
     // search overlay intercepts input when active
     if app.editor.search.is_some() {
         return handle_search_key(key, app, ctrl);
@@ -1114,6 +1116,15 @@ fn handle_editor_key(
     if let Some(ref mut buf) = app.editor.buffer {
         let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
         buf.ensure_cursor_visible(h.saturating_sub(2)); // minus status bar
+    }
+
+    // notify the language server when buffer content changes
+    if let Some(ref buf) = app.editor.buffer {
+        if Some(buf.generation) != gen_before {
+            let path = buf.path.clone();
+            let text = buf.lines.join("\n");
+            app.lsp.pending.push(crate::tui::LspNotify::Change(path, text));
+        }
     }
 
     InputAction::None
