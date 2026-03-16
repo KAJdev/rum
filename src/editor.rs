@@ -512,6 +512,7 @@ impl Highlighter {
         count: usize,
     ) -> Vec<HighlightedLine> {
         let path_changed = self.cache_path.as_deref() != Some(path);
+        let mut edited_this_frame = false;
         if path_changed {
             // different file: full invalidation
             self.checkpoints.clear();
@@ -526,6 +527,7 @@ impl Highlighter {
             // only discard caches from the edited line onward since
             // parse state flows forward through the file.
             self.cache_generation = generation;
+            edited_this_frame = true;
             if let Some(from) = dirty_from {
                 // remove checkpoints at or after the edit point
                 self.checkpoints.retain(|(line, _, _)| *line < from);
@@ -568,8 +570,10 @@ impl Highlighter {
 
         // fast path: all requested lines are already cached
         if (start..end).all(|i| self.line_cache[i].is_some()) {
-            // still advance the frontier even when viewport is cached
-            if self.parse_frontier < lines.len() {
+            // advance the frontier in the background, but not during
+            // active editing where it would waste cycles re-parsing
+            // from the reset point every keystroke
+            if !edited_this_frame && self.parse_frontier < lines.len() {
                 let syntax = self
                     .syntax_set
                     .find_syntax_for_file(path)
@@ -663,12 +667,12 @@ impl Highlighter {
             }
         }
 
-        // advance the background parse frontier to build dense checkpoints
-        // across the file. this runs a budgeted number of lines per call so
-        // scrolling to distant uncached areas only needs to catch up from
-        // a nearby checkpoint instead of from line 0.
-        let syntax_name = syntax.name.clone();
-        self.advance_frontier(lines, &syntax_name);
+        // advance the frontier in the background, but skip during active
+        // editing to avoid re-parsing hundreds of lines every keystroke
+        if !edited_this_frame {
+            let syntax_name = syntax.name.clone();
+            self.advance_frontier(lines, &syntax_name);
+        }
 
         result
     }
