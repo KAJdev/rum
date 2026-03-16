@@ -11,6 +11,7 @@ mod lsp;
 mod markdown;
 mod persistence;
 mod print;
+mod render;
 mod tools;
 mod tree;
 mod tui;
