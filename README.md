@@ -10,7 +10,7 @@ brew install KAJdev/rum/rum
 
 ## why rum?
 
-rum fuses a coding agent and a code editor into one terminal. the left pane is a full editor with syntax highlighting, LSP, and fuzzy search. the right pane is the agent. follow mode links them: as the agent reads and edits files, the editor tracks every operation in real time, jumping to each change with inline diffs.
+rum fuses a coding agent and a code editor into one terminal. one view is the agent chat feed. the other is a full editor with syntax highlighting, LSP, and fuzzy search. follow mode links them: as the agent reads and edits files, the editor tracks every operation in real time, jumping to each change with inline diffs. a sidebar on the editor shows agent progress without switching views.
 
 you watch the agent work the way you'd watch a coworker's screen. except you can take the keyboard at any time.
 
@@ -42,7 +42,7 @@ rum --model opus --thinking high "refactor the auth module"
 
 `Ctrl+F`. the core of rum.
 
-every file the agent touches is tracked. the editor opens each one automatically, jumps to the relevant section, and marks changes with inline diff markers. `Alt+Up/Down` walks the full history of file operations. a sidebar shows agent progress without leaving the editor.
+every file the agent touches is tracked. the editor opens each one automatically, jumps to the relevant section, and marks changes with inline diff markers. `Alt+Up/Down` walks the full history of file operations.
 
 ## editor
 
