@@ -431,7 +431,14 @@ impl EditorBuffer {
 // highlighted lines are cached individually so scrolling by a few lines
 // reuses most of the previous frame's work.
 
-const CHECKPOINT_INTERVAL: usize = 100;
+const CHECKPOINT_INTERVAL: usize = 50;
+
+// lines to pre-parse per frame when advancing the background frontier
+const FRONTIER_BUDGET: usize = 500;
+
+// if the nearest checkpoint is further than this many lines from the viewport,
+// return plain (unhighlighted) text instead of blocking the frame.
+const MAX_CATCHUP: usize = 200;
 
 pub type HighlightedLine = Vec<(syntect::highlighting::Style, String)>;
 
@@ -444,6 +451,11 @@ pub struct Highlighter {
     checkpoints: Vec<(usize, ParseState, ScopeStack)>,
     // per-line highlight cache. valid only for the current (path, generation).
     line_cache: Vec<Option<HighlightedLine>>,
+    // background frontier: furthest line parsed contiguously from 0.
+    // advances each frame to build dense checkpoints without blocking rendering.
+    parse_frontier: usize,
+    frontier_parse_state: Option<ParseState>,
+    frontier_scope_stack: Option<ScopeStack>,
 }
 
 impl Highlighter {
@@ -463,6 +475,9 @@ impl Highlighter {
             cache_generation: 0,
             checkpoints: Vec::new(),
             line_cache: Vec::new(),
+            parse_frontier: 0,
+            frontier_parse_state: None,
+            frontier_scope_stack: None,
         }
     }
 
@@ -471,6 +486,9 @@ impl Highlighter {
         self.line_cache.clear();
         self.cache_path = None;
         self.cache_generation = 0;
+        self.parse_frontier = 0;
+        self.frontier_parse_state = None;
+        self.frontier_scope_stack = None;
     }
 
     pub fn highlight_lines(
@@ -488,6 +506,9 @@ impl Highlighter {
             self.line_cache.clear();
             self.cache_path = Some(path.to_path_buf());
             self.cache_generation = generation;
+            self.parse_frontier = 0;
+            self.frontier_parse_state = None;
+            self.frontier_scope_stack = None;
         }
 
         // grow line_cache to cover the file
@@ -499,6 +520,17 @@ impl Highlighter {
 
         // fast path: all requested lines are already cached
         if (start..end).all(|i| self.line_cache[i].is_some()) {
+            // still advance the frontier even when viewport is cached
+            if self.parse_frontier < lines.len() {
+                let syntax = self
+                    .syntax_set
+                    .find_syntax_for_file(path)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+                let syntax_name = syntax.name.clone();
+                self.advance_frontier(lines, &syntax_name);
+            }
             return (start..end)
                 .map(|i| self.line_cache[i].as_ref().unwrap().clone())
                 .collect();
@@ -522,6 +554,21 @@ impl Highlighter {
             }
         };
 
+        // if the nearest checkpoint is too far behind the viewport, return
+        // plain text to avoid blocking the frame. the frontier will catch
+        // up within a few frames and subsequent renders will be highlighted.
+        if start.saturating_sub(resume_line) > MAX_CATCHUP {
+            let plain_style = syntect::highlighting::Style::default();
+            let syntax_name = syntax.name.clone();
+            self.advance_frontier(lines, &syntax_name);
+            return (start..end)
+                .map(|i| vec![(plain_style, lines[i].clone())])
+                .collect();
+        }
+
+        // hoist the theme highlighter outside the per-line loop
+        let highlighter = syntect::highlighting::Highlighter::new(&self.theme);
+
         let mut result = Vec::with_capacity(count);
 
         for i in resume_line..end {
@@ -543,7 +590,6 @@ impl Highlighter {
                 let hl_line = if let Some(ref cached) = self.line_cache[i] {
                     cached.clone()
                 } else {
-                    let highlighter = syntect::highlighting::Highlighter::new(&self.theme);
                     let mut hl_state = syntect::highlighting::HighlightState::new(&highlighter, scope_stack.clone());
                     let ranges = syntect::highlighting::RangedHighlightIterator::new(&mut hl_state, &ops, &line_with_nl, &highlighter);
 
@@ -569,7 +615,61 @@ impl Highlighter {
             }
         }
 
+        // advance the background parse frontier to build dense checkpoints
+        // across the file. this runs a budgeted number of lines per call so
+        // scrolling to distant uncached areas only needs to catch up from
+        // a nearby checkpoint instead of from line 0.
+        let syntax_name = syntax.name.clone();
+        self.advance_frontier(lines, &syntax_name);
+
         result
+    }
+
+    // pre-parse lines from the frontier to build checkpoints without
+    // computing highlight spans. runs up to FRONTIER_BUDGET lines per call.
+    fn advance_frontier(
+        &mut self,
+        lines: &[String],
+        syntax_name: &str,
+    ) {
+        if self.parse_frontier >= lines.len() {
+            return;
+        }
+
+        let syntax = self
+            .syntax_set
+            .find_syntax_by_name(syntax_name)
+            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+
+        let mut parse_state = self.frontier_parse_state.take()
+            .unwrap_or_else(|| ParseState::new(syntax));
+        let mut scope_stack = self.frontier_scope_stack.take()
+            .unwrap_or_else(ScopeStack::new);
+
+        let budget_end = (self.parse_frontier + FRONTIER_BUDGET).min(lines.len());
+
+        for i in self.parse_frontier..budget_end {
+            let line_with_nl = format!("{}\n", lines[i]);
+            let ops = parse_state
+                .parse_line(&line_with_nl, &self.syntax_set)
+                .unwrap_or_default();
+
+            if i > 0 && i % CHECKPOINT_INTERVAL == 0 {
+                let cp_idx = self.checkpoints.partition_point(|(line, _, _)| *line < i);
+                let already = cp_idx < self.checkpoints.len() && self.checkpoints[cp_idx].0 == i;
+                if !already {
+                    self.checkpoints.insert(cp_idx, (i, parse_state.clone(), scope_stack.clone()));
+                }
+            }
+
+            for (_, op) in &ops {
+                scope_stack.apply(op).ok();
+            }
+        }
+
+        self.parse_frontier = budget_end;
+        self.frontier_parse_state = Some(parse_state);
+        self.frontier_scope_stack = Some(scope_stack);
     }
 }
 
