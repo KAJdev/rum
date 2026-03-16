@@ -168,7 +168,7 @@ fn slash_suggestions(input: &str) -> Vec<Suggestion> {
 
 // tokens accumulated in a single time bucket, broken down by type
 #[derive(Clone, Default)]
-struct TokenBucket {
+pub(crate) struct TokenBucket {
     text: u32,
     thinking: u32,
     tool: u32,
@@ -187,7 +187,7 @@ const BAR_STR: &str = "\u{2502} ";
 const BAR_WIDTH: u16 = 2;
 
 #[derive(Debug, Clone)]
-enum ActivityItem {
+pub(crate) enum ActivityItem {
     // thinking text from the model, shown dim/italic
     Thinking(String),
     // text output from the model, rendered as markdown with bar prefix
@@ -203,7 +203,7 @@ enum ActivityItem {
 }
 
 #[derive(Debug, Clone)]
-enum CompactStatus {
+pub(crate) enum CompactStatus {
     Running,
     Done(String),
     Cancelled,
@@ -282,7 +282,7 @@ pub enum JobEvent {
 }
 
 #[derive(Debug, Clone)]
-struct ToolEntry {
+pub(crate) struct ToolEntry {
     name: String,
     // argument portion (path, command, etc.) shown after the tool label
     arg: String,
@@ -294,7 +294,7 @@ struct ToolEntry {
 }
 
 #[derive(Debug, Clone)]
-enum ToolStatus {
+pub(crate) enum ToolStatus {
     Running,
     // exit_code is Some for bash commands
     Complete { exit_code: Option<i32> },
@@ -308,7 +308,7 @@ pub enum ViewMode {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum DiffMarker {
+pub(crate) enum DiffMarker {
     Insert,
     // line immediately after a deleted block
     DeleteBoundary,
@@ -318,7 +318,7 @@ enum DiffMarker {
 // invalidated when content length, terminal width, expand state, or
 // tool status changes.
 #[derive(Clone, Default)]
-struct CachedRender {
+pub(crate) struct CachedRender {
     lines: Vec<Line<'static>>,
     content_len: usize,
     width: u16,
@@ -326,95 +326,113 @@ struct CachedRender {
     status_tag: u8,
 }
 
-pub struct App {
-    input: String,
-    cursor_pos: usize,
-    activity: Vec<ActivityItem>,
-    // index into activity where the current login flow started; used to
-    // wipe login messages on success so only the result remains
-    login_activity_start: Option<usize>,
-    pub current_message: Option<String>,
-    pub queued_messages: Vec<QueuedItem>,
-    // summed across all api calls (for cost calculation)
-    total_input: u32,
-    total_output: u32,
-    total_cache_read: u32,
-    total_cache_creation: u32,
-    // from the most recent api call (for context window display).
-    // each call's input_tokens already includes the full conversation
-    // history, so these reflect actual context window usage.
-    last_input: u32,
-    last_output: u32,
-    context_limit: u32,
-    rate_samples: Vec<TokenBucket>,
-    rate_bucket: TokenBucket,
-    last_sample: Instant,
-    pub is_running: bool,
-    pub should_quit: bool,
-    pub scroll_offset: u16,
-    // when true, viewport follows new content to the bottom
-    pub auto_scroll: bool,
-    pub diffs_expanded: bool,
-    // set after TurnComplete so the next text/thinking block always starts fresh
-    // rather than appending to the last item from the previous turn
-    new_turn: bool,
-    // multi-line or long pastes are stored here; the input string holds a single
+pub struct InputState {
+    pub text: String,
+    pub cursor_pos: usize,
+    // multi-line or long pastes stored here; the text string holds a single
     // placeholder char (private use area \u{E000}+index) per chunk
-    paste_chunks: Vec<String>,
-    model_name: String,
-    thinking_level: String,
-    cwd: String,
-    git_branch: Option<String>,
-    current_tool_input: String,
-    start_time: Option<Instant>,
-    // cached terminal width for manual line wrapping
-    term_width: u16,
-    // animation frame counter, incremented every render tick
-    spin_frame: u64,
-    // per-item cache of rendered lines for the activity feed
-    activity_render_cache: Vec<CachedRender>,
-    // slash command tab-completion state
-    slash_prefix: Option<String>,
-    slash_selected: Option<usize>,
-    // input history: previously sent messages, navigated with up/down
-    input_history: Vec<String>,
-    input_history_pos: Option<usize>,
-    input_draft: String,
+    pub paste_chunks: Vec<String>,
+    pub history: Vec<String>,
+    pub history_pos: Option<usize>,
+    pub draft: String,
     // set when PasteFromClipboard already handled an image this tick,
     // so the subsequent Event::Paste("") doesn't duplicate it
     pub paste_handled: bool,
+    // slash command tab-completion state
+    pub slash_prefix: Option<String>,
+    pub slash_selected: Option<usize>,
+}
+
+pub struct FeedState {
+    pub items: Vec<ActivityItem>,
+    // per-item cache of rendered lines
+    pub render_cache: Vec<CachedRender>,
+    // index where the current login flow started; used to
+    // wipe login messages on success so only the result remains
+    pub login_activity_start: Option<usize>,
+    pub scroll_offset: u16,
+    // when true, viewport follows new content to the bottom
+    pub auto_scroll: bool,
+    // set after TurnComplete so the next text/thinking block always starts fresh
+    pub new_turn: bool,
+    pub diffs_expanded: bool,
+}
+
+pub struct TokenState {
+    // summed across all api calls (for cost calculation)
+    pub total_input: u32,
+    pub total_output: u32,
+    pub total_cache_read: u32,
+    pub total_cache_creation: u32,
+    // from the most recent api call (for context window display).
+    // each call's input_tokens already includes the full conversation
+    // history, so these reflect actual context window usage.
+    pub last_input: u32,
+    pub last_output: u32,
+    pub context_limit: u32,
+    pub rate_samples: Vec<TokenBucket>,
+    pub rate_bucket: TokenBucket,
+    pub last_sample: Instant,
+    pub start_time: Option<Instant>,
+}
+
+pub struct EditorViewState {
+    pub mode: ViewMode,
+    pub buffer: Option<EditorBuffer>,
+    pub search: Option<SearchState>,
+    pub autocomplete: Option<crate::autocomplete::AutocompleteState>,
+    pub follow_mode: bool,
+    pub agent_edits: Vec<AgentEdit>,
+    pub agent_edit_index: usize,
+    // maps line number (0-indexed) to diff tag for follow mode highlighting
+    pub diff_markers: std::collections::HashMap<usize, DiffMarker>,
+    pub highlighter: Option<editor::Highlighter>,
+}
+
+pub struct LspState {
+    pub manager: Option<std::sync::Arc<tokio::sync::Mutex<crate::lsp::LspManager>>>,
+    // diagnostics for the currently open file, cached from LspManager
+    pub diagnostics: Vec<crate::lsp::DiagnosticInfo>,
+    // queued LSP notifications (processed async in main loop)
+    pub pending: Vec<LspNotify>,
+    // timestamp to check for diagnostics after agent turn completes
+    pub diag_check_at: Option<std::time::Instant>,
+    // pending completion request (path, line, character)
+    pub completion_request: Option<(std::path::PathBuf, u32, u32)>,
+    // pending goto-definition request (path, line, character)
+    pub goto_request: Option<(std::path::PathBuf, u32, u32)>,
+}
+
+pub struct App {
+    pub input: InputState,
+    pub feed: FeedState,
+    pub tokens: TokenState,
+    pub editor: EditorViewState,
+    pub lsp: LspState,
+    pub current_message: Option<String>,
+    pub queued_messages: Vec<QueuedItem>,
+    pub is_running: bool,
+    pub should_quit: bool,
+    pub model_name: String,
+    pub thinking_level: String,
+    pub cwd: String,
+    pub git_branch: Option<String>,
+    // accumulated tool input json for the current streaming tool call
+    current_tool_input: String,
+    // cached terminal width for manual line wrapping
+    pub term_width: u16,
+    // animation frame counter, incremented every render tick
+    pub spin_frame: u64,
     // channel for injecting queued messages into a running turn
-    inject_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub inject_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     // background jobs shown in the bottom status bar
     pub background_jobs: Vec<BackgroundJob>,
     pub next_job_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
     // set when a git push is detected; main.rs reads and clears this to spawn CI watch
     pub pending_ci_watch: Option<String>,
-    // editor mode state
-    pub view_mode: ViewMode,
-    pub editor_buffer: Option<EditorBuffer>,
-    pub editor_search: Option<SearchState>,
-    pub editor_autocomplete: Option<crate::autocomplete::AutocompleteState>,
-    pub follow_mode: bool,
-    pub agent_edits: Vec<AgentEdit>,
-    pub agent_edit_index: usize,
-    // maps line number (0-indexed) to diff tag for follow mode highlighting
-    diff_markers: std::collections::HashMap<usize, DiffMarker>,
-    highlighter: Option<editor::Highlighter>,
     // session tree for conversation branching
     pub session_tree: crate::persistence::SessionTree,
     pub tree_view: Option<crate::tree::TreeView>,
-    pub lsp: Option<std::sync::Arc<tokio::sync::Mutex<crate::lsp::LspManager>>>,
-    // diagnostics for the currently open file, cached from LspManager
-    pub lsp_diagnostics: Vec<crate::lsp::DiagnosticInfo>,
-    // queued LSP notifications (processed async in main loop)
-    pub lsp_pending: Vec<LspNotify>,
-    // timestamp to check for LSP diagnostics after agent turn completes
-    pub diag_check_at: Option<std::time::Instant>,
-    // pending LSP completion request (path, line, character)
-    pub lsp_completion_request: Option<(std::path::PathBuf, u32, u32)>,
-    // pending goto-definition request (path, line, character)
-    pub lsp_goto_request: Option<(std::path::PathBuf, u32, u32)>,
 }
 
 #[derive(Debug)]
@@ -429,65 +447,75 @@ impl App {
         let context_limit = guess_context_limit(model_name);
         let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
         Self {
-            input: String::new(),
-            cursor_pos: 0,
-            activity: Vec::new(),
-            login_activity_start: None,
+            input: InputState {
+                text: String::new(),
+                cursor_pos: 0,
+                paste_chunks: Vec::new(),
+                history: Vec::new(),
+                history_pos: None,
+                draft: String::new(),
+                paste_handled: false,
+                slash_prefix: None,
+                slash_selected: None,
+            },
+            feed: FeedState {
+                items: Vec::new(),
+                render_cache: Vec::new(),
+                login_activity_start: None,
+                scroll_offset: 0,
+                auto_scroll: true,
+                new_turn: false,
+                diffs_expanded: true,
+            },
+            tokens: TokenState {
+                total_input: 0,
+                total_output: 0,
+                total_cache_read: 0,
+                total_cache_creation: 0,
+                last_input: 0,
+                last_output: 0,
+                context_limit,
+                rate_samples: Vec::new(),
+                rate_bucket: TokenBucket::default(),
+                last_sample: Instant::now(),
+                start_time: None,
+            },
+            editor: EditorViewState {
+                mode: ViewMode::Chat,
+                buffer: None,
+                search: None,
+                autocomplete: None,
+                follow_mode: false,
+                agent_edits: Vec::new(),
+                agent_edit_index: 0,
+                diff_markers: std::collections::HashMap::new(),
+                highlighter: None,
+            },
+            lsp: LspState {
+                manager: None,
+                diagnostics: Vec::new(),
+                pending: Vec::new(),
+                diag_check_at: None,
+                completion_request: None,
+                goto_request: None,
+            },
             current_message: None,
             queued_messages: Vec::new(),
-            total_input: 0,
-            total_output: 0,
-            total_cache_read: 0,
-            total_cache_creation: 0,
-            last_input: 0,
-            last_output: 0,
-            context_limit,
-            rate_samples: Vec::new(),
-            rate_bucket: TokenBucket::default(),
-            last_sample: Instant::now(),
             is_running: false,
             should_quit: false,
-            scroll_offset: 0,
-            auto_scroll: true,
-            diffs_expanded: true,
-            new_turn: false,
-            paste_chunks: Vec::new(),
             model_name: model_name.to_string(),
             thinking_level: thinking_level.to_string(),
             cwd: cwd.to_string(),
             git_branch: detect_git_branch(cwd),
             current_tool_input: String::new(),
-            start_time: None,
             term_width,
             spin_frame: 0,
-            activity_render_cache: Vec::new(),
-            slash_prefix: None,
-            slash_selected: None,
-            input_history: Vec::new(),
-            input_history_pos: None,
-            input_draft: String::new(),
-            paste_handled: false,
             inject_tx: None,
             background_jobs: Vec::new(),
             next_job_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pending_ci_watch: None,
-            view_mode: ViewMode::Chat,
-            editor_buffer: None,
-            editor_search: None,
-            editor_autocomplete: None,
-            follow_mode: false,
-            agent_edits: Vec::new(),
-            agent_edit_index: 0,
-            diff_markers: std::collections::HashMap::new(),
-            highlighter: None,
             session_tree: crate::persistence::SessionTree::new(),
             tree_view: None,
-            lsp: None,
-            lsp_diagnostics: Vec::new(),
-            lsp_pending: Vec::new(),
-            diag_check_at: None,
-            lsp_completion_request: None,
-            lsp_goto_request: None,
         }
     }
 
@@ -497,9 +525,9 @@ impl App {
 
     // fire an async LSP completion request for the current cursor position
     pub fn request_lsp_completion(&mut self) {
-        if self.lsp.is_some() {
-            if let Some(ref buf) = self.editor_buffer {
-                self.lsp_completion_request = Some((
+        if self.lsp.manager.is_some() {
+            if let Some(ref buf) = self.editor.buffer {
+                self.lsp.completion_request = Some((
                     buf.path.clone(),
                     buf.cursor_row as u32,
                     buf.cursor_col as u32,
@@ -511,12 +539,12 @@ impl App {
     pub fn tick_rate(&mut self) {
         self.spin_frame = self.spin_frame.wrapping_add(1);
         let now = Instant::now();
-        if now.duration_since(self.last_sample).as_millis() >= 2000 {
-            self.rate_samples.push(self.rate_bucket.clone());
-            self.rate_bucket = TokenBucket::default();
-            self.last_sample = now;
-            if self.rate_samples.len() > 120 {
-                self.rate_samples.remove(0);
+        if now.duration_since(self.tokens.last_sample).as_millis() >= 2000 {
+            self.tokens.rate_samples.push(self.tokens.rate_bucket.clone());
+            self.tokens.rate_bucket = TokenBucket::default();
+            self.tokens.last_sample = now;
+            if self.tokens.rate_samples.len() > 120 {
+                self.tokens.rate_samples.remove(0);
             }
         }
         // refresh terminal width and git branch periodically
@@ -532,45 +560,45 @@ impl App {
         match event {
             AgentEvent::Thinking(t) => {
                 let approx = (t.len() as u32 / 4).max(1);
-                self.rate_bucket.thinking += approx;
-                if !self.new_turn {
-                    if let Some(ActivityItem::Thinking(ref mut s)) = self.activity.last_mut() {
+                self.tokens.rate_bucket.thinking += approx;
+                if !self.feed.new_turn {
+                    if let Some(ActivityItem::Thinking(ref mut s)) = self.feed.items.last_mut() {
                         s.push_str(&t);
                         return;
                     }
                 }
-                self.new_turn = false;
-                self.activity.push(ActivityItem::Thinking(t));
+                self.feed.new_turn = false;
+                self.feed.items.push(ActivityItem::Thinking(t));
             }
             AgentEvent::Text(t) => {
                 let approx = (t.len() as u32 / 4).max(1);
-                self.rate_bucket.text += approx;
-                if !self.new_turn {
-                    if let Some(ActivityItem::Text(ref mut s)) = self.activity.last_mut() {
+                self.tokens.rate_bucket.text += approx;
+                if !self.feed.new_turn {
+                    if let Some(ActivityItem::Text(ref mut s)) = self.feed.items.last_mut() {
                         s.push_str(&t);
                         return;
                     }
                 }
-                self.new_turn = false;
-                self.activity.push(ActivityItem::Text(t));
+                self.feed.new_turn = false;
+                self.feed.items.push(ActivityItem::Text(t));
             }
             AgentEvent::ToolStart { id: _, name } => {
                 self.current_tool_input.clear();
-                self.activity.push(ActivityItem::Tool(ToolEntry {
+                self.feed.items.push(ActivityItem::Tool(ToolEntry {
                     name: name.clone(),
                     arg: String::new(),
                     status: ToolStatus::Running,
                     diff: None,
                     output: None,
-                    expanded: self.diffs_expanded,
+                    expanded: self.feed.diffs_expanded,
                     started_at: Instant::now(),
                 }));
             }
             AgentEvent::ToolInputDelta(json) => {
                 let approx = (json.len() as u32 / 4).max(1);
-                self.rate_bucket.tool += approx;
+                self.tokens.rate_bucket.tool += approx;
                 self.current_tool_input.push_str(&json);
-                if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.last_mut() {
+                if let Some(ActivityItem::Tool(ref mut entry)) = self.feed.items.last_mut() {
                     if let Ok(partial) =
                         serde_json::from_str::<serde_json::Value>(&self.current_tool_input)
                     {
@@ -579,7 +607,7 @@ impl App {
                 }
             }
             AgentEvent::ToolOutputDelta { id: _, text } => {
-                if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.iter_mut().rev()
+                if let Some(ActivityItem::Tool(ref mut entry)) = self.feed.items.iter_mut().rev()
                     .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
                 {
                     let buf = entry.output.get_or_insert_with(String::new);
@@ -595,7 +623,7 @@ impl App {
                 result,
             } => {
                 let mut tracked: Option<(String, Option<DiffInfo>, Option<usize>)> = None;
-                if let Some(ActivityItem::Tool(ref mut entry)) = self.activity.iter_mut().rev()
+                if let Some(ActivityItem::Tool(ref mut entry)) = self.feed.items.iter_mut().rev()
                     .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
                 {
                     match &result {
@@ -614,7 +642,7 @@ impl App {
                                 tracked = Some((r.path.clone(), None, Some(r.offset)));
                             }
 
-                            entry.expanded = self.diffs_expanded;
+                            entry.expanded = self.feed.diffs_expanded;
 
                             // store output for display, truncated.
                             // skip when a diff is present (path+stats in the header is enough).
@@ -662,32 +690,32 @@ impl App {
                 cache_read_tokens,
                 cache_creation_tokens,
             } => {
-                self.total_input += input_tokens;
-                self.total_output += output_tokens;
-                self.total_cache_read += cache_read_tokens;
-                self.total_cache_creation += cache_creation_tokens;
+                self.tokens.total_input += input_tokens;
+                self.tokens.total_output += output_tokens;
+                self.tokens.total_cache_read += cache_read_tokens;
+                self.tokens.total_cache_creation += cache_creation_tokens;
                 // context meter: update each field only when nonzero so
                 // incremental emissions (input first, output later) don't
                 // reset each other
                 let input_total = input_tokens + cache_read_tokens + cache_creation_tokens;
                 if input_total > 0 {
-                    self.last_input = input_total;
+                    self.tokens.last_input = input_total;
                 }
                 if output_tokens > 0 {
-                    self.last_output = output_tokens;
+                    self.tokens.last_output = output_tokens;
                 }
             }
             AgentEvent::TurnComplete => {
                 self.is_running = false;
-                self.new_turn = true;
+                self.feed.new_turn = true;
                 // BEL character triggers terminal/OS notification
                 print!("\x07");
                 // schedule LSP diagnostic check after a short delay
-                self.diag_check_at = Some(
+                self.lsp.diag_check_at = Some(
                     std::time::Instant::now() + std::time::Duration::from_secs(3),
                 );
                 // cancel any in-progress compact animation
-                for item in self.activity.iter_mut().rev() {
+                for item in self.feed.items.iter_mut().rev() {
                     match item {
                         ActivityItem::Compact(CompactStatus::Running) => {
                             *item = ActivityItem::Compact(CompactStatus::Cancelled);
@@ -702,29 +730,29 @@ impl App {
                 // remove them from the queue display
                 self.queued_messages
                     .retain(|q| !matches!(q, QueuedItem::Message(_)));
-                self.activity.push(ActivityItem::UserMessage(msg.clone()));
+                self.feed.items.push(ActivityItem::UserMessage(msg.clone()));
                 if let Some(ref mut current) = self.current_message {
                     current.push_str(&format!("\n{}", msg));
                 }
-                self.auto_scroll = true;
+                self.feed.auto_scroll = true;
             }
             AgentEvent::Status(msg) => {
-                self.activity
+                self.feed.items
                     .push(ActivityItem::System(SystemKind::Info, msg));
             }
             AgentEvent::Error(e) => {
                 self.is_running = false;
-                self.activity
+                self.feed.items
                     .push(ActivityItem::Text(format!("[error] {e}")));
             }
             AgentEvent::CompactStart => {
-                self.activity
+                self.feed.items
                     .push(ActivityItem::Compact(CompactStatus::Running));
-                self.auto_scroll = true;
+                self.feed.auto_scroll = true;
             }
             AgentEvent::CompactDone(msg) => {
                 if let Some(ActivityItem::Compact(ref mut s)) = self
-                    .activity
+                    .feed.items
                     .iter_mut()
                     .rev()
                     .find(|i| matches!(i, ActivityItem::Compact(_)))
@@ -744,14 +772,14 @@ impl App {
     }
 
     pub fn start_new_message(&mut self, message: &str) {
-        self.activity
+        self.feed.items
             .push(ActivityItem::UserMessage(message.to_string()));
         self.current_message = Some(message.to_string());
         self.is_running = true;
-        self.auto_scroll = true;
+        self.feed.auto_scroll = true;
         self.current_tool_input.clear();
-        if self.start_time.is_none() {
-            self.start_time = Some(Instant::now());
+        if self.tokens.start_time.is_none() {
+            self.tokens.start_time = Some(Instant::now());
         }
     }
 
@@ -759,7 +787,7 @@ impl App {
     pub fn cancel_running(&mut self) {
         self.is_running = false;
         self.current_message = None;
-        for item in self.activity.iter_mut().rev() {
+        for item in self.feed.items.iter_mut().rev() {
             match item {
                 ActivityItem::Compact(CompactStatus::Running) => {
                     *item = ActivityItem::Compact(CompactStatus::Cancelled);
@@ -777,15 +805,15 @@ impl App {
     // appears in the queued messages area; sent to the agent's inject
     // channel so it can be picked up at the next tool break.
     pub fn queue_message(&mut self) {
-        if !self.input.is_empty() {
+        if !self.input.text.is_empty() {
             let msg = self.expand_input();
             if let Some(ref tx) = self.inject_tx {
                 let _ = tx.send(msg.clone());
             }
             self.queued_messages.push(QueuedItem::Message(msg));
-            self.input.clear();
-            self.cursor_pos = 0;
-            self.paste_chunks.clear();
+            self.input.text.clear();
+            self.input.cursor_pos = 0;
+            self.input.paste_chunks.clear();
         }
     }
 
@@ -831,7 +859,7 @@ impl App {
                 let combined = msgs.join("\n\n");
                 self.current_message = Some(combined.clone());
                 self.is_running = true;
-                self.auto_scroll = true;
+                self.feed.auto_scroll = true;
                 self.current_tool_input.clear();
                 Some(QueuedAction::SendMessage(combined))
             }
@@ -847,8 +875,8 @@ impl App {
     }
 
     pub fn reset_slash_completion(&mut self) {
-        self.slash_prefix = None;
-        self.slash_selected = None;
+        self.input.slash_prefix = None;
+        self.input.slash_selected = None;
     }
 
     // pop the last queued message back into the input for editing
@@ -860,8 +888,8 @@ impl App {
             .rposition(|i| matches!(i, QueuedItem::Message(_)));
         if let Some(idx) = pos {
             if let QueuedItem::Message(msg) = self.queued_messages.remove(idx) {
-                self.input = msg;
-                self.cursor_pos = self.char_count();
+                self.input.text = msg;
+                self.input.cursor_pos = self.char_count();
                 return true;
             }
         }
@@ -869,48 +897,48 @@ impl App {
     }
 
     pub fn toggle_diff(&mut self) {
-        self.diffs_expanded = !self.diffs_expanded;
-        for item in &mut self.activity {
+        self.feed.diffs_expanded = !self.feed.diffs_expanded;
+        for item in &mut self.feed.items {
             if let ActivityItem::Tool(ref mut entry) = item {
-                entry.expanded = self.diffs_expanded;
+                entry.expanded = self.feed.diffs_expanded;
             }
         }
     }
 
     pub fn push_user_message(&mut self, msg: &str) {
-        self.activity
+        self.feed.items
             .push(ActivityItem::UserMessage(msg.to_string()));
-        self.auto_scroll = true;
+        self.feed.auto_scroll = true;
     }
 
     pub fn push_system_message(&mut self, msg: String) {
-        self.activity
+        self.feed.items
             .push(ActivityItem::System(SystemKind::Info, msg));
-        self.auto_scroll = true;
+        self.feed.auto_scroll = true;
     }
 
     pub fn push_success(&mut self, msg: String) {
-        self.activity
+        self.feed.items
             .push(ActivityItem::System(SystemKind::Success, msg));
-        self.auto_scroll = true;
+        self.feed.auto_scroll = true;
     }
 
     pub fn push_warning(&mut self, msg: String) {
-        self.activity
+        self.feed.items
             .push(ActivityItem::System(SystemKind::Warning, msg));
-        self.auto_scroll = true;
+        self.feed.auto_scroll = true;
     }
 
     pub fn push_error_msg(&mut self, msg: String) {
-        self.activity
+        self.feed.items
             .push(ActivityItem::System(SystemKind::Error, msg));
-        self.auto_scroll = true;
+        self.feed.auto_scroll = true;
     }
 
     pub fn push_update_notice(&mut self, msg: String) {
-        self.activity
+        self.feed.items
             .push(ActivityItem::System(SystemKind::Update, msg));
-        self.auto_scroll = true;
+        self.feed.auto_scroll = true;
     }
 
     pub fn start_background_job(&mut self, label: String, detail: String) -> u64 {
@@ -962,8 +990,8 @@ impl App {
                     JobStatus::Failed(_) => SystemKind::Error,
                     JobStatus::Running => SystemKind::Info,
                 };
-                self.activity.push(ActivityItem::System(kind, summary));
-                self.auto_scroll = true;
+                self.feed.items.push(ActivityItem::System(kind, summary));
+                self.feed.auto_scroll = true;
             }
             JobEvent::Dismiss { id } => {
                 self.background_jobs.retain(|j| j.id != id);
@@ -980,14 +1008,14 @@ impl App {
     // reconstruct the activity feed and input history from persisted messages
     pub fn hydrate_from_history(&mut self, messages: &[Message]) {
         use std::collections::HashMap;
-        // tool_use_id -> index in self.activity for matching results
+        // tool_use_id -> index in self.feed.items for matching results
         let mut tool_map: HashMap<String, usize> = HashMap::new();
 
         for msg in messages {
             match (&msg.role.as_str(), &msg.content) {
                 (&"user", MessageContent::Text(s)) => {
                     if !s.trim().is_empty() {
-                        self.activity.push(ActivityItem::UserMessage(s.clone()));
+                        self.feed.items.push(ActivityItem::UserMessage(s.clone()));
                         self.push_history(s);
                     }
                 }
@@ -996,7 +1024,7 @@ impl App {
                         match block {
                             ContentBlock::Text { text } => {
                                 if !text.trim().is_empty() {
-                                    self.activity.push(ActivityItem::UserMessage(text.clone()));
+                                    self.feed.items.push(ActivityItem::UserMessage(text.clone()));
                                     self.push_history(text);
                                 }
                             }
@@ -1006,7 +1034,7 @@ impl App {
                                 is_error,
                             } => {
                                 if let Some(&idx) = tool_map.get(tool_use_id) {
-                                    if let ActivityItem::Tool(ref mut entry) = self.activity[idx] {
+                                    if let ActivityItem::Tool(ref mut entry) = self.feed.items[idx] {
                                         let output = tool_result_display_text(content);
                                         if is_error == &Some(true) {
                                             entry.status = ToolStatus::Error(output);
@@ -1039,7 +1067,7 @@ impl App {
                 }
                 (&"assistant", MessageContent::Text(s)) => {
                     if !s.trim().is_empty() {
-                        self.activity.push(ActivityItem::Text(s.clone()));
+                        self.feed.items.push(ActivityItem::Text(s.clone()));
                     }
                 }
                 (&"assistant", MessageContent::Blocks(blocks)) => {
@@ -1047,25 +1075,25 @@ impl App {
                         match block {
                             ContentBlock::Thinking { thinking, .. } => {
                                 if !thinking.trim().is_empty() {
-                                    self.activity.push(ActivityItem::Thinking(thinking.clone()));
+                                    self.feed.items.push(ActivityItem::Thinking(thinking.clone()));
                                 }
                             }
                             ContentBlock::Text { text } => {
                                 if !text.trim().is_empty() {
-                                    self.activity.push(ActivityItem::Text(text.clone()));
+                                    self.feed.items.push(ActivityItem::Text(text.clone()));
                                 }
                             }
                             ContentBlock::ToolUse { id, name, input } => {
                                 let display_name = crate::agent::from_cc_name(name).to_string();
                                 let arg = extract_tool_arg(&display_name, input);
-                                let idx = self.activity.len();
-                                self.activity.push(ActivityItem::Tool(ToolEntry {
+                                let idx = self.feed.items.len();
+                                self.feed.items.push(ActivityItem::Tool(ToolEntry {
                                     name: display_name,
                                     arg,
                                     status: ToolStatus::Complete { exit_code: None },
                                     diff: None,
                                     output: None,
-                                    expanded: self.diffs_expanded,
+                                    expanded: self.feed.diffs_expanded,
                                     started_at: Instant::now(),
                                 }));
                                 tool_map.insert(id.clone(), idx);
@@ -1085,14 +1113,14 @@ impl App {
     // call just before showing login instructions; records the current
     // activity length so clear_login_activity can wipe everything since
     pub fn mark_login_start(&mut self) {
-        self.login_activity_start = Some(self.activity.len());
+        self.feed.login_activity_start = Some(self.feed.items.len());
     }
 
     // truncate all activity added since mark_login_start, then push a
     // single clean result message in its place
     pub fn finish_login(&mut self, msg: String, success: bool) {
-        if let Some(start) = self.login_activity_start.take() {
-            self.activity.truncate(start);
+        if let Some(start) = self.feed.login_activity_start.take() {
+            self.feed.items.truncate(start);
         }
         if success {
             self.push_success(msg);
@@ -1103,7 +1131,7 @@ impl App {
 
     pub fn update_model(&mut self, model_id: &str) {
         self.model_name = model_id.to_string();
-        self.context_limit = guess_context_limit(model_id);
+        self.tokens.context_limit = guess_context_limit(model_id);
     }
 
     pub fn update_thinking(&mut self, level: &str) {
@@ -1119,39 +1147,39 @@ impl App {
     // resets history navigation state.
     pub fn push_history(&mut self, msg: &str) {
         if !msg.trim().is_empty() {
-            if self.input_history.last().map(|s| s.as_str()) != Some(msg) {
-                self.input_history.push(msg.to_string());
-                if self.input_history.len() > 1000 {
-                    self.input_history.remove(0);
+            if self.input.history.last().map(|s| s.as_str()) != Some(msg) {
+                self.input.history.push(msg.to_string());
+                if self.input.history.len() > 1000 {
+                    self.input.history.remove(0);
                 }
             }
         }
-        self.input_history_pos = None;
-        self.input_draft = String::new();
+        self.input.history_pos = None;
+        self.input.draft = String::new();
     }
 
     // navigate to the previous (older) history entry. returns true if handled
     // (so the caller knows not to fall through to scroll).
     pub fn navigate_history_up(&mut self) -> bool {
-        if self.input_history.is_empty() {
+        if self.input.history.is_empty() {
             return false;
         }
-        match self.input_history_pos {
+        match self.input.history_pos {
             None => {
-                self.input_draft = self.expand_input();
-                let pos = self.input_history.len() - 1;
-                self.input_history_pos = Some(pos);
-                self.input = self.input_history[pos].clone();
-                self.paste_chunks.clear();
-                self.cursor_pos = self.char_count();
+                self.input.draft = self.expand_input();
+                let pos = self.input.history.len() - 1;
+                self.input.history_pos = Some(pos);
+                self.input.text = self.input.history[pos].clone();
+                self.input.paste_chunks.clear();
+                self.input.cursor_pos = self.char_count();
                 true
             }
             Some(0) => true, // already at oldest entry, absorb the keypress
             Some(p) => {
                 let new_pos = p - 1;
-                self.input_history_pos = Some(new_pos);
-                self.input = self.input_history[new_pos].clone();
-                self.cursor_pos = self.char_count();
+                self.input.history_pos = Some(new_pos);
+                self.input.text = self.input.history[new_pos].clone();
+                self.input.cursor_pos = self.char_count();
                 true
             }
         }
@@ -1160,43 +1188,43 @@ impl App {
     // navigate to the next (newer) history entry, or back to the saved draft.
     // returns false when not in history mode so the caller can scroll instead.
     pub fn navigate_history_down(&mut self) -> bool {
-        match self.input_history_pos {
+        match self.input.history_pos {
             None => false,
-            Some(p) if p + 1 >= self.input_history.len() => {
-                self.input = self.input_draft.clone();
-                self.paste_chunks.clear();
-                self.cursor_pos = self.char_count();
-                self.input_history_pos = None;
+            Some(p) if p + 1 >= self.input.history.len() => {
+                self.input.text = self.input.draft.clone();
+                self.input.paste_chunks.clear();
+                self.input.cursor_pos = self.char_count();
+                self.input.history_pos = None;
                 true
             }
             Some(p) => {
                 let new_pos = p + 1;
-                self.input_history_pos = Some(new_pos);
-                self.input = self.input_history[new_pos].clone();
-                self.cursor_pos = self.char_count();
+                self.input.history_pos = Some(new_pos);
+                self.input.text = self.input.history[new_pos].clone();
+                self.input.cursor_pos = self.char_count();
                 true
             }
         }
     }
 
     pub fn reset_session(&mut self) {
-        self.activity.clear();
-        self.activity_render_cache.clear();
-        self.total_input = 0;
-        self.total_output = 0;
-        self.total_cache_read = 0;
-        self.total_cache_creation = 0;
-        self.last_input = 0;
-        self.last_output = 0;
+        self.feed.items.clear();
+        self.feed.render_cache.clear();
+        self.tokens.total_input = 0;
+        self.tokens.total_output = 0;
+        self.tokens.total_cache_read = 0;
+        self.tokens.total_cache_creation = 0;
+        self.tokens.last_input = 0;
+        self.tokens.last_output = 0;
         self.current_message = None;
         self.queued_messages.clear();
-        self.rate_samples.clear();
-        self.rate_bucket = TokenBucket::default();
-        self.start_time = None;
-        self.scroll_offset = 0;
-        self.auto_scroll = true;
-        self.new_turn = false;
-        self.paste_chunks.clear();
+        self.tokens.rate_samples.clear();
+        self.tokens.rate_bucket = TokenBucket::default();
+        self.tokens.start_time = None;
+        self.feed.scroll_offset = 0;
+        self.feed.auto_scroll = true;
+        self.feed.new_turn = false;
+        self.input.paste_chunks.clear();
     }
 
     pub fn model_name(&self) -> &str {
@@ -1212,29 +1240,29 @@ impl App {
     }
 
     fn context_used(&self) -> u32 {
-        self.last_input + self.last_output
+        self.tokens.last_input + self.tokens.last_output
     }
 
     fn context_pct(&self) -> f64 {
-        if self.context_limit == 0 {
+        if self.tokens.context_limit == 0 {
             return 0.0;
         }
-        (self.context_used() as f64 / self.context_limit as f64).min(1.0)
+        (self.context_used() as f64 / self.tokens.context_limit as f64).min(1.0)
     }
 
     fn cost_usd(&self) -> f64 {
         let p = crate::config::model_pricing(&self.model_name);
         // cache writes cost 1.25x, cache reads cost 0.1x base input price
-        self.total_input as f64 * p.input / 1_000_000.0
-            + self.total_cache_creation as f64 * p.input * 1.25 / 1_000_000.0
-            + self.total_cache_read as f64 * p.input * 0.1 / 1_000_000.0
-            + self.total_output as f64 * p.output / 1_000_000.0
+        self.tokens.total_input as f64 * p.input / 1_000_000.0
+            + self.tokens.total_cache_creation as f64 * p.input * 1.25 / 1_000_000.0
+            + self.tokens.total_cache_read as f64 * p.input * 0.1 / 1_000_000.0
+            + self.tokens.total_output as f64 * p.output / 1_000_000.0
     }
 
     fn avg_rate(&self) -> f64 {
-        let elapsed = self.start_time.map_or(0.0, |t| t.elapsed().as_secs_f64());
+        let elapsed = self.tokens.start_time.map_or(0.0, |t| t.elapsed().as_secs_f64());
         if elapsed > 0.0 {
-            self.total_output as f64 / elapsed
+            self.tokens.total_output as f64 / elapsed
         } else {
             0.0
         }
@@ -1243,18 +1271,18 @@ impl App {
     // cursor_pos is a char-count offset. convert to byte index for
     // String insert/remove operations.
     fn cursor_byte_pos(&self) -> usize {
-        self.input
+        self.input.text
             .char_indices()
-            .nth(self.cursor_pos)
+            .nth(self.input.cursor_pos)
             .map(|(i, _)| i)
-            .unwrap_or(self.input.len())
+            .unwrap_or(self.input.text.len())
     }
 
     // insert text directly at the cursor position without any collapsing
     pub fn insert_text(&mut self, text: String) {
         let bp = self.cursor_byte_pos();
-        self.input.insert_str(bp, &text);
-        self.cursor_pos += text.chars().count();
+        self.input.text.insert_str(bp, &text);
+        self.input.cursor_pos += text.chars().count();
     }
 
     // insert pasted text. multi-line or long pastes are collapsed to a single
@@ -1267,34 +1295,34 @@ impl App {
         let long = text.len() > 80;
         if !multiline && !long {
             let bp = self.cursor_byte_pos();
-            self.input.insert_str(bp, &text);
-            self.cursor_pos += text.chars().count();
+            self.input.text.insert_str(bp, &text);
+            self.input.cursor_pos += text.chars().count();
             return;
         }
 
-        let idx = self.paste_chunks.len();
+        let idx = self.input.paste_chunks.len();
         if idx > 15 {
             let bp = self.cursor_byte_pos();
-            self.input.insert_str(bp, &text);
-            self.cursor_pos += text.chars().count();
+            self.input.text.insert_str(bp, &text);
+            self.input.cursor_pos += text.chars().count();
             return;
         }
 
-        self.paste_chunks.push(text);
+        self.input.paste_chunks.push(text);
         let placeholder = char::from_u32(0xE000 + idx as u32).unwrap();
         let bp = self.cursor_byte_pos();
-        self.input.insert(bp, placeholder);
-        self.cursor_pos += 1;
+        self.input.text.insert(bp, placeholder);
+        self.input.cursor_pos += 1;
     }
 
     // replace all paste placeholders with their real content
     pub fn expand_input(&self) -> String {
         let mut out = String::new();
-        for c in self.input.chars() {
+        for c in self.input.text.chars() {
             if is_paste_placeholder(c) {
                 let idx = paste_placeholder_index(c);
-                if idx < self.paste_chunks.len() {
-                    out.push_str(&self.paste_chunks[idx]);
+                if idx < self.input.paste_chunks.len() {
+                    out.push_str(&self.input.paste_chunks[idx]);
                 }
             } else {
                 out.push(c);
@@ -1304,12 +1332,12 @@ impl App {
     }
 
     fn char_count(&self) -> usize {
-        self.input.chars().count()
+        self.input.text.chars().count()
     }
 
     // (line_number, column_in_chars) from cursor_pos
     fn cursor_line_col(&self) -> (usize, usize) {
-        let text_before: String = self.input.chars().take(self.cursor_pos).collect();
+        let text_before: String = self.input.text.chars().take(self.input.cursor_pos).collect();
         let line = text_before.matches('\n').count();
         let col = match text_before.rfind('\n') {
             Some(i) => text_before[i + 1..].chars().count(),
@@ -1319,7 +1347,7 @@ impl App {
     }
 
     fn input_line_count(&self) -> usize {
-        self.input.split('\n').count()
+        self.input.text.split('\n').count()
     }
 
     // visual line count after soft-wrapping to terminal width
@@ -1328,7 +1356,7 @@ impl App {
         if content_width == 0 {
             return 1;
         }
-        let display = make_display_input(&self.input, &self.paste_chunks);
+        let display = make_display_input(&self.input.text, &self.input.paste_chunks);
         let mut count = 0;
         for line in display.split('\n') {
             let w = UnicodeWidthStr::width(line);
@@ -1344,43 +1372,43 @@ impl App {
     fn delete_to_line_start(&mut self) {
         let (_, col) = self.cursor_line_col();
         if col == 0 {
-            if self.cursor_pos > 0 {
+            if self.input.cursor_pos > 0 {
                 let bp = self.cursor_byte_pos();
-                let prev = self.input[..bp].char_indices().last().map(|(i, _)| i);
+                let prev = self.input.text[..bp].char_indices().last().map(|(i, _)| i);
                 if let Some(pb) = prev {
-                    self.input.remove(pb);
-                    self.cursor_pos -= 1;
+                    self.input.text.remove(pb);
+                    self.input.cursor_pos -= 1;
                 }
             }
         } else {
             let bp = self.cursor_byte_pos();
             let start = bp
-                - self.input[..bp]
+                - self.input.text[..bp]
                     .chars()
                     .rev()
                     .take(col)
                     .map(|c| c.len_utf8())
                     .sum::<usize>();
-            self.input.replace_range(start..bp, "");
-            self.cursor_pos -= col;
+            self.input.text.replace_range(start..bp, "");
+            self.input.cursor_pos -= col;
         }
     }
 
     fn delete_to_line_end(&mut self) {
         let bp = self.cursor_byte_pos();
-        let end = self.input[bp..]
+        let end = self.input.text[bp..]
             .find('\n')
             .map(|i| bp + i)
-            .unwrap_or(self.input.len());
-        self.input.replace_range(bp..end, "");
+            .unwrap_or(self.input.text.len());
+        self.input.text.replace_range(bp..end, "");
     }
 
     fn delete_word_backward(&mut self) {
-        if self.cursor_pos == 0 {
+        if self.input.cursor_pos == 0 {
             return;
         }
-        let chars: Vec<char> = self.input.chars().collect();
-        let mut new_pos = self.cursor_pos;
+        let chars: Vec<char> = self.input.text.chars().collect();
+        let mut new_pos = self.input.cursor_pos;
         while new_pos > 0 && chars[new_pos - 1].is_whitespace() {
             new_pos -= 1;
         }
@@ -1388,56 +1416,56 @@ impl App {
             new_pos -= 1;
         }
         let byte_start = self
-            .input
+            .input.text
             .char_indices()
             .nth(new_pos)
             .map(|(i, _)| i)
             .unwrap_or(0);
         let byte_end = self.cursor_byte_pos();
-        self.input.replace_range(byte_start..byte_end, "");
-        self.cursor_pos = new_pos;
+        self.input.text.replace_range(byte_start..byte_end, "");
+        self.input.cursor_pos = new_pos;
     }
 
     fn move_word_left(&mut self) {
-        if self.cursor_pos == 0 {
+        if self.input.cursor_pos == 0 {
             return;
         }
-        let chars: Vec<char> = self.input.chars().collect();
-        let mut pos = self.cursor_pos;
+        let chars: Vec<char> = self.input.text.chars().collect();
+        let mut pos = self.input.cursor_pos;
         while pos > 0 && chars[pos - 1].is_whitespace() {
             pos -= 1;
         }
         while pos > 0 && !chars[pos - 1].is_whitespace() {
             pos -= 1;
         }
-        self.cursor_pos = pos;
+        self.input.cursor_pos = pos;
     }
 
     fn move_word_right(&mut self) {
-        let chars: Vec<char> = self.input.chars().collect();
+        let chars: Vec<char> = self.input.text.chars().collect();
         let len = chars.len();
-        let mut pos = self.cursor_pos;
+        let mut pos = self.input.cursor_pos;
         while pos < len && !chars[pos].is_whitespace() {
             pos += 1;
         }
         while pos < len && chars[pos].is_whitespace() {
             pos += 1;
         }
-        self.cursor_pos = pos;
+        self.input.cursor_pos = pos;
     }
 
     fn move_line_start(&mut self) {
         let (_, col) = self.cursor_line_col();
-        self.cursor_pos -= col;
+        self.input.cursor_pos -= col;
     }
 
     fn move_line_end(&mut self) {
-        let chars: Vec<char> = self.input.chars().collect();
-        let mut pos = self.cursor_pos;
+        let chars: Vec<char> = self.input.text.chars().collect();
+        let mut pos = self.input.cursor_pos;
         while pos < chars.len() && chars[pos] != '\n' {
             pos += 1;
         }
-        self.cursor_pos = pos;
+        self.input.cursor_pos = pos;
     }
 
     // returns false if already on the first line
@@ -1446,7 +1474,7 @@ impl App {
         if line == 0 {
             return false;
         }
-        let lines: Vec<&str> = self.input.split('\n').collect();
+        let lines: Vec<&str> = self.input.text.split('\n').collect();
         let prev_len = lines[line - 1].chars().count();
         let new_col = col.min(prev_len);
         let mut new_pos = 0;
@@ -1454,14 +1482,14 @@ impl App {
             new_pos += lines[i].chars().count() + 1;
         }
         new_pos += new_col;
-        self.cursor_pos = new_pos;
+        self.input.cursor_pos = new_pos;
         true
     }
 
     // returns false if already on the last line
     fn move_cursor_down(&mut self) -> bool {
         let (line, col) = self.cursor_line_col();
-        let lines: Vec<&str> = self.input.split('\n').collect();
+        let lines: Vec<&str> = self.input.text.split('\n').collect();
         if line >= lines.len() - 1 {
             return false;
         }
@@ -1472,7 +1500,7 @@ impl App {
             new_pos += lines[i].chars().count() + 1;
         }
         new_pos += new_col;
-        self.cursor_pos = new_pos;
+        self.input.cursor_pos = new_pos;
         true
     }
 }
@@ -1808,26 +1836,26 @@ impl App {
     pub fn open_file(&mut self, path: &std::path::Path) {
         match EditorBuffer::open(path) {
             Ok(buf) => {
-                self.lsp_pending.push(LspNotify::Open(path.to_path_buf()));
-                self.editor_buffer = Some(buf);
-                self.diff_markers.clear();
-                self.lsp_diagnostics.clear();
-                if let Some(ref mut hl) = self.highlighter { hl.invalidate(); }
-                self.view_mode = ViewMode::Editor;
+                self.lsp.pending.push(LspNotify::Open(path.to_path_buf()));
+                self.editor.buffer = Some(buf);
+                self.editor.diff_markers.clear();
+                self.lsp.diagnostics.clear();
+                if let Some(ref mut hl) = self.editor.highlighter { hl.invalidate(); }
+                self.editor.mode = ViewMode::Editor;
             }
             Err(_) => {}
         }
     }
 
     pub fn open_agent_edit(&mut self, index: usize) {
-        if index >= self.agent_edits.len() {
+        if index >= self.editor.agent_edits.len() {
             return;
         }
-        let edit = self.agent_edits[index].clone();
+        let edit = self.editor.agent_edits[index].clone();
         let full_path = std::path::Path::new(&self.cwd).join(&edit.path);
         match EditorBuffer::open(&full_path) {
             Ok(mut buf) => {
-                self.diff_markers.clear();
+                self.editor.diff_markers.clear();
                 if let Some(ref diff) = edit.diff {
                     // build diff markers and track the changed line range
                     let mut first_change_line: Option<usize> = None;
@@ -1839,7 +1867,7 @@ impl App {
                             match dl.tag {
                                 DiffLineTag::Equal => {
                                     if pending_delete {
-                                        self.diff_markers.entry(new_line)
+                                        self.editor.diff_markers.entry(new_line)
                                             .or_insert(DiffMarker::DeleteBoundary);
                                         pending_delete = false;
                                     }
@@ -1850,7 +1878,7 @@ impl App {
                                         first_change_line = Some(new_line);
                                     }
                                     last_change_line = Some(new_line);
-                                    self.diff_markers.insert(new_line, DiffMarker::Insert);
+                                    self.editor.diff_markers.insert(new_line, DiffMarker::Insert);
                                     pending_delete = false;
                                     new_line += 1;
                                 }
@@ -1865,7 +1893,7 @@ impl App {
                         }
                         // if hunk ends with deletions, mark the next line
                         if pending_delete {
-                            self.diff_markers.entry(new_line)
+                            self.editor.diff_markers.entry(new_line)
                                 .or_insert(DiffMarker::DeleteBoundary);
                         }
                     }
@@ -1884,8 +1912,8 @@ impl App {
                         .unwrap_or(24) as usize;
                     buf.center_on_range(target, target, h.saturating_sub(2));
                 }
-                self.editor_buffer = Some(buf);
-                if let Some(ref mut hl) = self.highlighter { hl.invalidate(); }
+                self.editor.buffer = Some(buf);
+                if let Some(ref mut hl) = self.editor.highlighter { hl.invalidate(); }
             }
             Err(_) => {}
         }
@@ -1893,7 +1921,7 @@ impl App {
 
     pub fn track_agent_edit(&mut self, path: String, diff: Option<DiffInfo>, line: Option<usize>) {
         // notify LSP that the file changed on disk
-        self.lsp_pending.push(LspNotify::Open(std::path::PathBuf::from(&path)));
+        self.lsp.pending.push(LspNotify::Open(std::path::PathBuf::from(&path)));
 
         let edit = AgentEdit {
             path,
@@ -1901,17 +1929,17 @@ impl App {
             line,
             _timestamp: std::time::Instant::now(),
         };
-        self.agent_edits.push(edit);
+        self.editor.agent_edits.push(edit);
 
         // in follow mode, auto-jump to the new edit
-        if self.follow_mode {
-            self.agent_edit_index = self.agent_edits.len() - 1;
-            self.open_agent_edit(self.agent_edit_index);
+        if self.editor.follow_mode {
+            self.editor.agent_edit_index = self.editor.agent_edits.len() - 1;
+            self.open_agent_edit(self.editor.agent_edit_index);
         }
     }
 
     fn update_file_search(&mut self) {
-        if let Some(ref mut search) = self.editor_search {
+        if let Some(ref mut search) = self.editor.search {
             if !matches!(search.mode, SearchMode::Files) {
                 return;
             }
@@ -1938,7 +1966,7 @@ impl App {
     }
 
     fn update_text_search(&mut self) {
-        if let Some(ref mut search) = self.editor_search {
+        if let Some(ref mut search) = self.editor.search {
             if !matches!(search.mode, SearchMode::Text) {
                 return;
             }
@@ -1958,18 +1986,18 @@ fn handle_editor_key(
     super_key: bool,
 ) -> InputAction {
     // search overlay intercepts input when active
-    if app.editor_search.is_some() {
+    if app.editor.search.is_some() {
         return handle_search_key(key, app, ctrl);
     }
 
     // autocomplete menu intercepts navigation keys
-    if app.editor_autocomplete.is_some() {
+    if app.editor.autocomplete.is_some() {
         match key.code {
             KeyCode::Tab | KeyCode::Enter => {
                 // accept the selected completion
-                if let Some(ac) = app.editor_autocomplete.take() {
+                if let Some(ac) = app.editor.autocomplete.take() {
                     if let Some(candidate) = ac.candidates.get(ac.selected) {
-                        if let Some(ref mut buf) = app.editor_buffer {
+                        if let Some(ref mut buf) = app.editor.buffer {
                             let line = &mut buf.lines[buf.cursor_row];
                             let end = buf.cursor_col.min(line.len());
                             line.replace_range(ac.word_start..end, &candidate.label);
@@ -1982,25 +2010,25 @@ fn handle_editor_key(
                 return InputAction::None;
             }
             KeyCode::Up => {
-                if let Some(ref mut ac) = app.editor_autocomplete {
+                if let Some(ref mut ac) = app.editor.autocomplete {
                     ac.select_up();
                 }
                 return InputAction::None;
             }
             KeyCode::Down => {
-                if let Some(ref mut ac) = app.editor_autocomplete {
+                if let Some(ref mut ac) = app.editor.autocomplete {
                     ac.select_down();
                 }
                 return InputAction::None;
             }
             KeyCode::Esc => {
-                app.editor_autocomplete = None;
+                app.editor.autocomplete = None;
                 return InputAction::None;
             }
             // any other key dismisses and falls through to normal handling
             _ => {
                 if !matches!(key.code, KeyCode::Char(_)) {
-                    app.editor_autocomplete = None;
+                    app.editor.autocomplete = None;
                 }
             }
         }
@@ -2013,43 +2041,43 @@ fn handle_editor_key(
         }
         // ctrl+s: save
         KeyCode::Char('s') if ctrl => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 let _ = buf.save();
                 let path = buf.path.clone();
-                app.lsp_pending.push(LspNotify::Save(path));
+                app.lsp.pending.push(LspNotify::Save(path));
             }
         }
         // ctrl+z: undo
         KeyCode::Char('z') if ctrl => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.undo();
             }
         }
         // ctrl+y: redo
         KeyCode::Char('y') if ctrl => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.redo();
             }
         }
         // ctrl+p: file finder
         KeyCode::Char('p') if ctrl => {
-            app.editor_search = Some(SearchState::new(SearchMode::Files));
+            app.editor.search = Some(SearchState::new(SearchMode::Files));
             app.update_file_search();
         }
         // ctrl+shift+f or ctrl+/: text search
         KeyCode::Char('/') if ctrl => {
-            app.editor_search = Some(SearchState::new(SearchMode::Text));
+            app.editor.search = Some(SearchState::new(SearchMode::Text));
         }
         // ctrl+g: goto line (opens file search with : prefix behavior)
         KeyCode::Char('g') if ctrl => {
             // for now reuse file search
-            app.editor_search = Some(SearchState::new(SearchMode::Files));
+            app.editor.search = Some(SearchState::new(SearchMode::Files));
             app.update_file_search();
         }
         // F12: goto definition (LSP)
         KeyCode::F(12) => {
-            if let Some(ref buf) = app.editor_buffer {
-                app.lsp_goto_request = Some((
+            if let Some(ref buf) = app.editor.buffer {
+                app.lsp.goto_request = Some((
                     buf.path.clone(),
                     buf.cursor_row as u32,
                     buf.cursor_col as u32,
@@ -2058,101 +2086,101 @@ fn handle_editor_key(
         }
         // ctrl+k: delete line
         KeyCode::Char('k') if ctrl => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.delete_line();
             }
         }
         // navigation
         KeyCode::Up if alt => {
             // in follow mode, navigate to previous edit
-            if app.follow_mode && app.agent_edit_index > 0 {
-                app.agent_edit_index -= 1;
-                app.open_agent_edit(app.agent_edit_index);
+            if app.editor.follow_mode && app.editor.agent_edit_index > 0 {
+                app.editor.agent_edit_index -= 1;
+                app.open_agent_edit(app.editor.agent_edit_index);
             }
         }
         KeyCode::Down if alt => {
-            if app.follow_mode && app.agent_edit_index + 1 < app.agent_edits.len() {
-                app.agent_edit_index += 1;
-                app.open_agent_edit(app.agent_edit_index);
+            if app.editor.follow_mode && app.editor.agent_edit_index + 1 < app.editor.agent_edits.len() {
+                app.editor.agent_edit_index += 1;
+                app.open_agent_edit(app.editor.agent_edit_index);
             }
         }
         KeyCode::Up if shift => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
                 buf.page_up(h.saturating_sub(2) / 2);
             }
         }
         KeyCode::Down if shift => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
                 buf.page_down(h.saturating_sub(2) / 2);
             }
         }
         KeyCode::Up => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_up();
             }
         }
         KeyCode::Down => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_down();
             }
         }
         KeyCode::Left if super_key => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_home();
             }
         }
         KeyCode::Right if super_key => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_end();
             }
         }
         KeyCode::Left if ctrl || alt => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_word_left();
             }
         }
         KeyCode::Right if ctrl || alt => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_word_right();
             }
         }
         KeyCode::Left => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_left();
             }
         }
         KeyCode::Right => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_right();
             }
         }
         KeyCode::Home => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_home();
             }
         }
         KeyCode::End => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.move_end();
             }
         }
         KeyCode::PageUp => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
                 buf.page_up(h.saturating_sub(2));
             }
         }
         KeyCode::PageDown => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
                 buf.page_down(h.saturating_sub(2));
             }
         }
         // editing
         KeyCode::Enter => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 let line = buf.lines[buf.cursor_row].clone();
                 let col = buf.cursor_col.min(line.len());
                 let prev = line[..col].chars().last();
@@ -2189,20 +2217,20 @@ fn handle_editor_key(
                     }
                 }
             }
-            app.editor_autocomplete = None;
+            app.editor.autocomplete = None;
         }
         KeyCode::Backspace if super_key => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.delete_to_line_start();
             }
-            app.editor_autocomplete = None;
+            app.editor.autocomplete = None;
         }
         KeyCode::Backspace if alt || ctrl => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.delete_word_backward();
             }
-            if let Some(ref buf) = app.editor_buffer {
-                app.editor_autocomplete = crate::autocomplete::compute_completions(
+            if let Some(ref buf) = app.editor.buffer {
+                app.editor.autocomplete = crate::autocomplete::compute_completions(
                     &buf.lines,
                     buf.cursor_row,
                     buf.cursor_col,
@@ -2212,7 +2240,7 @@ fn handle_editor_key(
             app.request_lsp_completion();
         }
         KeyCode::Backspace => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 // delete matching closing char when backspacing an empty pair
                 if buf.cursor_col > 0 {
                     let line = &buf.lines[buf.cursor_row];
@@ -2234,8 +2262,8 @@ fn handle_editor_key(
                 buf.backspace();
             }
             // re-trigger autocomplete with updated prefix
-            if let Some(ref buf) = app.editor_buffer {
-                app.editor_autocomplete = crate::autocomplete::compute_completions(
+            if let Some(ref buf) = app.editor.buffer {
+                app.editor.autocomplete = crate::autocomplete::compute_completions(
                     &buf.lines,
                     buf.cursor_row,
                     buf.cursor_col,
@@ -2245,17 +2273,17 @@ fn handle_editor_key(
             app.request_lsp_completion();
         }
         KeyCode::Delete if alt || ctrl => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.delete_word_forward();
             }
         }
         KeyCode::Delete => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 buf.delete();
             }
         }
         KeyCode::Tab => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 // insert 4 spaces
                 for _ in 0..4 {
                     buf.insert_char(' ');
@@ -2263,7 +2291,7 @@ fn handle_editor_key(
             }
         }
         KeyCode::Char(c) => {
-            if let Some(ref mut buf) = app.editor_buffer {
+            if let Some(ref mut buf) = app.editor.buffer {
                 let closing = match c {
                     '(' => Some(')'),
                     '[' => Some(']'),
@@ -2298,8 +2326,8 @@ fn handle_editor_key(
             let is_trigger = c.is_alphanumeric() || c == '_'
                 || c == '.' || c == ':' || c == '-';
             if is_trigger {
-                if let Some(ref buf) = app.editor_buffer {
-                    app.editor_autocomplete = crate::autocomplete::compute_completions(
+                if let Some(ref buf) = app.editor.buffer {
+                    app.editor.autocomplete = crate::autocomplete::compute_completions(
                         &buf.lines,
                         buf.cursor_row,
                         buf.cursor_col,
@@ -2308,7 +2336,7 @@ fn handle_editor_key(
                 }
                 app.request_lsp_completion();
             } else {
-                app.editor_autocomplete = None;
+                app.editor.autocomplete = None;
             }
         }
         _ => {}
@@ -2319,11 +2347,11 @@ fn handle_editor_key(
         KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End |
         KeyCode::PageUp | KeyCode::PageDown
     ) {
-        app.editor_autocomplete = None;
+        app.editor.autocomplete = None;
     }
 
     // keep cursor visible after any action
-    if let Some(ref mut buf) = app.editor_buffer {
+    if let Some(ref mut buf) = app.editor.buffer {
         let h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24) as usize;
         buf.ensure_cursor_visible(h.saturating_sub(2)); // minus status bar
     }
@@ -2334,11 +2362,11 @@ fn handle_editor_key(
 fn handle_search_key(key: KeyEvent, app: &mut App, ctrl: bool) -> InputAction {
     match key.code {
         KeyCode::Esc => {
-            app.editor_search = None;
+            app.editor.search = None;
         }
         KeyCode::Enter => {
             // open selected result
-            if let Some(ref search) = app.editor_search {
+            if let Some(ref search) = app.editor.search {
                 if let Some(result) = search.results.get(search.selected) {
                     let full_path = std::path::Path::new(&app.cwd).join(&result.path);
                     let line = result.line;
@@ -2351,44 +2379,44 @@ fn handle_search_key(key: KeyEvent, app: &mut App, ctrl: bool) -> InputAction {
                                     .unwrap_or(24) as usize;
                                 buf.ensure_cursor_visible(h.saturating_sub(2));
                             }
-                            app.editor_buffer = Some(buf);
-                            app.diff_markers.clear();
-                            if let Some(ref mut hl) = app.highlighter { hl.invalidate(); }
+                            app.editor.buffer = Some(buf);
+                            app.editor.diff_markers.clear();
+                            if let Some(ref mut hl) = app.editor.highlighter { hl.invalidate(); }
                         }
                         Err(_) => {}
                     }
                 }
             }
-            app.editor_search = None;
+            app.editor.search = None;
         }
         KeyCode::Up => {
-            if let Some(ref mut search) = app.editor_search {
+            if let Some(ref mut search) = app.editor.search {
                 search.select_up();
             }
         }
         KeyCode::Down => {
-            if let Some(ref mut search) = app.editor_search {
+            if let Some(ref mut search) = app.editor.search {
                 search.select_down();
             }
         }
         KeyCode::Backspace => {
-            if let Some(ref mut search) = app.editor_search {
+            if let Some(ref mut search) = app.editor.search {
                 search.backspace();
             }
-            match app.editor_search.as_ref().map(|s| s.mode.clone()) {
+            match app.editor.search.as_ref().map(|s| s.mode.clone()) {
                 Some(SearchMode::Files) => app.update_file_search(),
                 Some(SearchMode::Text) => app.update_text_search(),
                 None => {}
             }
         }
         KeyCode::Char('c') if ctrl => {
-            app.editor_search = None;
+            app.editor.search = None;
         }
         KeyCode::Char(c) => {
-            if let Some(ref mut search) = app.editor_search {
+            if let Some(ref mut search) = app.editor.search {
                 search.insert_char(c);
             }
-            match app.editor_search.as_ref().map(|s| s.mode.clone()) {
+            match app.editor.search.as_ref().map(|s| s.mode.clone()) {
                 Some(SearchMode::Files) => app.update_file_search(),
                 Some(SearchMode::Text) => app.update_text_search(),
                 None => {}
@@ -2404,7 +2432,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_tree_view(frame, app);
         return;
     }
-    match app.view_mode {
+    match app.editor.mode {
         ViewMode::Chat => render_chat(frame, app),
         ViewMode::Editor => render_editor(frame, app),
     }
@@ -2412,10 +2440,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_editor(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
-    let has_search = app.editor_search.is_some();
+    let has_search = app.editor.search.is_some();
     let search_h: u16 = if has_search { 12.min(size.height / 3) } else { 0 };
 
-    if app.editor_buffer.is_none() && !has_search {
+    if app.editor.buffer.is_none() && !has_search {
         // split horizontally so the sidebar still renders
         let hsplit = Layout::default()
             .direction(Direction::Horizontal)
@@ -2456,7 +2484,7 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
 
     render_editor_status(frame, app, left_chunks[0]);
 
-    if app.editor_buffer.is_some() {
+    if app.editor.buffer.is_some() {
         render_editor_content(frame, app, left_chunks[1]);
         render_autocomplete_menu(frame, app, left_chunks[1]);
     }
@@ -2469,7 +2497,7 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_editor_status(frame: &mut Frame, app: &App, area: Rect) {
-    let buf = match &app.editor_buffer {
+    let buf = match &app.editor.buffer {
         Some(b) => b,
         None => return,
     };
@@ -2479,11 +2507,11 @@ fn render_editor_status(frame: &mut Frame, app: &App, area: Rect) {
     let position = format!("{}:{}", buf.cursor_row + 1, buf.cursor_col + 1);
     let lines = format!("{} lines", buf.line_count());
 
-    let follow_indicator = if app.follow_mode {
-        let edit_pos = if app.agent_edits.is_empty() {
+    let follow_indicator = if app.editor.follow_mode {
+        let edit_pos = if app.editor.agent_edits.is_empty() {
             String::new()
         } else {
-            format!(" {}/{}", app.agent_edit_index + 1, app.agent_edits.len())
+            format!(" {}/{}", app.editor.agent_edit_index + 1, app.editor.agent_edits.len())
         };
         format!("  follow{}", edit_pos)
     } else {
@@ -2507,12 +2535,12 @@ fn render_editor_status(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" ".repeat(pad), Style::default()),
     ];
 
-    if app.follow_mode {
+    if app.editor.follow_mode {
         let fi = format!("  follow");
-        let edit_pos = if app.agent_edits.is_empty() {
+        let edit_pos = if app.editor.agent_edits.is_empty() {
             String::new()
         } else {
-            format!(" {}/{}", app.agent_edit_index + 1, app.agent_edits.len())
+            format!(" {}/{}", app.editor.agent_edit_index + 1, app.editor.agent_edits.len())
         };
         spans.push(Span::styled(fi, Style::default().fg(GREEN)));
         spans.push(Span::styled(edit_pos, Style::default().fg(DIM)));
@@ -2533,7 +2561,7 @@ fn render_editor_status(frame: &mut Frame, app: &App, area: Rect) {
 fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
     use unicode_width::UnicodeWidthStr;
 
-    let buf = match &app.editor_buffer {
+    let buf = match &app.editor.buffer {
         Some(b) => b,
         None => return,
     };
@@ -2543,14 +2571,14 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
     let content_cols = (area.width as usize).saturating_sub(gutter_width as usize);
 
     // initialize highlighter lazily
-    if app.highlighter.is_none() {
-        app.highlighter = Some(editor::Highlighter::new());
+    if app.editor.highlighter.is_none() {
+        app.editor.highlighter = Some(editor::Highlighter::new());
     }
 
     // request enough highlighted lines to fill the viewport even with wrapping.
     // worst case every line wraps, but typically we need fewer.
     let hl_request = viewport_h;
-    let highlighted = if let Some(ref mut hl) = app.highlighter {
+    let highlighted = if let Some(ref mut hl) = app.editor.highlighter {
         hl.highlight_lines(&buf.path, &buf.lines, buf.generation, buf.scroll_row, hl_request)
     } else {
         Vec::new()
@@ -2576,10 +2604,10 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
         }
 
         let is_cursor_line = line_idx == buf.cursor_row;
-        let diff_marker = if app.follow_mode { app.diff_markers.get(&line_idx) } else { None };
+        let diff_marker = if app.editor.follow_mode { app.editor.diff_markers.get(&line_idx) } else { None };
 
         // check for LSP diagnostics on this line
-        let line_diag = app.lsp_diagnostics.iter().find(|d| d.line as usize == line_idx);
+        let line_diag = app.lsp.diagnostics.iter().find(|d| d.line as usize == line_idx);
         let diag_severity = line_diag.map(|d| d.severity);
 
         let gutter_style = match diff_marker {
@@ -2802,11 +2830,11 @@ fn wrap_spans(spans: &[(Style, String)], max_cols: usize) -> Vec<Vec<Span<'stati
 fn render_autocomplete_menu(frame: &mut Frame, app: &App, area: Rect) {
     use unicode_width::UnicodeWidthStr;
 
-    let ac = match &app.editor_autocomplete {
+    let ac = match &app.editor.autocomplete {
         Some(ac) if !ac.candidates.is_empty() => ac,
         _ => return,
     };
-    let buf = match &app.editor_buffer {
+    let buf = match &app.editor.buffer {
         Some(b) => b,
         None => return,
     };
@@ -2914,7 +2942,7 @@ fn render_autocomplete_menu(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_search_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let search = match &app.editor_search {
+    let search = match &app.editor.search {
         Some(s) => s,
         None => return,
     };
@@ -2989,7 +3017,7 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
     let avail = area.height as usize;
     let mut item_lines: Vec<Line> = Vec::new();
 
-    for item in app.activity.iter().rev() {
+    for item in app.feed.items.iter().rev() {
         if item_lines.len() >= avail {
             break;
         }
@@ -3230,13 +3258,13 @@ fn render_chat(frame: &mut Frame, app: &mut App) {
 
     // slash command suggestions shown when input starts with "/".
     // use the snapshot taken at first Tab press so cycling doesn't narrow the set.
-    let completion_input = app.slash_prefix.as_deref().unwrap_or(app.input.as_str());
-    let suggestions: Vec<Suggestion> = if app.input.starts_with('/') {
+    let completion_input = app.input.slash_prefix.as_deref().unwrap_or(app.input.text.as_str());
+    let suggestions: Vec<Suggestion> = if app.input.text.starts_with('/') {
         slash_suggestions(completion_input)
     } else {
         vec![]
     };
-    let slash_selected = app.slash_selected;
+    let slash_selected = app.input.slash_selected;
 
     let message_height: u16 = if !suggestions.is_empty() {
         (suggestions.len() as u16).min(8)
@@ -3350,7 +3378,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let rate = app.avg_rate();
     let pct = app.context_pct();
     let used_k = app.context_used() / 1000;
-    let limit_k = app.context_limit / 1000;
+    let limit_k = app.tokens.context_limit / 1000;
 
     let spark_width: usize = 16;
     let ctx_bar_width: usize = 8;
@@ -3482,7 +3510,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::styled(" ".repeat(pad), Style::default()));
 
     // sparkline
-    let spark_spans = render_colored_sparkline(&app.rate_samples, spark_width);
+    let spark_spans = render_colored_sparkline(&app.tokens.rate_samples, spark_width);
     spans.extend(spark_spans);
     spans.push(Span::styled(" ", Style::default()));
 
@@ -3798,8 +3826,8 @@ fn render_message_area(
 }
 
 fn render_input_area(frame: &mut Frame, app: &App, area: Rect) {
-    let display = make_display_input(&app.input, &app.paste_chunks);
-    let display_cursor = remap_cursor(&app.input, &app.paste_chunks, app.cursor_pos);
+    let display = make_display_input(&app.input.text, &app.input.paste_chunks);
+    let display_cursor = remap_cursor(&app.input.text, &app.input.paste_chunks, app.input.cursor_pos);
     let (input_lines, cursor_pos) = wrap_input_text(&display, area.width, Some(display_cursor), FG);
 
     let visible = area.height;
@@ -3831,17 +3859,17 @@ fn is_compact_tool(item: &ActivityItem) -> bool {
 
 fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     let w = area.width;
-    let n = app.activity.len();
+    let n = app.feed.items.len();
 
     // sync cache length with activity list
-    app.activity_render_cache.truncate(n);
-    while app.activity_render_cache.len() < n {
-        app.activity_render_cache.push(CachedRender::default());
+    app.feed.render_cache.truncate(n);
+    while app.feed.render_cache.len() < n {
+        app.feed.render_cache.push(CachedRender::default());
     }
 
     // re-render only stale items
     for idx in 0..n {
-        let (content_len, expanded, status_tag) = match &app.activity[idx] {
+        let (content_len, expanded, status_tag) = match &app.feed.items[idx] {
             ActivityItem::Thinking(t) => (t.len(), false, 0u8),
             ActivityItem::Text(t) => (t.len(), false, 0u8),
             ActivityItem::UserMessage(t) => (t.len(), false, 0u8),
@@ -3868,7 +3896,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         let stale = {
-            let c = &app.activity_render_cache[idx];
+            let c = &app.feed.render_cache[idx];
             c.content_len != content_len
                 || c.width != w
                 || c.expanded != expanded
@@ -3876,8 +3904,8 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         if stale {
-            let item_lines = render_activity_item(&app.activity[idx], w, app.spin_frame);
-            app.activity_render_cache[idx] = CachedRender {
+            let item_lines = render_activity_item(&app.feed.items[idx], w, app.spin_frame);
+            app.feed.render_cache[idx] = CachedRender {
                 lines: item_lines,
                 content_len,
                 width: w,
@@ -3893,12 +3921,12 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     for idx in 0..n {
         if idx > 0 {
             let both_collapsed_tools =
-                is_compact_tool(&app.activity[idx - 1]) && is_compact_tool(&app.activity[idx]);
+                is_compact_tool(&app.feed.items[idx - 1]) && is_compact_tool(&app.feed.items[idx]);
             if !both_collapsed_tools {
                 total += 1;
             }
         }
-        total += app.activity_render_cache[idx].lines.len();
+        total += app.feed.render_cache[idx].lines.len();
     }
 
     let show_waiting = app.is_running && total == 0;
@@ -3910,16 +3938,16 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_scroll = total_lines.saturating_sub(area.height);
 
     // re-engage auto-scroll when manual scrolling reaches the bottom
-    if !app.auto_scroll && app.scroll_offset >= max_scroll {
-        app.scroll_offset = max_scroll;
-        app.auto_scroll = true;
+    if !app.feed.auto_scroll && app.feed.scroll_offset >= max_scroll {
+        app.feed.scroll_offset = max_scroll;
+        app.feed.auto_scroll = true;
     }
 
-    let scroll = if app.auto_scroll {
-        app.scroll_offset = max_scroll;
+    let scroll = if app.feed.auto_scroll {
+        app.feed.scroll_offset = max_scroll;
         max_scroll
     } else {
-        app.scroll_offset
+        app.feed.scroll_offset
     };
 
     // only build the visible window of lines
@@ -3944,7 +3972,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
             // blank line between items, except between consecutive collapsed tools
             if idx > 0 {
                 let both_collapsed_tools =
-                    is_compact_tool(&app.activity[idx - 1]) && is_compact_tool(&app.activity[idx]);
+                    is_compact_tool(&app.feed.items[idx - 1]) && is_compact_tool(&app.feed.items[idx]);
                 if !both_collapsed_tools {
                     if cursor >= vp_start {
                         lines.push(Line::from(""));
@@ -3954,7 +3982,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
             }
 
             // item lines
-            for line in &app.activity_render_cache[idx].lines {
+            for line in &app.feed.render_cache[idx].lines {
                 if cursor >= vp_start && cursor < vp_end {
                     lines.push(line.clone());
                 }
@@ -4418,10 +4446,10 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
 
     // ctrl+e: toggle editor mode (only when no other modifiers)
     if ctrl && !super_key && !alt && key.code == KeyCode::Char('e') {
-        app.view_mode = match app.view_mode {
+        app.editor.mode = match app.editor.mode {
             ViewMode::Chat => ViewMode::Editor,
             ViewMode::Editor => {
-                app.editor_search = None;
+                app.editor.search = None;
                 ViewMode::Chat
             }
         };
@@ -4430,33 +4458,33 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
 
     // ctrl+p: file finder (enters editor if not already)
     if ctrl && key.code == KeyCode::Char('p') {
-        app.view_mode = ViewMode::Editor;
-        app.editor_search = Some(SearchState::new(SearchMode::Files));
+        app.editor.mode = ViewMode::Editor;
+        app.editor.search = Some(SearchState::new(SearchMode::Files));
         app.update_file_search();
         return InputAction::None;
     }
 
     // ctrl+f: toggle follow mode (enters editor if not already)
     if ctrl && key.code == KeyCode::Char('f') {
-        if app.view_mode == ViewMode::Chat {
+        if app.editor.mode == ViewMode::Chat {
             // from chat mode: always enable follow and switch to editor
-            app.view_mode = ViewMode::Editor;
-            app.follow_mode = true;
+            app.editor.mode = ViewMode::Editor;
+            app.editor.follow_mode = true;
         } else {
             // from editor mode: toggle
-            app.follow_mode = !app.follow_mode;
+            app.editor.follow_mode = !app.editor.follow_mode;
         }
-        if app.follow_mode && !app.agent_edits.is_empty() {
-            app.agent_edit_index = app.agent_edits.len() - 1;
-            app.open_agent_edit(app.agent_edit_index);
-        } else if !app.follow_mode {
-            app.diff_markers.clear();
+        if app.editor.follow_mode && !app.editor.agent_edits.is_empty() {
+            app.editor.agent_edit_index = app.editor.agent_edits.len() - 1;
+            app.open_agent_edit(app.editor.agent_edit_index);
+        } else if !app.editor.follow_mode {
+            app.editor.diff_markers.clear();
         }
         return InputAction::None;
     }
 
     // dispatch to editor-specific handler when in editor mode
-    if app.view_mode == ViewMode::Editor {
+    if app.editor.mode == ViewMode::Editor {
         return handle_editor_key(key, app, ctrl, alt, shift, super_key);
     }
 
@@ -4465,12 +4493,12 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         if app.is_running {
             return InputAction::Cancel;
         }
-        if app.input.is_empty() {
+        if app.input.text.is_empty() {
             return InputAction::Quit;
         }
-        app.input.clear();
-        app.cursor_pos = 0;
-        app.paste_chunks.clear();
+        app.input.text.clear();
+        app.input.cursor_pos = 0;
+        app.input.paste_chunks.clear();
         app.reset_slash_completion();
         return InputAction::None;
     }
@@ -4487,10 +4515,10 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         if app.is_running {
             return InputAction::Cancel;
         }
-        if !app.input.is_empty() {
-            app.input.clear();
-            app.cursor_pos = 0;
-            app.paste_chunks.clear();
+        if !app.input.text.is_empty() {
+            app.input.text.clear();
+            app.input.cursor_pos = 0;
+            app.input.paste_chunks.clear();
             app.reset_slash_completion();
         }
         return InputAction::None;
@@ -4498,12 +4526,12 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
 
     // page scroll (always available)
     if key.code == KeyCode::PageUp {
-        app.auto_scroll = false;
-        app.scroll_offset = app.scroll_offset.saturating_sub(10);
+        app.feed.auto_scroll = false;
+        app.feed.scroll_offset = app.feed.scroll_offset.saturating_sub(10);
         return InputAction::None;
     }
     if key.code == KeyCode::PageDown {
-        app.scroll_offset = app.scroll_offset.saturating_add(10);
+        app.feed.scroll_offset = app.feed.scroll_offset.saturating_add(10);
         return InputAction::None;
     }
 
@@ -4512,57 +4540,57 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
             if shift || alt || ctrl {
                 app.reset_slash_completion();
                 let bp = app.cursor_byte_pos();
-                app.input.insert(bp, '\n');
-                app.cursor_pos += 1;
-            } else if !app.input.is_empty() {
+                app.input.text.insert(bp, '\n');
+                app.input.cursor_pos += 1;
+            } else if !app.input.text.is_empty() {
                 // slash commands and ! bash commands are dispatched immediately even during a running turn
-                if app.is_running && !app.input.starts_with('/') && !app.input.starts_with('!') {
+                if app.is_running && !app.input.text.starts_with('/') && !app.input.text.starts_with('!') {
                     app.reset_slash_completion();
                     app.queue_message();
                 } else {
                     app.reset_slash_completion();
                     let msg = app.expand_input();
-                    app.input.clear();
-                    app.cursor_pos = 0;
-                    app.paste_chunks.clear();
+                    app.input.text.clear();
+                    app.input.cursor_pos = 0;
+                    app.input.paste_chunks.clear();
                     return InputAction::Submit(msg);
                 }
             }
         }
         KeyCode::Tab | KeyCode::BackTab => {
-            if app.input.starts_with('/') {
+            if app.input.text.starts_with('/') {
                 let forward = key.code == KeyCode::Tab;
                 // snapshot the input before the first Tab so cycling doesn't narrow the set
-                if app.slash_prefix.is_none() {
-                    app.slash_prefix = Some(app.input.clone());
+                if app.input.slash_prefix.is_none() {
+                    app.input.slash_prefix = Some(app.input.text.clone());
                 }
-                let prefix = app.slash_prefix.clone().unwrap();
+                let prefix = app.input.slash_prefix.clone().unwrap();
                 let suggestions = slash_suggestions(&prefix);
                 let count = suggestions.len();
                 if count == 0 {
                     return InputAction::None;
                 }
                 let next = if forward {
-                    match app.slash_selected {
+                    match app.input.slash_selected {
                         None => 0,
                         Some(i) => (i + 1) % count,
                     }
                 } else {
-                    match app.slash_selected {
+                    match app.input.slash_selected {
                         None | Some(0) => count - 1,
                         Some(i) => i - 1,
                     }
                 };
-                app.slash_selected = Some(next);
+                app.input.slash_selected = Some(next);
                 let completion = suggestions[next].completion.clone();
                 // when a command name is completed (trailing space), reset the prefix
                 // so the next Tab opens a fresh arg-completion session
                 let is_cmd_completion = completion.ends_with(' ');
-                app.input = completion;
-                app.cursor_pos = app.char_count();
+                app.input.text = completion;
+                app.input.cursor_pos = app.char_count();
                 if is_cmd_completion {
-                    app.slash_prefix = Some(app.input.clone());
-                    app.slash_selected = None;
+                    app.input.slash_prefix = Some(app.input.text.clone());
+                    app.input.slash_selected = None;
                 }
             }
         }
@@ -4572,20 +4600,20 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 app.delete_to_line_start();
             } else if alt || ctrl {
                 app.delete_word_backward();
-            } else if app.cursor_pos > 0 {
+            } else if app.input.cursor_pos > 0 {
                 let bp = app.cursor_byte_pos();
-                let prev = app.input[..bp].char_indices().last().map(|(i, _)| i);
+                let prev = app.input.text[..bp].char_indices().last().map(|(i, _)| i);
                 if let Some(pb) = prev {
-                    app.input.remove(pb);
-                    app.cursor_pos -= 1;
+                    app.input.text.remove(pb);
+                    app.input.cursor_pos -= 1;
                 }
             }
         }
         KeyCode::Delete => {
             app.reset_slash_completion();
-            if app.cursor_pos < app.char_count() {
+            if app.input.cursor_pos < app.char_count() {
                 let bp = app.cursor_byte_pos();
-                app.input.remove(bp);
+                app.input.text.remove(bp);
             }
         }
         KeyCode::Left => {
@@ -4594,7 +4622,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
             } else if alt {
                 app.move_word_left();
             } else {
-                app.cursor_pos = app.cursor_pos.saturating_sub(1);
+                app.input.cursor_pos = app.input.cursor_pos.saturating_sub(1);
             }
         }
         KeyCode::Right => {
@@ -4602,17 +4630,17 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                 app.move_line_end();
             } else if alt {
                 app.move_word_right();
-            } else if app.cursor_pos < app.char_count() {
-                app.cursor_pos += 1;
+            } else if app.input.cursor_pos < app.char_count() {
+                app.input.cursor_pos += 1;
             }
         }
         KeyCode::Up => {
             if shift {
-                app.auto_scroll = false;
-                app.scroll_offset = app.scroll_offset.saturating_sub(1);
+                app.feed.auto_scroll = false;
+                app.feed.scroll_offset = app.feed.scroll_offset.saturating_sub(1);
             } else if app.input_line_count() > 1 && app.move_cursor_up() {
                 // moved within multi-line input
-            } else if app.input.is_empty() && app.pop_queued_message() {
+            } else if app.input.text.is_empty() && app.pop_queued_message() {
                 // popped last queued message into input
             } else if app.navigate_history_up() {
                 // navigated to an older history entry
@@ -4622,7 +4650,7 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
         }
         KeyCode::Down => {
             if shift {
-                app.scroll_offset = app.scroll_offset.saturating_add(1);
+                app.feed.scroll_offset = app.feed.scroll_offset.saturating_add(1);
             } else if app.input_line_count() > 1 && app.move_cursor_down() {
                 // moved within multi-line input
             } else if app.navigate_history_down() {
@@ -4658,8 +4686,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                         // ctrl+j inserts newline (traditional unix LF)
                         app.reset_slash_completion();
                         let bp = app.cursor_byte_pos();
-                        app.input.insert(bp, '\n');
-                        app.cursor_pos += 1;
+                        app.input.text.insert(bp, '\n');
+                        app.input.cursor_pos += 1;
                     }
                     'o' => return InputAction::ToggleDiff,
                     _ => {}
@@ -4673,24 +4701,24 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
                     'd' => {
                         // alt+d: delete word forward
                         app.reset_slash_completion();
-                        let start = app.cursor_pos;
+                        let start = app.input.cursor_pos;
                         app.move_word_right();
-                        let end = app.cursor_pos;
+                        let end = app.input.cursor_pos;
                         if end > start {
                             let byte_start = app
-                                .input
+                                .input.text
                                 .char_indices()
                                 .nth(start)
                                 .map(|(i, _)| i)
-                                .unwrap_or(app.input.len());
+                                .unwrap_or(app.input.text.len());
                             let byte_end = app
-                                .input
+                                .input.text
                                 .char_indices()
                                 .nth(end)
                                 .map(|(i, _)| i)
-                                .unwrap_or(app.input.len());
-                            app.input.replace_range(byte_start..byte_end, "");
-                            app.cursor_pos = start;
+                                .unwrap_or(app.input.text.len());
+                            app.input.text.replace_range(byte_start..byte_end, "");
+                            app.input.cursor_pos = start;
                         }
                     }
                     _ => {}
@@ -4698,8 +4726,8 @@ pub fn handle_key_event(key: KeyEvent, app: &mut App) -> InputAction {
             } else {
                 app.reset_slash_completion();
                 let bp = app.cursor_byte_pos();
-                app.input.insert(bp, c);
-                app.cursor_pos += 1;
+                app.input.text.insert(bp, c);
+                app.input.cursor_pos += 1;
             }
         }
         _ => {}

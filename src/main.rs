@@ -179,7 +179,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
     // apply persisted diffs_expanded state (saved by the user's last toggle)
     let rum_settings = persistence::load_settings();
     if let Some(expanded) = rum_settings.diffs_expanded {
-        app.diffs_expanded = expanded;
+        app.feed.diffs_expanded = expanded;
     }
 
     let cancel = agent::CancelToken::new();
@@ -219,7 +219,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
             lsp.lock().await.start_servers().await;
         });
     }
-    app.lsp = Some(lsp_manager.clone());
+    app.lsp.manager = Some(lsp_manager.clone());
     agent.lsp = Some(lsp_manager.clone());
 
     // channels for async LSP completion and goto-definition results
@@ -355,7 +355,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         }
 
         // process pending LSP notifications from the editor
-        let pending_lsp: Vec<tui::LspNotify> = app.lsp_pending.drain(..).collect();
+        let pending_lsp: Vec<tui::LspNotify> = app.lsp.pending.drain(..).collect();
         if !pending_lsp.is_empty() {
             let lsp = lsp_manager.clone();
             tokio::spawn(async move {
@@ -379,7 +379,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         }
 
         // fire async LSP completion request
-        if let Some((path, line, character)) = app.lsp_completion_request.take() {
+        if let Some((path, line, character)) = app.lsp.completion_request.take() {
             let lsp = lsp_manager.clone();
             let tx = lsp_comp_tx.clone();
             tokio::spawn(async move {
@@ -392,13 +392,13 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
 
         // receive LSP completion results and merge into autocomplete
         while let Ok(items) = lsp_comp_rx.try_recv() {
-            if let Some(ref mut ac) = app.editor_autocomplete {
+            if let Some(ref mut ac) = app.editor.autocomplete {
                 crate::autocomplete::merge_lsp_completions(ac, items);
             }
         }
 
         // fire async LSP goto-definition request
-        if let Some((path, line, character)) = app.lsp_goto_request.take() {
+        if let Some((path, line, character)) = app.lsp.goto_request.take() {
             let lsp = lsp_manager.clone();
             let tx = lsp_goto_tx.clone();
             tokio::spawn(async move {
@@ -415,7 +415,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                 let uri_str = loc.uri.as_str();
                 if let Some(path) = lsp::uri_to_path(uri_str) {
                     app.open_file(&path);
-                    if let Some(ref mut buf) = app.editor_buffer {
+                    if let Some(ref mut buf) = app.editor.buffer {
                         buf.goto_line(loc.range.start.line as usize);
                     }
                 }
@@ -423,19 +423,19 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         }
 
         // refresh diagnostics for the currently open file
-        if let Some(ref buf) = app.editor_buffer {
+        if let Some(ref buf) = app.editor.buffer {
             let key = buf.path.to_string_lossy().to_string();
             if let Ok(mgr) = lsp_manager.try_lock() {
                 if let Ok(d) = mgr.diagnostics.try_lock() {
-                    app.lsp_diagnostics = d.get(&key).cloned().unwrap_or_default();
+                    app.lsp.diagnostics = d.get(&key).cloned().unwrap_or_default();
                 }
             }
         }
 
         // after agent turn completes, check for LSP diagnostics and queue errors
-        if let Some(check_at) = app.diag_check_at {
+        if let Some(check_at) = app.lsp.diag_check_at {
             if std::time::Instant::now() >= check_at && !app.is_running {
-                app.diag_check_at = None;
+                app.lsp.diag_check_at = None;
                 if let Ok(mgr) = lsp_manager.try_lock() {
                     if let Ok(diags) = mgr.diagnostics.try_lock() {
                         let mut error_lines = Vec::new();
@@ -541,7 +541,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                                     let _ = persistence::save_settings(&persistence::RumSettings {
                                         model: Some(app.model_name().to_string()),
                                         thinking_level: Some(app.thinking_level().to_string()),
-                                        diffs_expanded: Some(app.diffs_expanded),
+                                        diffs_expanded: Some(app.feed.diffs_expanded),
                                     });
                                 }
                                 if app.should_quit {
@@ -572,24 +572,24 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                         }
                         tui::InputAction::Quit => break,
                         tui::InputAction::ScrollUp => {
-                            app.auto_scroll = false;
-                            app.scroll_offset = app.scroll_offset.saturating_sub(1);
+                            app.feed.auto_scroll = false;
+                            app.feed.scroll_offset = app.feed.scroll_offset.saturating_sub(1);
                         }
                         tui::InputAction::ScrollDown => {
-                            app.scroll_offset = app.scroll_offset.saturating_add(1);
+                            app.feed.scroll_offset = app.feed.scroll_offset.saturating_add(1);
                         }
                         tui::InputAction::ToggleDiff => {
                             app.toggle_diff();
                             let _ = persistence::save_settings(&persistence::RumSettings {
                                 model: Some(app.model_name().to_string()),
                                 thinking_level: Some(app.thinking_level().to_string()),
-                                diffs_expanded: Some(app.diffs_expanded),
+                                diffs_expanded: Some(app.feed.diffs_expanded),
                             });
                         }
                         tui::InputAction::PasteFromClipboard => {
                             if let Some(img_path) = clipboard::try_read_clipboard_image() {
                                 app.insert_text(img_path);
-                                app.paste_handled = true;
+                                app.input.paste_handled = true;
                             }
                             // if no image is on clipboard, bracketed paste will fire separately
                         }
@@ -597,8 +597,8 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                     }
                 }
                 Event::Paste(text) => {
-                    if app.paste_handled {
-                        app.paste_handled = false;
+                    if app.input.paste_handled {
+                        app.input.paste_handled = false;
                         // skip: PasteFromClipboard already processed this
                     } else if text.is_empty() || clipboard::paste_looks_like_binary(&text) {
                         if let Some(img_path) = clipboard::try_read_clipboard_image() {
@@ -614,8 +614,8 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                 }
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => {
-                        if app.view_mode == tui::ViewMode::Editor {
-                            if let Some(ref mut buf) = app.editor_buffer {
+                        if app.editor.mode == tui::ViewMode::Editor {
+                            if let Some(ref mut buf) = app.editor.buffer {
                                 for _ in 0..3 {
                                     buf.move_up();
                                 }
@@ -625,13 +625,13 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                                 buf.ensure_cursor_visible(h.saturating_sub(2));
                             }
                         } else {
-                            app.auto_scroll = false;
-                            app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                            app.feed.auto_scroll = false;
+                            app.feed.scroll_offset = app.feed.scroll_offset.saturating_sub(3);
                         }
                     }
                     MouseEventKind::ScrollDown => {
-                        if app.view_mode == tui::ViewMode::Editor {
-                            if let Some(ref mut buf) = app.editor_buffer {
+                        if app.editor.mode == tui::ViewMode::Editor {
+                            if let Some(ref mut buf) = app.editor.buffer {
                                 for _ in 0..3 {
                                     buf.move_down();
                                 }
@@ -641,12 +641,12 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                                 buf.ensure_cursor_visible(h.saturating_sub(2));
                             }
                         } else {
-                            app.scroll_offset = app.scroll_offset.saturating_add(3);
+                            app.feed.scroll_offset = app.feed.scroll_offset.saturating_add(3);
                         }
                     }
                     MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                        if app.view_mode == tui::ViewMode::Editor {
-                            if let Some(ref mut buf) = app.editor_buffer {
+                        if app.editor.mode == tui::ViewMode::Editor {
+                            if let Some(ref mut buf) = app.editor.buffer {
                                 let size = crossterm::terminal::size().unwrap_or((80, 24));
                                 let sidebar_w: u16 = 30;
                                 let gutter_w = (buf.line_count().max(1).to_string().len() + 2) as u16;
@@ -699,7 +699,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
                                         buf.cursor_col = byte_off;
                                         buf.desired_col = None;
                                     }
-                                    app.editor_autocomplete = None;
+                                    app.editor.autocomplete = None;
                                 }
                             }
                         }
