@@ -186,6 +186,14 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut line_idx = buf.scroll_row;
     let mut hl_idx: usize = 0;
 
+    // build a line-number index for diagnostics to avoid O(n) search per line
+    let diag_map: std::collections::HashMap<usize, &crate::lsp::DiagnosticInfo> = app
+        .lsp
+        .diagnostics
+        .iter()
+        .map(|d| (d.line as usize, d))
+        .collect();
+
     while lines.len() < viewport_h {
         if line_idx >= buf.lines.len() {
             let spans = vec![
@@ -202,7 +210,7 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
         let diff_marker = if app.editor.follow_mode { app.editor.diff_markers.get(&line_idx) } else { None };
 
         // check for LSP diagnostics on this line
-        let line_diag = app.lsp.diagnostics.iter().find(|d| d.line as usize == line_idx);
+        let line_diag = diag_map.get(&line_idx).copied();
         let diag_severity = line_diag.map(|d| d.severity);
 
         let gutter_style = match diff_marker {

@@ -428,11 +428,12 @@ impl EditorBuffer {
 // syntax highlighting via syntect with aggressive caching.
 // caches parse state checkpoints every CHECKPOINT_INTERVAL lines so scrolling
 // only re-parses from the nearest checkpoint rather than from line 0.
-// also caches the final rendered output to avoid re-highlighting when nothing changed.
+// highlighted lines are cached individually so scrolling by a few lines
+// reuses most of the previous frame's work.
 
 const CHECKPOINT_INTERVAL: usize = 100;
 
-type HighlightedLine = Vec<(syntect::highlighting::Style, String)>;
+pub type HighlightedLine = Vec<(syntect::highlighting::Style, String)>;
 
 pub struct Highlighter {
     pub syntax_set: SyntaxSet,
@@ -441,15 +442,8 @@ pub struct Highlighter {
     cache_path: Option<PathBuf>,
     cache_generation: u64,
     checkpoints: Vec<(usize, ParseState, ScopeStack)>,
-    // cached render output
-    render_cache: Option<RenderCache>,
-}
-
-struct RenderCache {
-    generation: u64,
-    start: usize,
-    count: usize,
-    lines: Vec<HighlightedLine>,
+    // per-line highlight cache. valid only for the current (path, generation).
+    line_cache: Vec<Option<HighlightedLine>>,
 }
 
 impl Highlighter {
@@ -468,13 +462,13 @@ impl Highlighter {
             cache_path: None,
             cache_generation: 0,
             checkpoints: Vec::new(),
-            render_cache: None,
+            line_cache: Vec::new(),
         }
     }
 
     pub fn invalidate(&mut self) {
         self.checkpoints.clear();
-        self.render_cache = None;
+        self.line_cache.clear();
         self.cache_path = None;
         self.cache_generation = 0;
     }
@@ -487,19 +481,27 @@ impl Highlighter {
         start: usize,
         count: usize,
     ) -> Vec<HighlightedLine> {
-        // check render cache first
-        if let Some(ref rc) = self.render_cache {
-            if rc.generation == generation && rc.start == start && rc.count == count {
-                return rc.lines.clone();
-            }
-        }
-
-        // invalidate checkpoints if file changed
+        // invalidate caches if file identity changed
         let path_changed = self.cache_path.as_deref() != Some(path);
         if path_changed || self.cache_generation != generation {
             self.checkpoints.clear();
+            self.line_cache.clear();
             self.cache_path = Some(path.to_path_buf());
             self.cache_generation = generation;
+        }
+
+        // grow line_cache to cover the file
+        if self.line_cache.len() < lines.len() {
+            self.line_cache.resize_with(lines.len(), || None);
+        }
+
+        let end = (start + count).min(lines.len());
+
+        // fast path: all requested lines are already cached
+        if (start..end).all(|i| self.line_cache[i].is_some()) {
+            return (start..end)
+                .map(|i| self.line_cache[i].as_ref().unwrap().clone())
+                .collect();
         }
 
         let syntax = self
@@ -509,48 +511,56 @@ impl Highlighter {
             .flatten()
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
 
-        // find the best checkpoint at or before `start`
-        let (resume_line, mut parse_state, mut scope_stack) = self
-            .checkpoints
-            .iter()
-            .filter(|(line, _, _)| *line <= start)
-            .max_by_key(|(line, _, _)| *line)
-            .map(|(line, ps, ss)| (*line, ps.clone(), ss.clone()))
-            .unwrap_or_else(|| (0, ParseState::new(syntax), ScopeStack::new()));
+        // find the best checkpoint at or before `start` via binary search
+        let (resume_line, mut parse_state, mut scope_stack) = {
+            let idx = self.checkpoints.partition_point(|(line, _, _)| *line <= start);
+            if idx > 0 {
+                let (line, ps, ss) = &self.checkpoints[idx - 1];
+                (*line, ps.clone(), ss.clone())
+            } else {
+                (0, ParseState::new(syntax), ScopeStack::new())
+            }
+        };
 
-        let end = (start + count).min(lines.len());
         let mut result = Vec::with_capacity(count);
 
-        // parse from the checkpoint to the end of the viewport, saving new checkpoints
         for i in resume_line..end {
             let line_with_nl = format!("{}\n", lines[i]);
             let ops = parse_state
                 .parse_line(&line_with_nl, &self.syntax_set)
                 .unwrap_or_default();
 
-            // save checkpoint at interval boundaries
+            // save checkpoint at interval boundaries (kept sorted, no duplicates)
             if i > 0 && i % CHECKPOINT_INTERVAL == 0 {
-                let already_cached = self.checkpoints.iter().any(|(l, _, _)| *l == i);
-                if !already_cached {
-                    self.checkpoints.push((i, parse_state.clone(), scope_stack.clone()));
+                let cp_idx = self.checkpoints.partition_point(|(line, _, _)| *line < i);
+                let already = cp_idx < self.checkpoints.len() && self.checkpoints[cp_idx].0 == i;
+                if !already {
+                    self.checkpoints.insert(cp_idx, (i, parse_state.clone(), scope_stack.clone()));
                 }
             }
 
             if i >= start {
-                let highlighter = syntect::highlighting::Highlighter::new(&self.theme);
-                let mut hl_state = syntect::highlighting::HighlightState::new(&highlighter, scope_stack.clone());
-                let ranges = syntect::highlighting::RangedHighlightIterator::new(&mut hl_state, &ops, &line_with_nl, &highlighter);
-
-                let spans: HighlightedLine = ranges
-                    .map(|(style, text, _range)| (style, text.trim_end_matches('\n').to_string()))
-                    .filter(|(_, text)| !text.is_empty())
-                    .collect();
-
-                result.push(if spans.is_empty() {
-                    vec![(syntect::highlighting::Style::default(), String::new())]
+                let hl_line = if let Some(ref cached) = self.line_cache[i] {
+                    cached.clone()
                 } else {
-                    spans
-                });
+                    let highlighter = syntect::highlighting::Highlighter::new(&self.theme);
+                    let mut hl_state = syntect::highlighting::HighlightState::new(&highlighter, scope_stack.clone());
+                    let ranges = syntect::highlighting::RangedHighlightIterator::new(&mut hl_state, &ops, &line_with_nl, &highlighter);
+
+                    let spans: HighlightedLine = ranges
+                        .map(|(style, text, _range)| (style, text.trim_end_matches('\n').to_string()))
+                        .filter(|(_, text)| !text.is_empty())
+                        .collect();
+
+                    let line = if spans.is_empty() {
+                        vec![(syntect::highlighting::Style::default(), String::new())]
+                    } else {
+                        spans
+                    };
+                    self.line_cache[i] = Some(line.clone());
+                    line
+                };
+                result.push(hl_line);
             }
 
             // apply scope changes
@@ -558,14 +568,6 @@ impl Highlighter {
                 scope_stack.apply(op).ok();
             }
         }
-
-        // save render cache
-        self.render_cache = Some(RenderCache {
-            generation,
-            start,
-            count,
-            lines: result.clone(),
-        });
 
         result
     }
