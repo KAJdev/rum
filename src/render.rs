@@ -156,6 +156,8 @@ fn render_editor_status(frame: &mut Frame, app: &App, area: Rect) {
 fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
     use unicode_width::UnicodeWidthStr;
 
+    let dirty_from = app.editor.buffer.as_mut().and_then(|b| b.dirty_from.take());
+
     let buf = match &app.editor.buffer {
         Some(b) => b,
         None => return,
@@ -174,7 +176,7 @@ fn render_editor_content(frame: &mut Frame, app: &mut App, area: Rect) {
     // worst case every line wraps, but typically we need fewer.
     let hl_request = viewport_h;
     let highlighted = if let Some(ref mut hl) = app.editor.highlighter {
-        hl.highlight_lines(&buf.path, &buf.lines, buf.generation, buf.scroll_row, hl_request)
+        hl.highlight_lines(&buf.path, &buf.lines, buf.generation, dirty_from, buf.scroll_row, hl_request)
     } else {
         Vec::new()
     };

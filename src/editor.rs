@@ -32,6 +32,10 @@ pub struct EditorBuffer {
     pub scroll_row: usize,
     pub dirty: bool,
     pub generation: u64,
+    // earliest line modified since the last highlight pass.
+    // lets the highlighter do surgical invalidation instead of
+    // clearing all caches on every keystroke.
+    pub dirty_from: Option<usize>,
     // tracks the desired column across vertical movements so the cursor
     // returns to its original column after passing through short lines
     pub desired_col: Option<usize>,
@@ -55,6 +59,7 @@ impl EditorBuffer {
             scroll_row: 0,
             dirty: false,
             generation: 0,
+            dirty_from: None,
             desired_col: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -81,6 +86,10 @@ impl EditorBuffer {
         });
         self.redo_stack.clear();
         self.generation += 1;
+        self.dirty_from = Some(match self.dirty_from {
+            Some(prev) => prev.min(self.cursor_row),
+            None => self.cursor_row,
+        });
         self.desired_col = None;
         if self.undo_stack.len() > 200 {
             self.undo_stack.remove(0);
@@ -99,6 +108,7 @@ impl EditorBuffer {
             self.cursor_col = entry.cursor_col;
             self.dirty = true;
             self.generation += 1;
+            self.dirty_from = Some(0);
         }
     }
 
@@ -114,6 +124,7 @@ impl EditorBuffer {
             self.cursor_col = entry.cursor_col;
             self.dirty = true;
             self.generation += 1;
+            self.dirty_from = Some(0);
         }
     }
 
@@ -496,12 +507,13 @@ impl Highlighter {
         path: &Path,
         lines: &[String],
         generation: u64,
+        dirty_from: Option<usize>,
         start: usize,
         count: usize,
     ) -> Vec<HighlightedLine> {
-        // invalidate caches if file identity changed
         let path_changed = self.cache_path.as_deref() != Some(path);
-        if path_changed || self.cache_generation != generation {
+        if path_changed {
+            // different file: full invalidation
             self.checkpoints.clear();
             self.line_cache.clear();
             self.cache_path = Some(path.to_path_buf());
@@ -509,11 +521,47 @@ impl Highlighter {
             self.parse_frontier = 0;
             self.frontier_parse_state = None;
             self.frontier_scope_stack = None;
+        } else if self.cache_generation != generation {
+            // same file, content changed: surgical invalidation.
+            // only discard caches from the edited line onward since
+            // parse state flows forward through the file.
+            self.cache_generation = generation;
+            if let Some(from) = dirty_from {
+                // remove checkpoints at or after the edit point
+                self.checkpoints.retain(|(line, _, _)| *line < from);
+                // clear cached highlights from the edit point onward
+                for i in from..self.line_cache.len() {
+                    self.line_cache[i] = None;
+                }
+                // reset frontier if it had parsed past the edit point.
+                // restore from the nearest surviving checkpoint so the
+                // frontier continues with correct parse state.
+                if self.parse_frontier > from {
+                    if let Some((line, ps, ss)) = self.checkpoints.last() {
+                        self.parse_frontier = *line;
+                        self.frontier_parse_state = Some(ps.clone());
+                        self.frontier_scope_stack = Some(ss.clone());
+                    } else {
+                        self.parse_frontier = 0;
+                        self.frontier_parse_state = None;
+                        self.frontier_scope_stack = None;
+                    }
+                }
+            } else {
+                // no dirty_from info (e.g. undo/redo): full invalidation
+                self.checkpoints.clear();
+                self.line_cache.clear();
+                self.parse_frontier = 0;
+                self.frontier_parse_state = None;
+                self.frontier_scope_stack = None;
+            }
         }
 
-        // grow line_cache to cover the file
+        // resize line_cache to match the file
         if self.line_cache.len() < lines.len() {
             self.line_cache.resize_with(lines.len(), || None);
+        } else if self.line_cache.len() > lines.len() {
+            self.line_cache.truncate(lines.len());
         }
 
         let end = (start + count).min(lines.len());
