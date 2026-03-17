@@ -1,6 +1,33 @@
-// remove ansi escape sequences and other terminal control codes.
+// true if the char is a problematic control or invisible unicode codepoint
+// that should be stripped before rendering. preserves \n and \t.
+fn is_control_or_invisible(c: char) -> bool {
+    match c {
+        // C0 controls except \t and \n
+        '\x00'..='\x08' | '\x0B'..='\x0C' | '\x0E'..='\x1F' => true,
+        // DEL
+        '\x7F' => true,
+        // C1 controls
+        '\u{0080}'..='\u{009F}' => true,
+        // unicode directional overrides
+        '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' => true,
+        // zero-width chars and BOM
+        '\u{200B}'..='\u{200D}' | '\u{FEFF}' => true,
+        _ => false,
+    }
+}
+
+// strip control characters and invisible unicode from text.
+// preserves \n and \t. does not handle ANSI escape sequences or
+// carriage return line-overwrite semantics (use strip_ansi for that).
+pub fn sanitize_text(s: &str) -> String {
+    s.chars()
+        .filter(|&c| !is_control_or_invisible(c) || c == '\n' || c == '\t')
+        .collect()
+}
+
+// remove ansi escape sequences, terminal control codes, and invisible unicode.
 // covers CSI sequences (\x1b[...X), OSC sequences (\x1b]...ST), character set
-// designations (\x1b(F), and bare \x1b.
+// designations (\x1b(F), carriage return line-overwrite, and bare \x1b.
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -46,6 +73,8 @@ pub fn strip_ansi(s: &str) -> String {
             } else {
                 out.clear();
             }
+        } else if is_control_or_invisible(c) {
+            // skip
         } else {
             out.push(c);
         }

@@ -1,5 +1,6 @@
 use crate::editor::{EditorBuffer, SearchMode, SearchState};
 use crate::tui::{App, LspNotify, ViewMode};
+use crate::util::sanitize_text;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthStr;
 
@@ -208,6 +209,7 @@ impl App {
     // very large pastes (> 50 lines or > 2000 chars) are written to a temp file
     // and the path is inserted instead, so the model can read them with the read tool.
     pub fn insert_paste(&mut self, text: String) {
+        let text = sanitize_text(&text);
         let multiline = text.contains('\n');
         let long = text.len() > 80;
         if !multiline && !long {

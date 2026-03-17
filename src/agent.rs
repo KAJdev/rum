@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use crate::api::{ApiClient, ContentBlock, Message, MessageContent, StreamEvent};
 use crate::config::Config;
 use crate::tools::{self, ToolResult};
+use crate::util::sanitize_text;
 
 // shared flag for cooperative cancellation.
 // set to true when the user hits escape during a running operation.
@@ -474,7 +475,7 @@ impl Agent {
                             current_thinking_signature.clear();
                         }
                         current_thinking.push_str(&t);
-                        let _ = event_tx.send(AgentEvent::Thinking(t));
+                        let _ = event_tx.send(AgentEvent::Thinking(sanitize_text(&t)));
                     }
                     StreamEvent::ThinkingSignature(s) => {
                         current_thinking_signature.push_str(&s);
@@ -486,7 +487,7 @@ impl Agent {
                         }
                         if in_text {
                             current_text.push_str(&t);
-                            let _ = event_tx.send(AgentEvent::Text(t));
+                            let _ = event_tx.send(AgentEvent::Text(sanitize_text(&t)));
                         }
                     }
                     StreamEvent::ToolUseStart { id, name } => {
