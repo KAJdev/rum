@@ -2002,7 +2002,7 @@ fn sanitize_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
                 .into_iter()
                 .map(|span| {
                     let clean = sanitize_text(&span.content);
-                    if clean.len() == span.content.len() {
+                    if clean == *span.content {
                         span
                     } else {
                         Span::styled(clean, span.style)
