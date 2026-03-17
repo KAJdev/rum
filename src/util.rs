@@ -1,9 +1,9 @@
 // true if the char is a problematic control or invisible unicode codepoint
-// that should be stripped before rendering. preserves \n and \t.
+// that should be stripped before rendering. preserves \n.
 fn is_control_or_invisible(c: char) -> bool {
     match c {
-        // C0 controls except \t (\x09) and \n (\x0A)
-        '\x00'..='\x08' | '\x0B'..='\x1F' => true,
+        // C0 controls except \n (\x0A)
+        '\x00'..='\x09' | '\x0B'..='\x1F' => true,
         // DEL
         '\x7F' => true,
         // C1 controls
@@ -17,11 +17,22 @@ fn is_control_or_invisible(c: char) -> bool {
 }
 
 // strip control characters and invisible unicode from text.
-// preserves \n and \t. does not handle ANSI escape sequences or
+// tabs are replaced with spaces (ratatui cannot handle tab stops).
+// preserves \n. does not handle ANSI escape sequences or
 // carriage return line-overwrite semantics (use strip_ansi for that).
 pub fn sanitize_text(s: &str) -> String {
     s.chars()
-        .filter(|&c| !is_control_or_invisible(c) || c == '\n' || c == '\t')
+        .filter_map(|c| {
+            if c == '\n' {
+                Some(c)
+            } else if c == '\t' {
+                Some(' ')
+            } else if is_control_or_invisible(c) {
+                None
+            } else {
+                Some(c)
+            }
+        })
         .collect()
 }
 
@@ -86,6 +97,8 @@ pub fn strip_ansi(s: &str) -> String {
             } else {
                 out.clear();
             }
+        } else if c == '\t' {
+            out.push(' ');
         } else if is_control_or_invisible(c) {
             // skip
         } else {
