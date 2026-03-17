@@ -187,7 +187,7 @@ fn extract_tool_arg(name: &str, input: &serde_json::Value) -> String {
 fn truncate_preview(s: &str, max: usize) -> String {
     let first_line = s.lines().next().unwrap_or(s);
     if first_line.len() > max {
-        format!("{}...", &first_line[..max])
+        format!("{}...", crate::util::truncate_str(first_line, max))
     } else {
         first_line.to_string()
     }

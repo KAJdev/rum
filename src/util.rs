@@ -25,6 +25,19 @@ pub fn sanitize_text(s: &str) -> String {
         .collect()
 }
 
+// truncate a string to at most `max_bytes`, backing up to the nearest
+// char boundary so we never slice inside a multi-byte codepoint.
+pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 // remove ansi escape sequences, terminal control codes, and invisible unicode.
 // covers CSI sequences (\x1b[...X), OSC sequences (\x1b]...ST), character set
 // designations (\x1b(F), carriage return line-overwrite, and bare \x1b.

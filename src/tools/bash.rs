@@ -156,7 +156,7 @@ pub(super) async fn exec_bash(
     }
 
     if collected.len() > 50_000 {
-        collected = format!("{}...\n[truncated]", &collected[..50_000]);
+        collected = format!("{}...\n[truncated]", crate::util::truncate_str(&collected, 50_000));
     }
 
     let output = if exit_code != 0 {
@@ -291,7 +291,7 @@ fn exec_bash_background(
             collected = "(no output)".to_string();
         }
         if collected.len() > 50_000 {
-            collected = format!("{}...\n[truncated]", &collected[..50_000]);
+            collected = format!("{}...\n[truncated]", crate::util::truncate_str(&collected, 50_000));
         }
 
         let output = if exit_code != 0 {

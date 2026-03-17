@@ -83,7 +83,7 @@ fn explore_arg_preview(name: &str, input: &serde_json::Value) -> String {
         "bash" => {
             let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("?");
             if cmd.len() > 60 {
-                format!("{}...", &cmd[..57])
+                format!("{}...", crate::util::truncate_str(cmd, 57))
             } else {
                 cmd.to_string()
             }
@@ -91,7 +91,7 @@ fn explore_arg_preview(name: &str, input: &serde_json::Value) -> String {
         "web_search" => {
             let q = input.get("query").and_then(|v| v.as_str()).unwrap_or("?");
             if q.len() > 60 {
-                format!("{}...", &q[..57])
+                format!("{}...", crate::util::truncate_str(q, 57))
             } else {
                 q.to_string()
             }

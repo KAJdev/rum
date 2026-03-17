@@ -1756,7 +1756,7 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
     let display_arg = if entry.expanded {
         entry.arg.clone()
     } else if entry.arg.len() > 80 {
-        format!("{}…", &entry.arg[..79])
+        format!("{}…", crate::util::truncate_str(&entry.arg, 79))
     } else {
         entry.arg.clone()
     };
@@ -1878,7 +1878,7 @@ fn render_tool_entry(lines: &mut Vec<Line<'static>>, entry: &ToolEntry, _w: u16)
         }
         ToolStatus::Error(e) => {
             let short = if e.len() > 80 {
-                format!("{}...", &e[..77])
+                format!("{}...", crate::util::truncate_str(e, 77))
             } else {
                 e.clone()
             };

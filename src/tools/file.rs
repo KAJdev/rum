@@ -33,7 +33,7 @@ pub(super) async fn exec_read(input: &serde_json::Value, cwd: &Path) -> ToolResu
 
             // truncate to ~50KB
             let output = if result.len() > 50_000 {
-                format!("{}...\n[truncated]", &result[..50_000])
+                format!("{}...\n[truncated]", crate::util::truncate_str(&result, 50_000))
             } else {
                 result
             };

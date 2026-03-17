@@ -531,7 +531,7 @@ impl App {
                             if !keep_streamed && entry.diff.is_none() && !trimmed.is_empty() && trimmed != "(no output)" {
                                 let clean = strip_ansi(trimmed);
                                 let display_output = if clean.len() > 2000 {
-                                    format!("{}...", &clean[..2000])
+                                    format!("{}...", crate::util::truncate_str(&clean, 2000))
                                 } else {
                                     clean
                                 };
@@ -927,7 +927,7 @@ impl App {
                                                 && entry.diff.is_none()
                                             {
                                                 let display = if trimmed.len() > 2000 {
-                                                    format!("{}...", &trimmed[..2000])
+                                                    format!("{}...", crate::util::truncate_str(trimmed, 2000))
                                                 } else {
                                                     trimmed.to_string()
                                                 };
