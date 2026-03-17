@@ -134,6 +134,24 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "url_search".to_string(),
+            description: "Fetch a URL and extract specific information from it. The full page content is read by a sub-model which returns only what matches your prompt, filtering out noise. Use this when you have a specific URL and need to pull data, documentation, or facts from it. For general discovery use web_search first, then url_search on promising results.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL to fetch"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "What to look for or extract from the page"
+                    }
+                },
+                "required": ["url", "prompt"]
+            }),
+        },
+        ToolDef {
             name: "goto_definition".to_string(),
             description: "Find the definition of a symbol at a specific location in a file using the Language Server Protocol. Returns the file path and line number where the symbol is defined. Requires an LSP server to be running for the file's language.".to_string(),
             input_schema: serde_json::json!({
@@ -206,6 +224,10 @@ pub fn execute_tool<'a>(
             "explore" => match api_ctx {
                 Some(ctx) => super::explore::exec_explore(input, cwd, stream_tx, ctx).await,
                 None => ToolResult::Error("explore is not available in this context".to_string()),
+            },
+            "url_search" => match api_ctx {
+                Some(ctx) => super::url_fetch::exec_url_fetch(input, ctx).await,
+                None => ToolResult::Error("url_search is not available in this context".to_string()),
             },
             "goto_definition" => match api_ctx {
                 Some(ctx) => super::lsp_tools::exec_goto_definition(input, cwd, ctx).await,

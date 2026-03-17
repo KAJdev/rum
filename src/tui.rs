@@ -1189,6 +1189,7 @@ pub(crate) fn capitalize_tool(name: &str) -> &str {
         "bash" => "Bash",
         "web_search" => "Search",
         "explore" => "Explore",
+        "url_search" => "Fetch",
         _ => name,
     }
 }
@@ -1213,6 +1214,11 @@ fn extract_tool_arg(name: &str, input: &serde_json::Value) -> String {
             .to_string(),
         "explore" => input
             .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("...")
+            .to_string(),
+        "url_search" => input
+            .get("url")
             .and_then(|v| v.as_str())
             .unwrap_or("...")
             .to_string(),
