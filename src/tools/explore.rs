@@ -14,6 +14,7 @@ Available tools:
 - read: read a file's contents
 - bash: run read-only shell commands (ls, find, grep, cat, rg, etc.)
 - web_search: search the web
+- url_search: fetch a URL and extract specific information from it using a sub-model
 - view_file: view an image file (jpg, png, gif, webp)
 
 Process:
@@ -25,7 +26,7 @@ structured report with no further tool calls
 ";
 
 fn explore_tools_json(is_oauth: bool) -> Vec<serde_json::Value> {
-    let allowed = ["read", "bash", "web_search", "view_file"];
+    let allowed = ["read", "bash", "web_search", "view_file", "url_search"];
     tool_definitions()
         .into_iter()
         .filter(|t| allowed.contains(&t.name.as_str()))
@@ -35,6 +36,7 @@ fn explore_tools_json(is_oauth: bool) -> Vec<serde_json::Value> {
                     "read" => "Read",
                     "bash" => "Bash",
                     "web_search" => "WebSearch",
+                    "url_search" => "UrlSearch",
                     _ => t.name.as_str(),
                 }
                 .to_string()
@@ -67,6 +69,7 @@ fn explore_local_name(name: &str) -> &str {
         "Read" => "read",
         "Bash" => "bash",
         "WebSearch" => "web_search",
+        "UrlSearch" => "url_search",
         other => other,
     }
 }
@@ -96,6 +99,11 @@ fn explore_arg_preview(name: &str, input: &serde_json::Value) -> String {
                 q.to_string()
             }
         }
+        "url_search" => input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
         _ => String::new(),
     }
 }
@@ -368,8 +376,9 @@ pub(super) async fn exec_explore(
                     let _ = tx.send(format!("\u{2192} {}  {}\n", local, preview));
                 }
 
-                // sub-tools get no stream_tx and no api_ctx (explore can't recurse)
-                let result = execute_tool(local, input, cwd, None, None).await;
+                // sub-tools get no stream_tx; url_search needs api_ctx, others don't
+                let sub_ctx = if local == "url_search" { Some(api_ctx) } else { None };
+                let result = execute_tool(local, input, cwd, None, sub_ctx).await;
 
                 let (content, is_error) = match result {
                     ToolResult::Success { output, .. } => (serde_json::Value::String(output), None),
