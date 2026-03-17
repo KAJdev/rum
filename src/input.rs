@@ -63,6 +63,11 @@ const SLASH_COMMANDS: &[SlashDef] = &[
         args: "",
         description: "View and branch conversation tree",
     },
+    SlashDef {
+        name: "/usage",
+        args: "",
+        description: "Show session token usage and cost",
+    },
 ];
 
 pub(crate) struct Suggestion {

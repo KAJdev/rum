@@ -13,6 +13,7 @@ pub enum SlashCommand {
     Help,
     Quit,
     Tree,
+    Usage,
 }
 
 pub fn parse(text: &str) -> Option<SlashCommand> {
@@ -39,6 +40,7 @@ pub fn parse(text: &str) -> Option<SlashCommand> {
         "/help" => Some(SlashCommand::Help),
         "/quit" => Some(SlashCommand::Quit),
         "/tree" => Some(SlashCommand::Tree),
+        "/usage" | "/cost" | "/stats" => Some(SlashCommand::Usage),
         _ => None,
     }
 }
@@ -118,6 +120,7 @@ available commands:\n\
   /new                start a new conversation\n\
   /compact            summarize conversation history to free up context\n\
   /tree               view and branch the conversation tree\n\
+  /usage              show session token usage and cost\n\
   /cd <path>          change working directory\n\
   /login              log in with anthropic oauth\n\
   /logout             log out\n\
@@ -131,6 +134,9 @@ available commands:\n\
         SlashCommand::Tree => {
             let tv = tree::TreeView::build(&app.session_tree);
             app.tree_view = Some(tv);
+        }
+        SlashCommand::Usage => {
+            handle_usage(app);
         }
     }
 }
@@ -305,4 +311,82 @@ fn handle_thinking(
             }
         }
     }
+}
+
+fn fmt_tokens(n: u32) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 10_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else if n < 1_000_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
+fn handle_usage(app: &mut tui::App) {
+    let t = &app.tokens;
+    let p = config::model_pricing(app.model_name());
+
+    let input_cost = t.total_input as f64 * p.input / 1_000_000.0;
+    let cache_write_cost = t.total_cache_creation as f64 * p.input * 1.25 / 1_000_000.0;
+    let cache_read_cost = t.total_cache_read as f64 * p.input * 0.1 / 1_000_000.0;
+    let output_cost = t.total_output as f64 * p.output / 1_000_000.0;
+    let total_cost = app.cost_usd();
+
+    let context_used = app.context_used();
+    let context_pct = app.context_pct() * 100.0;
+
+    let elapsed = t.start_time.map_or(String::from("n/a"), |s| {
+        let secs = s.elapsed().as_secs();
+        if secs < 60 {
+            format!("{}s", secs)
+        } else if secs < 3600 {
+            format!("{}m {}s", secs / 60, secs % 60)
+        } else {
+            format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+        }
+    });
+
+    let mut lines = format!(
+        "session usage  ({}, {})\n",
+        app.model_name(),
+        app.thinking_level()
+    );
+
+    lines.push_str(&format!(
+        "\n  tokens in     {:>10}    ${:.4}",
+        fmt_tokens(t.total_input),
+        input_cost
+    ));
+    lines.push_str(&format!(
+        "\n  tokens out    {:>10}    ${:.4}",
+        fmt_tokens(t.total_output),
+        output_cost
+    ));
+    lines.push_str(&format!(
+        "\n  cache read    {:>10}    ${:.4}",
+        fmt_tokens(t.total_cache_read),
+        cache_read_cost
+    ));
+    lines.push_str(&format!(
+        "\n  cache write   {:>10}    ${:.4}",
+        fmt_tokens(t.total_cache_creation),
+        cache_write_cost
+    ));
+    lines.push_str(&format!("\n  total cost    {:>10}    ${:.4}", "", total_cost));
+
+    lines.push_str(&format!(
+        "\n\n  context       {:>10} / {}  ({:.0}%)",
+        fmt_tokens(context_used),
+        fmt_tokens(t.context_limit),
+        context_pct
+    ));
+    lines.push_str(&format!(
+        "\n  elapsed       {:>10}",
+        elapsed
+    ));
+
+    app.push_system_message(lines);
 }
