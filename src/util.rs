@@ -2,8 +2,8 @@
 // that should be stripped before rendering. preserves \n and \t.
 fn is_control_or_invisible(c: char) -> bool {
     match c {
-        // C0 controls except \t and \n
-        '\x00'..='\x08' | '\x0B'..='\x0C' | '\x0E'..='\x1F' => true,
+        // C0 controls except \t (\x09) and \n (\x0A)
+        '\x00'..='\x08' | '\x0B'..='\x1F' => true,
         // DEL
         '\x7F' => true,
         // C1 controls

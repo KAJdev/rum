@@ -11,6 +11,7 @@ use crate::tui::{
     capitalize_tool, last_paragraph,
     spinner_char, strip_exit_prefix, tool_line, wrap_md_lines_with_bar, wrap_text_with_bar,
 };
+use crate::util::sanitize_text;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -628,7 +629,7 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         }
         match item {
             ActivityItem::Thinking(t) => {
-                let text = t.chars().take(max_w).collect::<String>();
+                let text = sanitize_text(&t.chars().take(max_w).collect::<String>());
                 item_lines.push(Line::from(Span::styled(
                     format!(" {}", text),
                     Style::default().fg(THINKING_COLOR).add_modifier(Modifier::ITALIC),
@@ -637,7 +638,7 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
             ActivityItem::Text(t) => {
                 // show just the last line of text output
                 let last = t.lines().last().unwrap_or("");
-                let text: String = last.chars().take(max_w.saturating_sub(2)).collect();
+                let text = sanitize_text(&last.chars().take(max_w.saturating_sub(2)).collect::<String>());
                 item_lines.push(Line::from(vec![
                     Span::styled(" \u{2502} ", Style::default().fg(BAR_COLOR)),
                     Span::styled(text, Style::default().fg(FG)),
@@ -660,7 +661,7 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 let label = capitalize_tool(&entry.name);
                 let arg_budget = max_w.saturating_sub(label.len() + 4);
-                let arg: String = entry.arg.chars().take(arg_budget).collect();
+                let arg = sanitize_text(&entry.arg.chars().take(arg_budget).collect::<String>());
                 item_lines.push(Line::from(vec![
                     Span::styled(format!(" {} ", icon), Style::default().fg(icon_color)),
                     Span::styled(label.to_string(), Style::default().fg(TOOL_COLOR)),
@@ -668,7 +669,7 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                 ]));
             }
             ActivityItem::UserMessage(msg) => {
-                let text: String = msg.chars().take(max_w.saturating_sub(2)).collect();
+                let text = sanitize_text(&msg.chars().take(max_w.saturating_sub(2)).collect::<String>());
                 item_lines.push(Line::from(vec![
                     Span::styled(" > ", Style::default().fg(ACCENT)),
                     Span::styled(text, Style::default().fg(FG)),
@@ -682,7 +683,7 @@ fn render_editor_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                     SystemKind::Error => RED,
                     SystemKind::Update => ACCENT,
                 };
-                let text: String = msg.lines().next().unwrap_or("").chars().take(max_w).collect();
+                let text = sanitize_text(&msg.lines().next().unwrap_or("").chars().take(max_w).collect::<String>());
                 item_lines.push(Line::from(Span::styled(
                     format!(" {}", text),
                     Style::default().fg(color),
@@ -1510,6 +1511,7 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
 
         if stale {
             let item_lines = render_activity_item(&app.feed.items[idx], w, app.spin_frame);
+            let item_lines = sanitize_lines(item_lines);
             app.feed.render_cache[idx] = CachedRender {
                 lines: item_lines,
                 content_len,
@@ -1987,5 +1989,28 @@ fn build_diff_lines(diff: &DiffInfo) -> Vec<Line<'static>> {
         }
     }
     out
+}
+
+// strip control characters and invisible unicode from all spans in rendered lines.
+// acts as a safety net so nothing unsanitized reaches the terminal via ratatui.
+fn sanitize_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            let spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|span| {
+                    let clean = sanitize_text(&span.content);
+                    if clean.len() == span.content.len() {
+                        span
+                    } else {
+                        Span::styled(clean, span.style)
+                    }
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect()
 }
 
