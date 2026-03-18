@@ -1093,6 +1093,13 @@ impl LspManager {
 
     // get diagnostics for a specific file
     pub async fn diagnostics_for(&self, path: &Path) -> Vec<DiagnosticInfo> {
+        if !path.exists() {
+            // prune stale entry for deleted file
+            let mut diags = self.diagnostics.lock().await;
+            let key = path.to_string_lossy().to_string();
+            diags.remove(&key);
+            return Vec::new();
+        }
         let key = path.to_string_lossy().to_string();
         let diags = self.diagnostics.lock().await;
         diags.get(&key).cloned().unwrap_or_default()
@@ -1100,10 +1107,13 @@ impl LspManager {
 
     // get all diagnostics formatted as a summary string (for agent injection)
     pub async fn diagnostics_summary(&self) -> Option<String> {
-        let diags = self.diagnostics.lock().await;
+        let mut diags = self.diagnostics.lock().await;
         if diags.is_empty() {
             return None;
         }
+
+        // prune entries for files that no longer exist on disk
+        diags.retain(|path, _| std::path::Path::new(path).exists());
 
         let mut lines = Vec::new();
         for (path, file_diags) in diags.iter() {
