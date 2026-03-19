@@ -1488,7 +1488,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rum"
+name = "rum-code"
 version = "0.7.4"
 dependencies = [
  "anyhow",

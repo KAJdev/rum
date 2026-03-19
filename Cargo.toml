@@ -1,5 +1,5 @@
 [package]
-name = "rum"
+name = "rum-code"
 version = "0.7.4"
 edition = "2021"
 description = "a fast coding agent for the terminal"
@@ -14,6 +14,10 @@ pkg-fmt = "tgz"
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-url = "{ repo }/releases/download/v{ version }/rum-{ target }.zip"
 pkg-fmt = "zip"
+
+[[bin]]
+name = "rum"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
