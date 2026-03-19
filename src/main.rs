@@ -519,7 +519,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         // check for available updates
         while let Ok(tag) = update_rx.try_recv() {
             app.push_update_notice(format!(
-                "rum {} is available  (you have {})  cargo binstall rum",
+                "rum {} is available  (you have {})  cargo binstall rum-code",
                 tag,
                 env!("CARGO_PKG_VERSION"),
             ));

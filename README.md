@@ -20,11 +20,11 @@ you watch the agent work the way you'd watch a coworker's screen. except you can
 # homebrew
 brew install KAJdev/rum/rum
 
-# pre-built binary
-cargo binstall rum
+# pre-built binary (via cargo-binstall)
+cargo binstall rum-code
 
 # from source
-cargo install --path .
+cargo install rum-code
 ```
 
 ## getting started
