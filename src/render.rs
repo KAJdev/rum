@@ -917,7 +917,11 @@ fn render_chat(frame: &mut Frame, app: &mut App) {
     render_message_area(frame, app, chunks[1], &suggestions, slash_selected);
     render_input_area(frame, app, chunks[2]);
 
-    // chunks[3] is the buffer after input
+    // fill buffer gaps with the app background color
+    let bg_fill = ratatui::widgets::Block::default().style(Style::default().bg(BG));
+    frame.render_widget(bg_fill.clone(), chunks[3]);
+    frame.render_widget(bg_fill, chunks[5]);
+
     render_activity(frame, app, chunks[4]);
     if jobs_h > 0 {
         render_jobs_bar(frame, app, chunks[6]);

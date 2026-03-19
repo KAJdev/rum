@@ -551,7 +551,7 @@ async fn run_tui_mode(cfg: config::Config, cwd: PathBuf, message_parts: Vec<Stri
         while event::poll(poll_timeout)? {
             poll_timeout = Duration::ZERO;
             match event::read()? {
-                Event::Key(key) => {
+                Event::Key(key) if key.kind == event::KeyEventKind::Press => {
                     // tree view intercepts all key events
                     if app.tree_view.is_some() {
                         commands::handle_tree_key(key, &mut app, &control_tx);
