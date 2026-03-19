@@ -2,16 +2,38 @@ use super::types::{ApiContext, ToolResult};
 use crate::util::strip_ansi;
 use std::path::Path;
 
-/// Returns the shell executable for the current platform.
-#[cfg(windows)]
-fn shell() -> &'static str { "cmd.exe" }
+/// Returns the path to a bash-compatible shell.
+/// On Unix this is just "bash". On Windows we look for Git Bash at common
+/// install locations, falling back to "bash" on PATH (WSL) as a last resort.
 #[cfg(not(windows))]
-fn shell() -> &'static str { "bash" }
+fn shell() -> String { "bash".to_string() }
+
+#[cfg(windows)]
+fn shell() -> String {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<String> = OnceLock::new();
+    CACHED.get_or_init(|| {
+        // prefer bash on PATH (Git Bash or WSL)
+        if let Ok(o) = std::process::Command::new("bash").arg("--version").output() {
+            if o.status.success() {
+                return "bash".to_string();
+            }
+        }
+        // common Git Bash install paths
+        for path in &[
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+        ] {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
+            }
+        }
+        // last resort
+        "bash".to_string()
+    }).clone()
+}
 
 /// Returns the shell arguments needed to execute a command string.
-#[cfg(windows)]
-fn shell_args(command: &str) -> Vec<&str> { vec!["/C", command] }
-#[cfg(not(windows))]
 fn shell_args(command: &str) -> Vec<&str> { vec!["-c", command] }
 
 pub(super) async fn exec_bash(
