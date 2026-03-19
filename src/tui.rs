@@ -161,6 +161,8 @@ pub enum JobEvent {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolEntry {
+    // tool_use id from the API, used to correlate parallel tool events
+    pub(crate) id: String,
     pub(crate) name: String,
     // argument portion (path, command, etc.) shown after the tool label
     pub(crate) arg: String,
@@ -202,6 +204,20 @@ pub(crate) struct CachedRender {
     pub(crate) width: u16,
     pub(crate) expanded: bool,
     pub(crate) status_tag: u8,
+    // incremental markdown rendering state for Text items.
+    // stores the renderer after processing all complete lines,
+    // so new streaming tokens only re-render the trailing partial line.
+    pub(crate) md_state: Option<MdCacheState>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MdCacheState {
+    // number of complete source lines (before final \n) that are cached
+    pub(crate) source_lines: usize,
+    // rendered output for those complete lines (after wrap + sanitize)
+    pub(crate) rendered_lines: usize,
+    // markdown renderer state after processing the complete lines
+    pub(crate) renderer: crate::markdown::TuiMarkdownRenderer,
 }
 
 pub struct InputState {
@@ -460,9 +476,10 @@ impl App {
                 self.feed.new_turn = false;
                 self.feed.items.push(ActivityItem::Text(t));
             }
-            AgentEvent::ToolStart { id: _, name } => {
+            AgentEvent::ToolStart { id, name } => {
                 self.current_tool_input.clear();
                 self.feed.items.push(ActivityItem::Tool(ToolEntry {
+                    id: id.clone(),
                     name: name.clone(),
                     arg: String::new(),
                     status: ToolStatus::Running,
@@ -484,9 +501,9 @@ impl App {
                     }
                 }
             }
-            AgentEvent::ToolOutputDelta { id: _, text } => {
+            AgentEvent::ToolOutputDelta { id, text } => {
                 if let Some(ActivityItem::Tool(ref mut entry)) = self.feed.items.iter_mut().rev()
-                    .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
+                    .find(|item| matches!(item, ActivityItem::Tool(e) if e.id == *id))
                 {
                     let buf = entry.output.get_or_insert_with(String::new);
                     // cap the display buffer to keep re-renders cheap
@@ -496,13 +513,13 @@ impl App {
                 }
             }
             AgentEvent::ToolComplete {
-                id: _,
+                id,
                 name,
                 result,
             } => {
                 let mut tracked: Option<(String, Option<DiffInfo>, Option<usize>)> = None;
                 if let Some(ActivityItem::Tool(ref mut entry)) = self.feed.items.iter_mut().rev()
-                    .find(|item| matches!(item, ActivityItem::Tool(e) if matches!(e.status, ToolStatus::Running)))
+                    .find(|item| matches!(item, ActivityItem::Tool(e) if e.id == *id))
                 {
                     match &result {
                         ToolResult::Success { output, diff, read } => {
@@ -966,6 +983,7 @@ impl App {
                                 let arg = extract_tool_arg(&display_name, input);
                                 let idx = self.feed.items.len();
                                 self.feed.items.push(ActivityItem::Tool(ToolEntry {
+                                    id: id.clone(),
                                     name: display_name,
                                     arg,
                                     status: ToolStatus::Complete { exit_code: None },
