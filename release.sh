@@ -8,7 +8,11 @@ current=$(grep '^version = ' "$CARGO" | head -1 | sed 's/version = "\(.*\)"/\1/'
 IFS='.' read -r major minor patch <<< "$current"
 next="$major.$minor.$((patch + 1))"
 
-sed -i '' "s/^version = \"$current\"/version = \"$next\"/" "$CARGO"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  sed -i '' "s/^version = \"$current\"/version = \"$next\"/" "$CARGO"
+else
+  sed -i "s/^version = \"$current\"/version = \"$next\"/" "$CARGO"
+fi
 cargo build --quiet 2>/dev/null
 
 git add -A
