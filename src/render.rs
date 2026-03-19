@@ -7,7 +7,7 @@ use crate::tui::{
     JobStatus, QueuedItem,
     SystemKind, TokenBucket, ToolEntry, ToolStatus, ViewMode,
     ACCENT, BAR_COLOR, BG, BRANCH_COLOR, DIM, FG, GREEN, INPUT_BG, MUTED,
-    RED, SIDEBAR_WIDTH, SURFACE, THINKING_COLOR, TOOL_COLOR, YELLOW,
+    RED, SIDEBAR_WIDTH, SURFACE, THINKING_COLOR, TOOL_COLOR, USER_MSG_BG, YELLOW,
     capitalize_tool, last_paragraph,
     spinner_char, strip_exit_prefix, tool_line, wrap_md_lines_with_bar, wrap_text_with_bar,
 };
@@ -1638,13 +1638,14 @@ fn render_user_message(text: &str, w: u16) -> Vec<Line<'static>> {
     if content_width == 0 {
         return vec![];
     }
-    let style = Style::default().fg(FG);
-    let prefix_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let line_bg = Style::default().bg(USER_MSG_BG);
+    let style = Style::default().fg(FG).bg(USER_MSG_BG);
+    let prefix_style = Style::default().fg(ACCENT).bg(USER_MSG_BG).add_modifier(Modifier::BOLD);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for logical_line in text.split('\n') {
         if logical_line.is_empty() {
             let pfx = if lines.is_empty() { "\u{203a} " } else { "  " };
-            lines.push(Line::from(Span::styled(pfx.to_string(), prefix_style)));
+            lines.push(Line::from(Span::styled(pfx.to_string(), prefix_style)).style(line_bg));
             continue;
         }
         let chars: Vec<char> = logical_line.chars().collect();
@@ -1668,7 +1669,7 @@ fn render_user_message(text: &str, w: u16) -> Vec<Line<'static>> {
             lines.push(Line::from(vec![
                 Span::styled(pfx.to_string(), prefix_style),
                 Span::styled(chunk, style),
-            ]));
+            ]).style(line_bg));
             start = end;
         }
     }

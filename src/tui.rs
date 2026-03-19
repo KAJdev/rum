@@ -36,6 +36,7 @@ pub(crate) const BAR_COLOR: Color = Color::Rgb(60, 65, 75);
 pub(crate) const THINKING_COLOR: Color = Color::Rgb(180, 140, 255);
 pub(crate) const TOOL_COLOR: Color = Color::Rgb(100, 200, 220);
 pub(crate) const INPUT_BG: Color = Color::Rgb(16, 20, 28);
+pub(crate) const USER_MSG_BG: Color = Color::Rgb(15, 19, 27);
 pub(crate) const BRANCH_COLOR: Color = Color::Rgb(120, 190, 148);
 pub(crate) const SIDEBAR_WIDTH: u16 = 30;
 

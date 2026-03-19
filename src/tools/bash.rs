@@ -2,6 +2,18 @@ use super::types::{ApiContext, ToolResult};
 use crate::util::strip_ansi;
 use std::path::Path;
 
+/// Returns the shell executable for the current platform.
+#[cfg(windows)]
+fn shell() -> &'static str { "cmd.exe" }
+#[cfg(not(windows))]
+fn shell() -> &'static str { "bash" }
+
+/// Returns the shell arguments needed to execute a command string.
+#[cfg(windows)]
+fn shell_args(command: &str) -> Vec<&str> { vec!["/C", command] }
+#[cfg(not(windows))]
+fn shell_args(command: &str) -> Vec<&str> { vec!["-c", command] }
+
 pub(super) async fn exec_bash(
     input: &serde_json::Value,
     cwd: &Path,
@@ -28,9 +40,11 @@ pub(super) async fn exec_bash(
 
     use tokio::io::AsyncReadExt;
 
-    let mut child = match tokio::process::Command::new("bash")
-        .arg("-c")
-        .arg(command)
+    let mut cmd = tokio::process::Command::new(shell());
+    for a in shell_args(command) {
+        cmd.arg(a);
+    }
+    let mut child = match cmd
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -193,9 +207,11 @@ fn exec_bash_background(
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
 
-        let mut child = match tokio::process::Command::new("bash")
-            .arg("-c")
-            .arg(&command)
+        let mut cmd = tokio::process::Command::new(shell());
+        for a in shell_args(&command) {
+            cmd.arg(a);
+        }
+        let mut child = match cmd
             .current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
