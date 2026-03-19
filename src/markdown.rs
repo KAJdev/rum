@@ -1293,6 +1293,7 @@ const TUI_PURPLE: RColor = RColor::Rgb(199, 146, 234);
 const TUI_CODE_BG: RColor = RColor::Rgb(30, 35, 43);
 const TUI_DIM: RColor = RColor::Rgb(86, 91, 102);
 
+#[derive(Clone)]
 pub struct TuiMarkdownRenderer {
     in_code_block: bool,
     code_lang: String,

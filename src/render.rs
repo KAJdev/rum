@@ -4,7 +4,7 @@ use crate::input::{
 };
 use crate::tui::{
     ActivityItem, App, BackgroundJob, CachedRender, CompactStatus, DiffMarker,
-    JobStatus, QueuedItem,
+    JobStatus, MdCacheState, QueuedItem,
     SystemKind, TokenBucket, ToolEntry, ToolStatus, ViewMode,
     ACCENT, BAR_COLOR, BG, BRANCH_COLOR, DIM, FG, GREEN, INPUT_BG, MUTED,
     RED, SIDEBAR_WIDTH, SURFACE, THINKING_COLOR, TOOL_COLOR, USER_MSG_BG, YELLOW,
@@ -1514,14 +1514,100 @@ fn render_activity(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         if stale {
+            // incremental markdown rendering for streaming Text items.
+            // complete source lines (before the last \n) are stable during
+            // streaming, so we cache the rendered output and renderer state
+            // for them and only re-render the trailing partial line.
+            if let ActivityItem::Text(text) = &app.feed.items[idx] {
+                let cache = &app.feed.render_cache[idx];
+                // count complete lines (those ending with \n)
+                let has_trailing_newline = text.ends_with('\n');
+                let total_source_lines = text.lines().count();
+                let complete_lines = if has_trailing_newline {
+                    total_source_lines
+                } else {
+                    total_source_lines.saturating_sub(1)
+                };
+
+                if let Some(ref md_state) = cache.md_state {
+                    if cache.width == w
+                        && complete_lines >= md_state.source_lines
+                        && md_state.source_lines > 0
+                        && md_state.rendered_lines <= cache.lines.len()
+                    {
+                        // find the byte offset where new (uncached) content starts
+                        let mut byte_off = 0;
+                        let mut lines_seen = 0;
+                        for (i, &b) in text.as_bytes().iter().enumerate() {
+                            if b == b'\n' {
+                                lines_seen += 1;
+                                if lines_seen == md_state.source_lines {
+                                    byte_off = i + 1;
+                                    break;
+                                }
+                            }
+                        }
+
+                        let tail = &text[byte_off..];
+                        let mut renderer = md_state.renderer.clone();
+                        let tail_md = renderer.render_lines(tail);
+                        let tail_wrapped = wrap_md_lines_with_bar(tail_md, w);
+                        let tail_sanitized = sanitize_lines(tail_wrapped);
+
+                        // splice: cached prefix + fresh tail
+                        let mut lines = cache.lines[..md_state.rendered_lines].to_vec();
+                        lines.extend(tail_sanitized);
+
+                        // save updated checkpoint at the new complete line count
+                        let new_rendered = lines.len().saturating_sub(if has_trailing_newline { 0 } else { 1 });
+                        app.feed.render_cache[idx] = CachedRender {
+                            lines,
+                            content_len,
+                            width: w,
+                            expanded,
+                            status_tag,
+                            md_state: Some(MdCacheState {
+                                source_lines: complete_lines,
+                                rendered_lines: new_rendered,
+                                renderer,
+                            }),
+                        };
+                        continue;
+                    }
+                }
+
+                // full render (first time or width changed)
+                let mut renderer = crate::markdown::TuiMarkdownRenderer::new();
+                let md_lines = renderer.render_lines(text);
+                let item_lines = wrap_md_lines_with_bar(md_lines, w);
+                let item_lines = sanitize_lines(item_lines);
+
+                let rendered_count = item_lines.len().saturating_sub(if has_trailing_newline { 0 } else { 1 });
+                app.feed.render_cache[idx] = CachedRender {
+                    lines: item_lines,
+                    content_len,
+                    width: w,
+                    expanded,
+                    status_tag,
+                    md_state: Some(MdCacheState {
+                        source_lines: complete_lines,
+                        rendered_lines: rendered_count,
+                        renderer,
+                    }),
+                };
+                continue;
+            }
+
             let item_lines = render_activity_item(&app.feed.items[idx], w, app.spin_frame);
             let item_lines = sanitize_lines(item_lines);
+
             app.feed.render_cache[idx] = CachedRender {
                 lines: item_lines,
                 content_len,
                 width: w,
                 expanded,
                 status_tag,
+                md_state: None,
             };
         }
     }
